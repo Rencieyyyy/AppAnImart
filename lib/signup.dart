@@ -1,0 +1,833 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'login.dart';
+
+class SignUpPage extends StatefulWidget {
+  const SignUpPage({super.key});
+
+  @override
+  State<SignUpPage> createState() => _SignUpPageState();
+}
+
+class _SignUpPageState extends State<SignUpPage> {
+  // Step 1 - Personal
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+
+  // Step 2 - Address
+  final TextEditingController _addressController = TextEditingController();
+  final TextEditingController _houseController = TextEditingController();
+
+  // Step 3 - Security & ID
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _retypePasswordController = TextEditingController();
+  bool _obscurePassword = true;
+  bool _obscureRetypePassword = true;
+  bool _agreedToTerms = false;
+
+  // ID upload state
+  File? _validIdFile;
+  String? _selectedIdType;
+
+  static const List<String> _idTypes = [
+    'Philippine Passport',
+    'Driver\'s License',
+    'SSS ID',
+    'PhilHealth ID',
+    'Postal ID',
+    'Voter\'s ID',
+    'PRC ID',
+    'Senior Citizen ID',
+    'UMID',
+    'National ID (PhilSys)',
+    'Barangay ID',
+    'School ID',
+  ];
+
+  final ImagePicker _picker = ImagePicker();
+
+  int _currentStep = 1;
+
+  static const Color mint = Color(0xFF91E6C1);
+  static const Color dark = Color(0xFF1F2937);
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+    _houseController.dispose();
+    _passwordController.dispose();
+    _retypePasswordController.dispose();
+    super.dispose();
+  }
+
+  // ── Image Picker ──────────────────────────────────────────
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1200,
+        maxHeight: 1200,
+      );
+      if (picked != null) {
+        setState(() => _validIdFile = File(picked.path));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not access ${source == ImageSource.camera ? 'camera' : 'gallery'}. Please check permissions.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.all(16),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showIdSourcePicker() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Handle bar
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Upload Valid ID',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Choose how you want to provide your ID photo.',
+                style: TextStyle(fontSize: 13, color: Colors.black45),
+              ),
+              const SizedBox(height: 20),
+              // Camera option
+              _SourceTile(
+                icon: Icons.camera_alt_rounded,
+                label: 'Take a Photo',
+                subtitle: 'Use your camera to capture your ID',
+                color: mint,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.camera);
+                },
+              ),
+              const SizedBox(height: 12),
+              // Gallery option
+              _SourceTile(
+                icon: Icons.photo_library_rounded,
+                label: 'Choose from Gallery',
+                subtitle: 'Select an existing photo of your ID',
+                color: const Color(0xFFB8E8FF),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.gallery);
+                },
+              ),
+              if (_validIdFile != null) ...[
+                const SizedBox(height: 12),
+                _SourceTile(
+                  icon: Icons.delete_outline_rounded,
+                  label: 'Remove Photo',
+                  subtitle: 'Clear the current ID image',
+                  color: const Color(0xFFFFD6D6),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() => _validIdFile = null);
+                  },
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showIdTypePicker() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.4,
+        maxChildSize: 0.85,
+        expand: false,
+        builder: (_, scrollCtrl) => Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+          child: Column(
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Select ID Type',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ListView.separated(
+                  controller: scrollCtrl,
+                  itemCount: _idTypes.length,
+separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(0.08)),
+                  itemBuilder: (_, i) {
+                    final idType = _idTypes[i];
+                    final isSelected = _selectedIdType == idType;
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      title: Text(
+                        idType,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
+                          color: isSelected ? const Color(0xFF2D7A57) : Colors.black87,
+                        ),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle_rounded, color: mint, size: 22)
+                          : null,
+                      onTap: () {
+                        setState(() => _selectedIdType = idType);
+                        Navigator.pop(ctx);
+                      },
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Validation per step ───────────────────────────────────
+  String? _validateCurrentStep() {
+    switch (_currentStep) {
+      case 1:
+        if (_nameController.text.trim().isEmpty) return 'Please enter your name.';
+        if (_emailController.text.trim().isEmpty) return 'Please enter your email.';
+        if (_phoneController.text.trim().isEmpty) return 'Please enter your phone number.';
+        return null;
+      case 2:
+        if (_addressController.text.trim().isEmpty) return 'Please enter your address.';
+        if (_houseController.text.trim().isEmpty) return 'Please enter your house/street/unit/lot number.';
+        return null;
+      case 3:
+        if (_passwordController.text.isEmpty) return 'Please enter a password.';
+        if (_passwordController.text.length < 6) return 'Password must be at least 6 characters.';
+        if (_retypePasswordController.text.isEmpty) return 'Please retype your password.';
+        if (_passwordController.text != _retypePasswordController.text) return 'Passwords do not match.';
+        if (_selectedIdType == null) return 'Please select the type of your valid ID.';
+        if (_validIdFile == null) return 'Please upload a photo of your valid ID.';
+        if (!_agreedToTerms) return 'Please agree to the Terms and Conditions.';
+        return null;
+    }
+    return null;
+  }
+
+  void _onContinue() {
+    final error = _validateCurrentStep();
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
+      return;
+    }
+    if (_currentStep < 3) {
+      setState(() => _currentStep++);
+    } else {
+      // TODO: Submit registration
+      // You have access to:
+      //   _validIdFile    → File to upload
+      //   _selectedIdType → String ID type chosen
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              // ── Logo Box ──────────────────────────────────
+              Container(
+                margin: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+                decoration: const BoxDecoration(),
+                padding: const EdgeInsets.all(16),
+                child: Image.asset(
+                  'images/animartLOGO.png',
+                  height: 160,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) => const Icon(
+                    Icons.broken_image,
+                    size: 60,
+                    color: Colors.grey,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              const Text(
+                'Create Account',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: _StepIndicator(currentStep: _currentStep),
+              ),
+
+              const SizedBox(height: 28),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                child: _buildStepContent(),
+              ),
+
+              const SizedBox(height: 28),
+
+              // ── Buttons ───────────────────────────────────
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          if (_currentStep > 1) {
+                            setState(() => _currentStep--);
+                          } else {
+                            Navigator.pop(context);
+                          }
+                        },
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          side: const BorderSide(color: Colors.black26),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                        ),
+                        child: const Text(
+                          'Back',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.black54,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(width: 14),
+
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _onContinue,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: mint,
+                          foregroundColor: dark,
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: const Text(
+                          'Continue',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Already have an account? ',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const LoginPage(),
+                        ),
+                      );
+                    },
+                    child: const Text(
+                      'Login',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF4CAF7D),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 32),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStepContent() {
+    switch (_currentStep) {
+      case 1:
+        return Column(
+          children: [
+            _buildField(controller: _nameController, hint: 'Name', keyboardType: TextInputType.name),
+            const SizedBox(height: 14),
+            _buildField(controller: _emailController, hint: 'Email', keyboardType: TextInputType.emailAddress),
+            const SizedBox(height: 14),
+            _buildField(controller: _phoneController, hint: 'Phone', keyboardType: TextInputType.phone),
+          ],
+        );
+
+      case 2:
+        return Column(
+          children: [
+            _buildField(controller: _addressController, hint: 'Address', keyboardType: TextInputType.streetAddress),
+            const SizedBox(height: 14),
+            _buildField(controller: _houseController, hint: 'House No./Street/Unit/Lot No.'),
+          ],
+        );
+
+      case 3:
+        return Column(
+          children: [
+            _buildPasswordField(
+              controller: _passwordController,
+              hint: 'Password',
+              obscure: _obscurePassword,
+              onToggle: () => setState(() => _obscurePassword = !_obscurePassword),
+            ),
+            const SizedBox(height: 14),
+            _buildPasswordField(
+              controller: _retypePasswordController,
+              hint: 'Retype Password',
+              obscure: _obscureRetypePassword,
+              onToggle: () => setState(() => _obscureRetypePassword = !_obscureRetypePassword),
+            ),
+
+            const SizedBox(height: 14),
+
+            // ── ID Type Selector ──────────────────────────
+            GestureDetector(
+              onTap: _showIdTypePicker,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.badge_outlined, color: Colors.black45, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _selectedIdType ?? 'Select ID Type',
+                        style: TextStyle(
+                          color: _selectedIdType != null ? Colors.black87 : Colors.black45,
+                          fontSize: 14,
+                          fontWeight: _selectedIdType != null ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black45, size: 20),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 14),
+
+            // ── ID Photo Upload ───────────────────────────
+            GestureDetector(
+              onTap: _showIdSourcePicker,
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: _validIdFile != null
+                    ? Stack(
+                        children: [
+                          // Preview image
+                          Image.file(
+                            _validIdFile!,
+                            width: double.infinity,
+                            height: 160,
+                            fit: BoxFit.cover,
+                          ),
+                          // Overlay badge
+                          Positioned(
+                            bottom: 8,
+                            right: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.55),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.edit_outlined, color: Colors.white, size: 14),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Change Photo',
+                                    style: TextStyle(color: Colors.white, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.camera_alt_outlined, color: Colors.black45, size: 20),
+                            const SizedBox(width: 12),
+                            const Text(
+                              'Upload Valid ID Photo',
+                              style: TextStyle(color: Colors.black45, fontSize: 14),
+                            ),
+                            const Spacer(),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Text(
+                                'Required',
+                                style: TextStyle(fontSize: 11, color: Colors.black45),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── Terms Checkbox ────────────────────────────
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Checkbox(
+                  value: _agreedToTerms,
+                  onChanged: (val) => setState(() => _agreedToTerms = val ?? false),
+                  activeColor: mint,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                ),
+                Expanded(
+                  child: RichText(
+                    text: const TextSpan(
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                      children: [
+                        TextSpan(text: 'I agree to the '),
+                        TextSpan(
+                          text: 'Terms and Conditions & Privacy Policy',
+                          style: TextStyle(
+                            color: Color(0xFF4CAF7D),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+
+      default:
+        return const SizedBox();
+    }
+  }
+
+  Widget _buildField({
+    required TextEditingController controller,
+    required String hint,
+    TextInputType keyboardType = TextInputType.text,
+  }) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.black45, fontSize: 14),
+        filled: true,
+        fillColor: const Color(0xFFA8DFC8),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(30),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      ),
+    );
+  }
+
+  Widget _buildPasswordField({
+    required TextEditingController controller,
+    required String hint,
+    required bool obscure,
+    required VoidCallback onToggle,
+  }) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.black45, fontSize: 14),
+        filled: true,
+        fillColor: const Color(0xFFA8DFC8),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(30),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        suffixIcon: Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: IconButton(
+            icon: Icon(
+              obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+              color: Colors.black45,
+            ),
+            onPressed: onToggle,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Source Tile (reusable bottom sheet option) ────────────
+class _SourceTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String subtitle;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _SourceTile({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.35),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color, width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: const Color(0xFF1F2937), size: 22),
+            ),
+            const SizedBox(width: 14),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  style: const TextStyle(fontSize: 12, color: Colors.black45),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Step Indicator ────────────────────────────────────────
+class _StepIndicator extends StatelessWidget {
+  final int currentStep;
+  const _StepIndicator({required this.currentStep});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _StepCircle(number: 1, label: 'Personal', isActive: currentStep >= 1, isDone: currentStep > 1),
+        _StepLine(isActive: currentStep >= 2),
+        _StepCircle(number: 2, label: 'Address', isActive: currentStep >= 2, isDone: currentStep > 2),
+        _StepLine(isActive: currentStep >= 3),
+        _StepCircle(number: 3, label: 'Security & ID', isActive: currentStep >= 3, isDone: false),
+      ],
+    );
+  }
+}
+
+class _StepCircle extends StatelessWidget {
+  final int number;
+  final String label;
+  final bool isActive;
+  final bool isDone;
+
+  const _StepCircle({
+    required this.number,
+    required this.label,
+    required this.isActive,
+    required this.isDone,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isActive ? const Color(0xFF91E6C1) : const Color(0xFFD1D5DB),
+          ),
+          alignment: Alignment.center,
+          child: isDone
+              ? const Icon(Icons.check, size: 16, color: Color(0xFF1F2937))
+              : Text(
+                  '$number',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: isActive ? const Color(0xFF1F2937) : Colors.white,
+                  ),
+                ),
+        ),
+        const SizedBox(height: 4),
+        Text(label, style: const TextStyle(fontSize: 10, color: Colors.black54)),
+      ],
+    );
+  }
+}
+
+class _StepLine extends StatelessWidget {
+  final bool isActive;
+  const _StepLine({required this.isActive});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        height: 1.5,
+        margin: const EdgeInsets.only(bottom: 18),
+        color: isActive ? const Color(0xFF91E6C1) : const Color(0xFFD1D5DB),
+      ),
+    );
+  }
+}

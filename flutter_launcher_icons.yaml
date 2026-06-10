@@ -1,0 +1,7 @@
+flutter_launcher_icons: 
+  android: "ic_launcher" 
+  ios: true 
+  image_path: "images/animartLOGO.png" 
+  min_sdk_android: 21 
+  adaptive_icon_background: "#FFFFFF" 
+  adaptive_icon_foreground: "images/animartLOGO.png" 
