@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
 import 'login.dart';
+import 'main.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -13,9 +15,91 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   int _selectedIndex = 3;
+
+  // ── Signed-in user data (loaded from the `users` table) ───────────────────
+  bool _loadingProfile = true;
+  String _name = '';
+  String _email = '';
+  String _phone = '';
+  String _address = '';
+  String _houseNumber = '';
+  String _businessName = '';
+  String _plan = '';
+  String _memberSince = '';
   bool _isSeller = false;
-  bool _isPremium = true; // Simulated: User has availed a subscription
-  int _salesCount = 1;    // Simulated: User has 1 sale (New Farmer)
+  bool _isVerified = false;
+  int _salesCount = 0;
+  int _trustScore = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _loadingProfile = false);
+      return;
+    }
+    try {
+      final row = await supabase
+          .from('users')
+          .select()
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (!mounted) return;
+      final data = row ?? <String, dynamic>{};
+      setState(() {
+        _email = (data['email'] as String?) ?? user.email ?? '';
+        _name = (data['name'] as String?)?.trim().isNotEmpty == true
+            ? data['name'] as String
+            : (_email.isNotEmpty ? _email.split('@').first : 'AniMart User');
+        _phone = (data['phone'] as String?) ?? '';
+        _address = (data['address'] as String?) ?? '';
+        _houseNumber = (data['house_number'] as String?) ?? '';
+        _businessName = (data['business_name'] as String?) ?? '';
+        _plan = (data['plan'] as String?) ?? '';
+        _isSeller = (data['is_seller'] as bool?) ?? false;
+        _isVerified = (data['is_verified'] as bool?) ?? false;
+        _salesCount = (data['sales_count'] as int?) ?? 0;
+        _trustScore = (data['trust_score'] as int?) ?? 0;
+        _memberSince = _formatMemberSince(
+            (data['member_since'] as String?) ?? user.createdAt);
+        _loadingProfile = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load profile from users table: $e');
+      if (!mounted) return;
+      // Fall back to the auth user so the screen still renders.
+      setState(() {
+        _email = user.email ?? '';
+        _name = _email.isNotEmpty ? _email.split('@').first : 'AniMart User';
+        _memberSince = _formatMemberSince(user.createdAt);
+        _loadingProfile = false;
+      });
+    }
+  }
+
+  String _formatMemberSince(String? isoDate) {
+    if (isoDate == null) return '';
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return '';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return 'Member since ${months[dt.month - 1]} ${dt.year}';
+  }
+
+  String get _initial => _name.trim().isNotEmpty ? _name.trim()[0].toUpperCase() : 'U';
+
+  String get _planLabel {
+    if (_plan.isEmpty) return 'Free';
+    return _plan[0].toUpperCase() + _plan.substring(1);
+  }
 
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
@@ -68,12 +152,17 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
           ElevatedButton(
             onPressed: () {
-              Navigator.pop(context);
-              Navigator.pushAndRemoveUntil(
-                context,
+              final navigator = Navigator.of(context);
+              // Close the dialog and leave for the login screen immediately so
+              // the user is never stuck if the network sign-out call is slow.
+              navigator.pop();
+              navigator.pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const LoginPage()),
                 (route) => false,
               );
+              // Clear the Supabase session in the background; ignore network
+              // errors since the local session is cleared regardless.
+              supabase.auth.signOut().catchError((_) {});
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFE53E3E),
@@ -89,68 +178,244 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // ── Edit Profile ──────────────────────────────────────────────────────────
   void _showEditProfile() {
-    final nameCtrl = TextEditingController(text: 'John Smith');
-    final phoneCtrl = TextEditingController(text: '+63 991 888 8854');
-    final addressCtrl = TextEditingController(text: 'Purok 5, Laoag St., Quezon City');
-    final locationCtrl = TextEditingController(text: 'I-Dagupan Lane');
+    final nameCtrl = TextEditingController(text: _name);
+    final phoneCtrl = TextEditingController(text: _phone);
+    final addressCtrl = TextEditingController(text: _address);
+    final houseCtrl = TextEditingController(text: _houseNumber);
+    bool isSaving = false;
 
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
-              ),
-              const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Edit Profile',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-              ),
-              const SizedBox(height: 20),
-              _editField(nameCtrl, 'Full Name', Icons.person_outline),
-              const SizedBox(height: 12),
-              _editField(phoneCtrl, 'Phone Number', Icons.phone_outlined, type: TextInputType.phone),
-              const SizedBox(height: 12),
-              _editField(locationCtrl, 'Location / Barangay', Icons.location_on_outlined),
-              const SizedBox(height: 12),
-              _editField(addressCtrl, 'Full Address', Icons.place_outlined),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      _snackBar('Profile updated successfully!', const Color(0xFF3AA876)),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6DBF99),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 0,
-                  ),
-                  child: const Text('Save Changes', style: TextStyle(fontWeight: FontWeight.w700)),
+      barrierDismissible: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Dialog(
+          backgroundColor: Colors.white,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.82),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                // ── Themed header ───────────────────────────────────────
+                Row(
+                  children: [
+                    Container(
+                      width: 46, height: 46,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF6DBF99), Color(0xFF3AA876)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF3AA876).withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.edit_rounded, color: Colors.white, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Edit Profile',
+                              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                          SizedBox(height: 2),
+                          Text('Update your personal details',
+                              style: TextStyle(fontSize: 12, color: Colors.black45)),
+                        ],
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => Navigator.pop(ctx),
+                      child: Container(
+                        width: 30, height: 30,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: const Color(0xFFF4FAF7),
+                          border: Border.all(color: const Color(0xFFDCEFE6)),
+                        ),
+                        child: const Icon(Icons.close, size: 16, color: Colors.black45),
+                      ),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 22),
+                _labeledField('Full Name', _editField(nameCtrl, 'e.g. Juan Dela Cruz', Icons.person_outline)),
+                const SizedBox(height: 14),
+                _labeledField('Phone Number',
+                    _editField(phoneCtrl, 'e.g. +63 912 345 6789', Icons.phone_outlined, type: TextInputType.phone)),
+                const SizedBox(height: 14),
+                _labeledField('Full Address',
+                    _editField(addressCtrl, 'Street, Barangay, City', Icons.place_outlined)),
+                const SizedBox(height: 14),
+                _labeledField('House / Unit / Lot No.',
+                    _editField(houseCtrl, 'e.g. Blk 5 Lot 12', Icons.home_outlined)),
+                const SizedBox(height: 26),
+                // ── Action buttons ──────────────────────────────────────
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: isSaving ? null : () => Navigator.pop(ctx),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          side: const BorderSide(color: Color(0xFFCDE4D9)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        child: const Text('Cancel',
+                            style: TextStyle(color: Color(0xFF6B8578), fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF6DBF99), Color(0xFF3AA876)],
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                          ),
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF3AA876).withOpacity(0.3),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: ElevatedButton.icon(
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final navigator = Navigator.of(ctx);
+                                  final messenger = ScaffoldMessenger.of(context);
+                                  setSheet(() => isSaving = true);
+                                  final error = await _saveProfile(
+                                    name: nameCtrl.text.trim(),
+                                    phone: phoneCtrl.text.trim(),
+                                    address: addressCtrl.text.trim(),
+                                    houseNumber: houseCtrl.text.trim(),
+                                  );
+                                  if (error == null) {
+                                    navigator.pop();
+                                    messenger.showSnackBar(
+                                      _snackBar('Profile updated successfully!', const Color(0xFF3AA876)),
+                                    );
+                                  } else {
+                                    setSheet(() => isSaving = false);
+                                    messenger.showSnackBar(
+                                      _snackBar('Save failed: $error', Colors.redAccent),
+                                    );
+                                  }
+                                },
+                          icon: isSaving
+                              ? const SizedBox.shrink()
+                              : const Icon(Icons.check_rounded, size: 18, color: Colors.white),
+                          label: isSaving
+                              ? const SizedBox(
+                                  width: 20, height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                                )
+                              : const Text('Save Changes',
+                                  style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            elevation: 0,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  /// Persists the edited profile fields to the `users` table.
+  /// Returns null on success, or an error message describing why it failed.
+  Future<String?> _saveProfile({
+    required String name,
+    required String phone,
+    required String address,
+    required String houseNumber,
+  }) async {
+    final user = supabase.auth.currentUser;
+    if (user == null || supabase.auth.currentSession == null) {
+      return 'You are not signed in. Please log in again.';
+    }
+
+    try {
+      // Update only the editable columns of the user's existing row, keyed by
+      // the auth user id. We deliberately don't touch columns like `plan`
+      // (which has a CHECK constraint) so editing the profile can't break them.
+      final row = await supabase
+          .from('users')
+          .update({
+            'name': name,
+            'phone': phone,
+            'address': address,
+            'house_number': houseNumber,
+          })
+          .eq('id', user.id)
+          .select()
+          .maybeSingle();
+
+      if (row == null) {
+        return 'Your account has no profile record yet. Please contact support.';
+      }
+
+      if (mounted) {
+        setState(() {
+          _name = (row['name'] as String?)?.trim().isNotEmpty == true
+              ? row['name'] as String
+              : name;
+          _phone = (row['phone'] as String?) ?? phone;
+          _address = (row['address'] as String?) ?? address;
+          _houseNumber = (row['house_number'] as String?) ?? houseNumber;
+        });
+      }
+      return null;
+    } on PostgrestException catch (e) {
+      debugPrint('Profile update PostgrestException: ${e.message}');
+      return e.message;
+    } catch (e) {
+      debugPrint('Profile update error: $e');
+      return e.toString();
+    }
+  }
+
+  /// Wraps a field with a small themed label above it.
+  Widget _labeledField(String label, Widget field) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(label,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF3D5247))),
+        ),
+        field,
+      ],
     );
   }
 
@@ -159,18 +424,27 @@ class _ProfilePageState extends State<ProfilePage> {
     return TextField(
       controller: ctrl,
       keyboardType: type,
-      style: const TextStyle(fontSize: 14),
+      style: const TextStyle(fontSize: 14, color: Color(0xFF1A2E22)),
+      cursorColor: const Color(0xFF3AA876),
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Colors.black38, fontSize: 13),
         prefixIcon: Icon(icon, size: 18, color: const Color(0xFF6DBF99)),
         filled: true,
         fillColor: const Color(0xFFF4FAF7),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFDCEFE6)),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF6DBF99), width: 1.5),
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFDCEFE6)),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       ),
     );
   }
@@ -1240,9 +1514,9 @@ class _ProfilePageState extends State<ProfilePage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Text('John Smith',
-                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                                    if (_isPremium)
+                                    Text(_loadingProfile ? 'Loading…' : _name,
+                                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                                    if (_isVerified)
                                       const Padding(
                                         padding: EdgeInsets.only(left: 4),
                                         child: Icon(Icons.verified, color: Colors.blue, size: 18),
@@ -1260,7 +1534,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                         style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                                   ),
                                 ],
-                                if (_isPremium) ...[
+                                if (_isVerified) ...[
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
@@ -1277,24 +1551,34 @@ class _ProfilePageState extends State<ProfilePage> {
                                     color: const Color(0xFF2196F3),
                                     borderRadius: BorderRadius.circular(6),
                                   ),
-                                  child: const Text(
-                                    'Trust Score: 98%',
-                                    style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                                  child: Text(
+                                    'Trust Score: $_trustScore%',
+                                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
                                   ),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 4),
-                            _infoRow(Icons.location_on_outlined, 'I-Dagupan Lane'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.phone_outlined, '+63 991 888 8854'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.place_outlined, 'Purok 5, Laoag St., Quezon City'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.calendar_month_outlined, 'Member since Jan 2024'),
-                            if (_isSeller) ...[
+                            _infoRow(Icons.place_outlined,
+                                _address.isNotEmpty ? _address : 'Add your address'),
+                            if (_houseNumber.isNotEmpty) ...[
                               const SizedBox(height: 2),
-                              _infoRow(Icons.workspace_premium_outlined, 'Breeder since 2020'),
+                              _infoRow(Icons.home_outlined, _houseNumber),
+                            ],
+                            const SizedBox(height: 2),
+                            _infoRow(Icons.phone_outlined,
+                                _phone.isNotEmpty ? _phone : 'Add your phone number'),
+                            if (_email.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              _infoRow(Icons.email_outlined, _email),
+                            ],
+                            if (_memberSince.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              _infoRow(Icons.calendar_month_outlined, _memberSince),
+                            ],
+                            if (_isSeller && _businessName.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              _infoRow(Icons.storefront_outlined, _businessName),
                             ],
                           ],
                         ),
@@ -1421,11 +1705,11 @@ class _ProfilePageState extends State<ProfilePage> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       child: Row(
                         children: [
-                          _statItem('1', 'Listings'),
+                          _statItem(_planLabel, 'Plan'),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('1', 'Sales', valueColor: const Color(0xFF3AA876)),
+                          _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('98%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
+                          _statItem('$_trustScore%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
                         ],
                       ),
                     ),
@@ -1624,22 +1908,22 @@ class _ProfilePageState extends State<ProfilePage> {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  const CircleAvatar(
+                  CircleAvatar(
                     radius: 18,
-                    backgroundColor: Color(0xFF5CC898),
-                    child: Text('J', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                    backgroundColor: const Color(0xFF5CC898),
+                    child: Text(_initial, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                   ),
                   const SizedBox(width: 10),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('John Smith',
-                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1A2E22))),
-                        SizedBox(height: 2),
-                        Text('13 days', style: TextStyle(fontSize: 11, color: Colors.black38)),
-                        SizedBox(height: 2),
-                        Text('Good morning', style: TextStyle(fontSize: 11, color: Color(0xFF6B8578))),
+                        Text(_name,
+                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1A2E22))),
+                        const SizedBox(height: 2),
+                        const Text('13 days', style: TextStyle(fontSize: 11, color: Colors.black38)),
+                        const SizedBox(height: 2),
+                        const Text('Good morning', style: TextStyle(fontSize: 11, color: Color(0xFF6B8578))),
                       ],
                     ),
                   ),

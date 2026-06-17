@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login.dart';
+import 'main.dart';
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -49,6 +51,7 @@ class _SignUpPageState extends State<SignUpPage> {
   final ImagePicker _picker = ImagePicker();
 
   int _currentStep = 1;
+  bool _isSubmitting = false;
 
   static const Color mint = Color(0xFF91E6C1);
   static const Color dark = Color(0xFF1F2937);
@@ -275,27 +278,78 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     return null;
   }
 
-  void _onContinue() {
+  void _showSnack(String message, {Color color = Colors.redAccent}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
+      ),
+    );
+  }
+
+  Future<void> _onContinue() async {
     final error = _validateCurrentStep();
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          margin: const EdgeInsets.all(16),
-        ),
-      );
+      _showSnack(error);
       return;
     }
     if (_currentStep < 3) {
       setState(() => _currentStep++);
     } else {
-      // TODO: Submit registration
-      // You have access to:
-      //   _validIdFile    → File to upload
-      //   _selectedIdType → String ID type chosen
+      await _submitRegistration();
+    }
+  }
+
+  Future<void> _submitRegistration() async {
+    setState(() => _isSubmitting = true);
+    try {
+      final res = await supabase.auth.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        // Profile details are stored on the Auth user's metadata.
+        // Move these to a `profiles` table later if you prefer.
+        data: {
+          'full_name': _nameController.text.trim(),
+          'phone': _phoneController.text.trim(),
+          'address': _addressController.text.trim(),
+          'house_no': _houseController.text.trim(),
+          'id_type': _selectedIdType,
+        },
+      );
+
+      if (!mounted) return;
+
+      // NOTE: the uploaded ID photo (_validIdFile) is not yet sent anywhere.
+      // To store it, create a Supabase Storage bucket and upload it here, e.g.:
+      //   await supabase.storage.from('valid-ids').upload(path, _validIdFile!);
+
+      if (res.session != null) {
+        // Email confirmation is disabled — user is signed in immediately.
+        _showSnack('Account created!', color: const Color(0xFF4CAF7D));
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginPage()),
+        );
+      } else {
+        // Email confirmation is enabled — prompt the user to verify.
+        _showSnack(
+          'Account created! Please check your email to confirm, then log in.',
+          color: const Color(0xFF4CAF7D),
+        );
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginPage()),
+        );
+      }
+    } on AuthException catch (e) {
+      if (mounted) _showSnack(e.message);
+    } catch (e) {
+      if (mounted) _showSnack('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -387,7 +441,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
 
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: _onContinue,
+                        onPressed: _isSubmitting ? null : _onContinue,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: mint,
                           foregroundColor: dark,
@@ -397,13 +451,22 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                           ),
                           elevation: 0,
                         ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                        child: _isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: dark,
+                                ),
+                              )
+                            : Text(
+                                _currentStep < 3 ? 'Continue' : 'Sign Up',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                       ),
                     ),
                   ],

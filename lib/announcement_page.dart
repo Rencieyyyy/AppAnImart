@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'profile.dart';
+import 'main.dart';
 
 class AnnouncementPage extends StatefulWidget {
   const AnnouncementPage({super.key});
@@ -14,60 +16,130 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   int _selectedIndex = 2;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
-  String _filterStatus = 'All'; // 'All', 'Active', 'Pending'
+  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo'
 
-  final List<Map<String, dynamic>> _announcements = [
-    {
-      'admin': 'Admin',
-      'time': '15 days ago',
-      'status': 'Active',
-      'title': 'Test Announcement',
-      'body':
-          'Good morning! Please take note of the latest updates regarding our turkey livestock availability this season.',
-      'image': 'images/turkey.png',
-      'tags': ['Poultry', 'Turkey'],
-      'likes': 12,
-      'liked': false,
-      'views': 84,
-      'avatarColor': const Color(0xFF5CC898),
-      'comments': <Map<String, String>>[
-        {'user': 'Juan dela Cruz', 'text': 'Where can I buy?', 'time': '2 days ago'},
-        {'user': 'Maria Santos', 'text': 'How much per kilo?', 'time': '1 day ago'},
-      ],
-    },
-    {
-      'admin': 'Admin',
-      'time': '15 days ago',
-      'status': 'Active',
-      'title': 'New Stock Available',
-      'body':
-          'Good morning! We have a fresh batch of healthy goats ready for sale. Contact us for pricing and delivery.',
-      'image': 'images/whitehen.png',
-      'tags': ['Livestock', 'Goat'],
-      'likes': 7,
-      'liked': false,
-      'views': 51,
-      'avatarColor': const Color(0xFFD85A30),
-      'comments': <Map<String, String>>[
-        {'user': 'Pedro Reyes', 'text': 'Interested! How many heads available?', 'time': '3 days ago'},
-      ],
-    },
-    {
-      'admin': 'Admin',
-      'time': '20 days ago',
-      'status': 'Pending',
-      'title': 'Duck Farm Update',
-      'body':
-          'Our duck farm is expanding! Pekin and Muscovy ducks will be available by next week. Reserve yours now.',
-      'image': 'images/duck.png',
-      'tags': ['Aquatics', 'Duck'],
-      'likes': 3,
-      'liked': false,
-      'views': 29,
-      'avatarColor': const Color(0xFF378ADD),
-      'comments': <Map<String, String>>[],
-    },
+  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo'];
+
+  // Icon shown on each filter tab.
+  static const Map<String, IconData> _typeIcons = {
+    'All': Icons.grid_view_rounded,
+    'General': Icons.info_outline,
+    'Urgent': Icons.warning_amber_rounded,
+    'Event': Icons.calendar_today_outlined,
+    'Promo': Icons.local_offer_outlined,
+  };
+
+  // Icon per tag category (keyed lowercase).
+  static const Map<String, IconData> _tagIcons = {
+    'general': Icons.info_outline,
+    'urgent': Icons.warning_amber_rounded,
+    'event': Icons.calendar_today_outlined,
+    'promo': Icons.local_offer_outlined,
+  };
+
+  // Colors per tag category: [background, border, foreground].
+  static const Map<String, List<Color>> _tagColors = {
+    'general': [Color(0xFFE8F8F1), Color(0xFFC2EDD9), Color(0xFF27803F)],
+    'urgent': [Color(0xFFFDECEC), Color(0xFFF5C2C2), Color(0xFFE53E3E)],
+    'event': [Color(0xFFE7F0FB), Color(0xFFC3DBF5), Color(0xFF2563EB)],
+    'promo': [Color(0xFFFEF3E2), Color(0xFFFDE08D), Color(0xFFB45309)],
+  };
+
+  bool _loading = true;
+  String? _loadError;
+  final List<Map<String, dynamic>> _announcements = [];
+
+  static const List<Color> _avatarColors = [
+    Color(0xFF5CC898),
+    Color(0xFFD85A30),
+    Color(0xFF378ADD),
+    Color(0xFF9B59B6),
+    Color(0xFFE0A526),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAnnouncements();
+  }
+
+  Future<void> _loadAnnouncements() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final rows = await supabase
+          .from('announcements')
+          .select('*, announcement_tags(tag)')
+          .isFilter('deleted_at', null)
+          .order('created_at', ascending: false);
+
+      final mapped = <Map<String, dynamic>>[];
+      for (var i = 0; i < rows.length; i++) {
+        final r = rows[i] as Map<String, dynamic>;
+        // Drafts are not shown to mobile users.
+        if (((r['status'] as String?) ?? '').toLowerCase() == 'draft') continue;
+        // Tags come from the announcement_tags join table.
+        final tagRows = (r['announcement_tags'] as List?) ?? const [];
+        final tags = tagRows
+            .map((t) => (t as Map<String, dynamic>)['tag'] as String?)
+            .whereType<String>()
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
+        mapped.add({
+          'id': r['id'],
+          'admin': 'Admin',
+          'time': _timeAgo(r['created_at'] as String?),
+          'status': _prettyStatus(r['status'] as String?),
+          'type': (r['type'] as String?) ?? '',
+          'title': (r['title'] as String?) ?? '',
+          'body': (r['body'] as String?) ?? '',
+          'image': (r['image_url'] as String?) ?? '',
+          'tags': tags,
+          'likes': (r['likes_count'] as int?) ?? 0,
+          'liked': false,
+          'views': (r['views_count'] as int?) ?? 0,
+          'avatarColor': _avatarColors[i % _avatarColors.length],
+          'comments': <Map<String, String>>[],
+        });
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _announcements
+          ..clear()
+          ..addAll(mapped);
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load announcements: $e');
+      if (!mounted) return;
+      setState(() {
+        _loadError = e is PostgrestException ? e.message : e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  String _prettyStatus(String? status) {
+    if (status == null || status.isEmpty) return 'Active';
+    return status[0].toUpperCase() + status.substring(1).toLowerCase();
+  }
+
+  String _timeAgo(String? isoDate) {
+    if (isoDate == null) return '';
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return '';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays >= 365) return '${(diff.inDays / 365).floor()} year(s) ago';
+    if (diff.inDays >= 30) return '${(diff.inDays / 30).floor()} month(s) ago';
+    if (diff.inDays >= 1) return '${diff.inDays} day(s) ago';
+    if (diff.inHours >= 1) return '${diff.inHours} hour(s) ago';
+    if (diff.inMinutes >= 1) return '${diff.inMinutes} minute(s) ago';
+    return 'Just now';
+  }
 
   // ── Filtered list ──────────────────────────────────────────────────────
   List<Map<String, dynamic>> get _filtered {
@@ -77,8 +149,13 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
           (item['title'] as String).toLowerCase().contains(q) ||
           (item['body'] as String).toLowerCase().contains(q) ||
           (item['tags'] as List<String>).any((t) => t.toLowerCase().contains(q));
-      final matchesFilter =
-          _filterStatus == 'All' || item['status'] == _filterStatus;
+      // The announcement's category lives in its tags (announcement_tags.tag).
+      final tags =
+          (item['tags'] as List<String>).map((t) => t.toLowerCase()).toList();
+      final selected = _filterType.toLowerCase();
+      final matchesFilter = _filterType == 'All'
+          ? true
+          : (tags.isEmpty ? selected == 'general' : tags.contains(selected));
       return matchesSearch && matchesFilter;
     }).toList();
   }
@@ -174,13 +251,13 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                 child: Row(
-                  children: ['All', 'Active', 'Pending'].map((f) {
-                    final isSelected = _filterStatus == f;
+                  children: _typeFilters.map((f) {
+                    final isSelected = _filterType == f;
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: GestureDetector(
                         onTap: () {
-                          setState(() => _filterStatus = f);
+                          setState(() => _filterType = f);
                           Navigator.pop(ctx);
                         },
                         child: Container(
@@ -297,23 +374,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                       // Tags
                       Wrap(
                         spacing: 6,
-                        children: (item['tags'] as List<String>).map((tag) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F8F1),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color: const Color(0xFFC2EDD9)),
-                            ),
-                            child: Text(tag,
-                                style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w500,
-                                    color: Color(0xFF27803F))),
-                          );
-                        }).toList(),
+                        runSpacing: 6,
+                        children: (item['tags'] as List<String>)
+                            .map((tag) => _tagChip(tag, fontSize: 11))
+                            .toList(),
                       ),
                       const SizedBox(height: 12),
                       // Title
@@ -355,29 +419,14 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                                   fontSize: 11, color: Colors.black38)),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      // Image
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: Image.asset(
-                          item['image'] as String,
-                          width: double.infinity,
-                          height: 200,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
-                            width: double.infinity,
-                            height: 200,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F8F1),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: const Icon(
-                                Icons.image_not_supported_outlined,
-                                color: Colors.white54,
-                                size: 40),
-                          ),
+                      if ((item['image'] as String).isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        // Image
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: _announcementImage(item['image'] as String, 200),
                         ),
-                      ),
+                      ],
                       const SizedBox(height: 14),
                       // Body
                       Text(
@@ -979,79 +1028,92 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
             ),
           ),
 
-          // ── Filter chips ──────────────────────────────────────────
+          // ── Section label + See All ───────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
             child: Row(
               children: [
-                // Section label
-                Expanded(
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF6DBF99),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Latest Posts',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A2E22),
-                        ),
-                      ),
-                    ],
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6DBF99),
+                    borderRadius: BorderRadius.circular(3),
                   ),
                 ),
-                // Filter chips
-                ...['All', 'Active', 'Pending'].map((f) {
-                  final isSelected = _filterStatus == f;
-                  return Padding(
-                    padding: const EdgeInsets.only(left: 6),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _filterStatus = f),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: isSelected
-                              ? const Color(0xFF6DBF99)
-                              : Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: isSelected
-                                ? const Color(0xFF6DBF99)
-                                : Colors.black12,
-                          ),
-                        ),
-                        child: Text(
-                          f,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: isSelected ? Colors.white : Colors.black54,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }),
                 const SizedBox(width: 8),
-                // See All
+                const Text(
+                  'Latest Posts',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1A2E22),
+                  ),
+                ),
+                const Spacer(),
                 GestureDetector(
                   onTap: _showSeeAll,
                   child: const Text(
                     'See All',
-                    style: TextStyle(
-                        fontSize: 12, color: Color(0xFF3AA876)),
+                    style: TextStyle(fontSize: 12, color: Color(0xFF3AA876)),
                   ),
                 ),
               ],
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // ── Type filter chips (scrollable) ────────────────────────
+          SizedBox(
+            height: 32,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              children: _typeFilters.map((f) {
+                final isSelected = _filterType == f;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _filterType = f),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? const Color(0xFF6DBF99)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected
+                              ? const Color(0xFF6DBF99)
+                              : Colors.black12,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _typeIcons[f] ?? Icons.label_outline,
+                            size: 14,
+                            color: isSelected ? Colors.white : Colors.black45,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            f,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color:
+                                  isSelected ? Colors.white : Colors.black54,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
             ),
           ),
 
@@ -1059,7 +1121,38 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
 
           // ── Feed ──────────────────────────────────────────────────
           Expanded(
-            child: filtered.isEmpty
+            child: _loading
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+                  )
+                : _loadError != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.cloud_off_rounded,
+                              size: 52, color: Colors.black12),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Could not load announcements.\n$_loadError',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.black38, fontSize: 13),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _loadAnnouncements,
+                            child: const Text('Retry',
+                                style: TextStyle(
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : filtered.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -1074,11 +1167,11 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                           style: const TextStyle(
                               color: Colors.black38, fontSize: 14),
                         ),
-                        if (_filterStatus != 'All') ...[
+                        if (_filterType != 'All') ...[
                           const SizedBox(height: 8),
                           GestureDetector(
                             onTap: () =>
-                                setState(() => _filterStatus = 'All'),
+                                setState(() => _filterType = 'All'),
                             child: const Text(
                               'Clear filter',
                               style: TextStyle(
@@ -1135,6 +1228,81 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               label: 'Profile'),
         ],
       ),
+    );
+  }
+
+  /// A tag chip colored + iconed by its category (General/Urgent/Event/Promo).
+  /// Unknown tags (e.g. content tags) fall back to a neutral style.
+  Widget _tagChip(String tag, {double fontSize = 10}) {
+    final key = tag.trim().toLowerCase();
+    final colors = _tagColors[key] ??
+        const [Color(0xFFEFF3F1), Color(0xFFDDE7E2), Color(0xFF6B8578)];
+    final icon = _tagIcons[key];
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: colors[0],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors[1]),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: fontSize + 1, color: colors[2]),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            tag,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight: FontWeight.w600,
+              color: colors[2],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Renders an announcement image from a network URL (Supabase) or a bundled
+  /// asset path, with a graceful placeholder on error/while loading.
+  Widget _announcementImage(String src, double height) {
+    Widget placeholder() => Container(
+          width: double.infinity,
+          height: height,
+          color: const Color(0xFFE8F8F1),
+          child: const Icon(Icons.image_not_supported_outlined,
+              color: Colors.white54, size: 40),
+        );
+
+    if (src.startsWith('http')) {
+      return Image.network(
+        src,
+        width: double.infinity,
+        height: height,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return Container(
+            width: double.infinity,
+            height: height,
+            color: const Color(0xFFE8F8F1),
+            child: const Center(
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Color(0xFF6DBF99)),
+            ),
+          );
+        },
+        errorBuilder: (_, __, ___) => placeholder(),
+      );
+    }
+    return Image.asset(
+      src,
+      width: double.infinity,
+      height: height,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => placeholder(),
     );
   }
 
@@ -1237,25 +1405,15 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 6,
-                    children: (item['tags'] as List<String>).map((tag) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE8F8F1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFC2EDD9)),
-                        ),
-                        child: Text(tag,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w500,
-                                color: Color(0xFF27803F))),
-                      );
-                    }).toList(),
-                  ),
+                  if ((item['tags'] as List<String>).isNotEmpty) ...[
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: (item['tags'] as List<String>)
+                          .map((tag) => _tagChip(tag))
+                          .toList(),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   Text(item['title'] as String,
                       style: const TextStyle(
@@ -1277,21 +1435,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                 ],
               ),
             ),
-            ClipRRect(
-              child: Image.asset(
-                item['image'] as String,
-                width: double.infinity,
-                height: 150,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Container(
-                  width: double.infinity,
-                  height: 150,
-                  color: const Color(0xFFE8F8F1),
-                  child: const Icon(Icons.image_not_supported_outlined,
-                      color: Colors.white54, size: 40),
-                ),
+            if ((item['image'] as String).isNotEmpty)
+              ClipRRect(
+                child: _announcementImage(item['image'] as String, 150),
               ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
               child: Row(

@@ -1,9 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login.dart';
 import 'signup.dart'; // ✅ Added missing import
+import 'supabase_config.dart';
 
-void main() {
- runApp(const AniMartApp());
+/// Convenient shorthand for the Supabase client used across the app.
+final supabase = Supabase.instance.client;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    anonKey: SupabaseConfig.anonKey,
+  );
+  runApp(const AniMartApp());
 }
 
 class AniMartApp extends StatelessWidget {
