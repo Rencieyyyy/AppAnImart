@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
 import 'login.dart';
 import 'main.dart';
+import 'widgets/top_message.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -26,6 +28,7 @@ class _ProfilePageState extends State<ProfilePage> {
   String _businessName = '';
   String _plan = '';
   String _memberSince = '';
+  String _avatarUrl = '';
   bool _isSeller = false;
   bool _isVerified = false;
   int _salesCount = 0;
@@ -61,6 +64,7 @@ class _ProfilePageState extends State<ProfilePage> {
         _address = (data['address'] as String?) ?? '';
         _houseNumber = (data['house_number'] as String?) ?? '';
         _businessName = (data['business_name'] as String?) ?? '';
+        _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _plan = (data['plan'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _isVerified = (data['is_verified'] as bool?) ?? false;
@@ -177,178 +181,27 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── Edit Profile ──────────────────────────────────────────────────────────
-  void _showEditProfile() {
-    final nameCtrl = TextEditingController(text: _name);
-    final phoneCtrl = TextEditingController(text: _phone);
-    final addressCtrl = TextEditingController(text: _address);
-    final houseCtrl = TextEditingController(text: _houseNumber);
-    bool isSaving = false;
-
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => Dialog(
-          backgroundColor: Colors.white,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          clipBehavior: Clip.antiAlias,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.82),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                // ── Themed header ───────────────────────────────────────
-                Row(
-                  children: [
-                    Container(
-                      width: 46, height: 46,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFF6DBF99), Color(0xFF3AA876)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(14),
-                        boxShadow: [
-                          BoxShadow(
-                            color: const Color(0xFF3AA876).withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
-                      ),
-                      child: const Icon(Icons.edit_rounded, color: Colors.white, size: 22),
-                    ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Edit Profile',
-                              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                          SizedBox(height: 2),
-                          Text('Update your personal details',
-                              style: TextStyle(fontSize: 12, color: Colors.black45)),
-                        ],
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: () => Navigator.pop(ctx),
-                      child: Container(
-                        width: 30, height: 30,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: const Color(0xFFF4FAF7),
-                          border: Border.all(color: const Color(0xFFDCEFE6)),
-                        ),
-                        child: const Icon(Icons.close, size: 16, color: Colors.black45),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                _labeledField('Full Name', _editField(nameCtrl, 'e.g. Juan Dela Cruz', Icons.person_outline)),
-                const SizedBox(height: 14),
-                _labeledField('Phone Number',
-                    _editField(phoneCtrl, 'e.g. +63 912 345 6789', Icons.phone_outlined, type: TextInputType.phone)),
-                const SizedBox(height: 14),
-                _labeledField('Full Address',
-                    _editField(addressCtrl, 'Street, Barangay, City', Icons.place_outlined)),
-                const SizedBox(height: 14),
-                _labeledField('House / Unit / Lot No.',
-                    _editField(houseCtrl, 'e.g. Blk 5 Lot 12', Icons.home_outlined)),
-                const SizedBox(height: 26),
-                // ── Action buttons ──────────────────────────────────────
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: isSaving ? null : () => Navigator.pop(ctx),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          side: const BorderSide(color: Color(0xFFCDE4D9)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        ),
-                        child: const Text('Cancel',
-                            style: TextStyle(color: Color(0xFF6B8578), fontWeight: FontWeight.w600)),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF6DBF99), Color(0xFF3AA876)],
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                          ),
-                          borderRadius: BorderRadius.circular(14),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFF3AA876).withOpacity(0.3),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: ElevatedButton.icon(
-                          onPressed: isSaving
-                              ? null
-                              : () async {
-                                  final navigator = Navigator.of(ctx);
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  setSheet(() => isSaving = true);
-                                  final error = await _saveProfile(
-                                    name: nameCtrl.text.trim(),
-                                    phone: phoneCtrl.text.trim(),
-                                    address: addressCtrl.text.trim(),
-                                    houseNumber: houseCtrl.text.trim(),
-                                  );
-                                  if (error == null) {
-                                    navigator.pop();
-                                    messenger.showSnackBar(
-                                      _snackBar('Profile updated successfully!', const Color(0xFF3AA876)),
-                                    );
-                                  } else {
-                                    setSheet(() => isSaving = false);
-                                    messenger.showSnackBar(
-                                      _snackBar('Save failed: $error', Colors.redAccent),
-                                    );
-                                  }
-                                },
-                          icon: isSaving
-                              ? const SizedBox.shrink()
-                              : const Icon(Icons.check_rounded, size: 18, color: Colors.white),
-                          label: isSaving
-                              ? const SizedBox(
-                                  width: 20, height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
-                                )
-                              : const Text('Save Changes',
-                                  style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.transparent,
-                            shadowColor: Colors.transparent,
-                            padding: const EdgeInsets.symmetric(vertical: 15),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            elevation: 0,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                ],
-              ),
-            ),
-          ),
+  // Opens a full-screen edit page (list-row layout) for the profile fields.
+  Future<void> _showEditProfile() async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _EditProfilePage(
+          initialName: _name,
+          initialPhone: _phone,
+          initialAddress: _address,
+          initialHouse: _houseNumber,
+          initialAvatarUrl: _avatarUrl,
+          onSave: _saveProfile,
+          onAvatarChanged: (url) {
+            if (mounted) setState(() => _avatarUrl = url);
+          },
         ),
       ),
     );
+    if (saved == true && mounted) {
+      _showMessage('Profile updated successfully!', const Color(0xFF3AA876));
+    }
   }
 
   /// Persists the edited profile fields to the `users` table.
@@ -402,21 +255,6 @@ class _ProfilePageState extends State<ProfilePage> {
       debugPrint('Profile update error: $e');
       return e.toString();
     }
-  }
-
-  /// Wraps a field with a small themed label above it.
-  Widget _labeledField(String label, Widget field) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 6),
-          child: Text(label,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF3D5247))),
-        ),
-        field,
-      ],
-    );
   }
 
   Widget _editField(TextEditingController ctrl, String hint, IconData icon,
@@ -507,9 +345,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   onPressed: () {
                     if (msgCtrl.text.trim().isEmpty) return;
                     Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      _snackBar('Message sent!', const Color(0xFF2196F3)),
-                    );
+                    _showMessage('Message sent!', const Color(0xFF2196F3));
                   },
                   icon: const Icon(Icons.send_rounded, size: 16),
                   label: const Text('Send Message', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -699,9 +535,8 @@ class _ProfilePageState extends State<ProfilePage> {
                         ? null
                         : () {
                             Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              _snackBar('Thanks for your rating! ⭐', const Color(0xFFFFB300)),
-                            );
+                            _showMessage(
+                                'Thanks for your rating! ⭐', const Color(0xFFFFB300));
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFFB300),
@@ -1272,16 +1107,14 @@ class _ProfilePageState extends State<ProfilePage> {
                     child: ElevatedButton.icon(
                       onPressed: () {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            _snackBar('Please fill in all required fields.', Colors.redAccent),
-                          );
+                          _showMessage(
+                              'Please fill in all required fields.', Colors.redAccent);
                           return;
                         }
                         Navigator.pop(ctx);
                         setState(() => _isSeller = true);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          _snackBar('🎉 You are now a Seller! Welcome aboard.', const Color(0xFF3AA876)),
-                        );
+                        _showMessage('🎉 You are now a Seller! Welcome aboard.',
+                            const Color(0xFF3AA876));
                       },
                       icon: const Icon(Icons.storefront_rounded, size: 18),
                       label: const Text('Submit & Become a Seller',
@@ -1428,14 +1261,15 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ── Snackbar helper ───────────────────────────────────────────────────────
-  SnackBar _snackBar(String msg, Color color) => SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.all(16),
-      );
+  // ── Top message helper ────────────────────────────────────────────────────
+  void _showMessage(String msg, Color color) {
+    showTopMessage(
+      context,
+      msg,
+      isError: color == Colors.redAccent,
+      backgroundColor: color,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1482,8 +1316,16 @@ class _ProfilePageState extends State<ProfilePage> {
                               color: const Color(0xFF4A9B73),
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.white.withOpacity(0.6), width: 2),
+                              image: _avatarUrl.isNotEmpty
+                                  ? DecorationImage(
+                                      image: NetworkImage(_avatarUrl),
+                                      fit: BoxFit.cover,
+                                    )
+                                  : null,
                             ),
-                            child: const Icon(Icons.person, color: Colors.white, size: 40),
+                            child: _avatarUrl.isNotEmpty
+                                ? null
+                                : const Icon(Icons.person, color: Colors.white, size: 40),
                           ),
                           if (_isSeller)
                             Positioned(
@@ -2009,6 +1851,355 @@ class _BenefitRow extends StatelessWidget {
         const SizedBox(width: 8),
         Text(text, style: const TextStyle(fontSize: 12, color: Color(0xFF3D5247))),
       ],
+    );
+  }
+}
+
+/// Full-screen "Edit Profile" page.
+///
+/// Layout is modeled on a social-app style edit screen: a centered avatar with
+/// an "Edit picture or avatar" action on top, followed by label/value rows
+/// separated by thin dividers. It edits the same fields as the old popup
+/// (name, phone, address, house number) and persists them via [onSave].
+class _EditProfilePage extends StatefulWidget {
+  final String initialName;
+  final String initialPhone;
+  final String initialAddress;
+  final String initialHouse;
+  final String initialAvatarUrl;
+  final Future<String?> Function({
+    required String name,
+    required String phone,
+    required String address,
+    required String houseNumber,
+  }) onSave;
+  final ValueChanged<String> onAvatarChanged;
+
+  const _EditProfilePage({
+    required this.initialName,
+    required this.initialPhone,
+    required this.initialAddress,
+    required this.initialHouse,
+    required this.initialAvatarUrl,
+    required this.onSave,
+    required this.onAvatarChanged,
+  });
+
+  @override
+  State<_EditProfilePage> createState() => _EditProfilePageState();
+}
+
+class _EditProfilePageState extends State<_EditProfilePage> {
+  static const Color _accent = Color(0xFF3AA876);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _line = Color(0xFFEAF2EE);
+  // Storage bucket that holds profile pictures (shared with admin avatars).
+  static const String _avatarBucket = 'avatar';
+
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _addressCtrl;
+  late final TextEditingController _houseCtrl;
+  late String _avatarUrl;
+  bool _isSaving = false;
+  bool _uploadingAvatar = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.initialName);
+    _phoneCtrl = TextEditingController(text: widget.initialPhone);
+    _addressCtrl = TextEditingController(text: widget.initialAddress);
+    _houseCtrl = TextEditingController(text: widget.initialHouse);
+    _avatarUrl = widget.initialAvatarUrl;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _addressCtrl.dispose();
+    _houseCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_isSaving) return;
+    setState(() => _isSaving = true);
+    final error = await widget.onSave(
+      name: _nameCtrl.text.trim(),
+      phone: _phoneCtrl.text.trim(),
+      address: _addressCtrl.text.trim(),
+      houseNumber: _houseCtrl.text.trim(),
+    );
+    if (!mounted) return;
+    if (error == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() => _isSaving = false);
+      showTopMessage(context, 'Save failed: $error');
+    }
+  }
+
+  // Lets the user pick a photo source, then uploads and saves it as the avatar.
+  Future<void> _changeAvatar() async {
+    if (_uploadingAvatar) return;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCEFE6),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined, color: _accent),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: _accent),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    await _uploadAvatar(source);
+  }
+
+  Future<void> _uploadAvatar(ImageSource source) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      showTopMessage(context, 'You are not signed in. Please log in again.');
+      return;
+    }
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 800,
+        maxHeight: 800,
+        imageQuality: 85,
+      );
+      if (picked == null) return; // user cancelled
+
+      setState(() => _uploadingAvatar = true);
+      final bytes = await picked.readAsBytes();
+      final ext = picked.path.split('.').last.toLowerCase();
+      final contentType = (ext == 'png')
+          ? 'image/png'
+          : (ext == 'webp' ? 'image/webp' : 'image/jpeg');
+      final path = 'users/${user.id}/avatar.$ext';
+
+      await supabase.storage.from(_avatarBucket).uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(upsert: true, contentType: contentType),
+          );
+
+      // Cache-bust so the new image shows immediately instead of a cached one.
+      final url = '${supabase.storage.from(_avatarBucket).getPublicUrl(path)}'
+          '?t=${DateTime.now().millisecondsSinceEpoch}';
+
+      // Persist the URL on the user's row.
+      await supabase
+          .from('users')
+          .update({'avatar_url': url}).eq('id', user.id);
+
+      if (!mounted) return;
+      setState(() {
+        _avatarUrl = url;
+        _uploadingAvatar = false;
+      });
+      widget.onAvatarChanged(url);
+      showTopMessage(context, 'Profile picture updated!',
+          isError: false, backgroundColor: _accent);
+    } catch (e) {
+      debugPrint('Avatar upload failed: $e');
+      if (!mounted) return;
+      setState(() => _uploadingAvatar = false);
+      showTopMessage(context, 'Could not update picture: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        elevation: 0,
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: _dark),
+          onPressed: _isSaving ? null : () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'Edit Profile',
+          style: TextStyle(color: _dark, fontWeight: FontWeight.bold, fontSize: 18),
+        ),
+        actions: [
+          _isSaving
+              ? const Padding(
+                  padding: EdgeInsets.only(right: 20),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2.5, color: _accent),
+                    ),
+                  ),
+                )
+              : TextButton(
+                  onPressed: _save,
+                  child: const Text(
+                    'Save',
+                    style: TextStyle(color: _accent, fontWeight: FontWeight.w700, fontSize: 15),
+                  ),
+                ),
+        ],
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: _line),
+        ),
+      ),
+      body: ListView(
+        children: [
+          const SizedBox(height: 26),
+          // ── Avatar + edit action ───────────────────────────────────────
+          Center(
+            child: Column(
+              children: [
+                GestureDetector(
+                  onTap: _uploadingAvatar ? null : _changeAvatar,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 96,
+                        height: 96,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF4A9B73),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: _line, width: 2),
+                          image: _avatarUrl.isNotEmpty
+                              ? DecorationImage(
+                                  image: NetworkImage(_avatarUrl),
+                                  fit: BoxFit.cover,
+                                )
+                              : null,
+                        ),
+                        child: _avatarUrl.isNotEmpty
+                            ? null
+                            : const Icon(Icons.person, color: Colors.white, size: 48),
+                      ),
+                      // Loading overlay while uploading.
+                      if (_uploadingAvatar)
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withOpacity(0.35),
+                            ),
+                            child: const Center(
+                              child: SizedBox(
+                                width: 26,
+                                height: 26,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2.5, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ),
+                      // Camera badge.
+                      Positioned(
+                        right: -2,
+                        bottom: -2,
+                        child: Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: _accent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2.5),
+                          ),
+                          child: const Icon(Icons.photo_camera,
+                              color: Colors.white, size: 16),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: _uploadingAvatar ? null : _changeAvatar,
+                  child: const Text(
+                    'Edit picture or avatar',
+                    style: TextStyle(color: _accent, fontWeight: FontWeight.w600, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Divider(height: 1, thickness: 1, color: _line),
+          _row('Name', _nameCtrl, 'Your full name'),
+          _row('Phone', _phoneCtrl, 'Your phone number', type: TextInputType.phone),
+          _row('Address', _addressCtrl, 'Street, Barangay, City'),
+          _row('House No.', _houseCtrl, 'e.g. Blk 5 Lot 12'),
+        ],
+      ),
+    );
+  }
+
+  // A single label/value row: fixed-width label on the left, inline editable
+  // text field on the right, with a thin divider beneath.
+  Widget _row(String label, TextEditingController ctrl, String hint,
+      {TextInputType type = TextInputType.text}) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _line)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 16, color: _dark, fontWeight: FontWeight.w500),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: ctrl,
+              keyboardType: type,
+              style: const TextStyle(fontSize: 16, color: _dark),
+              cursorColor: _accent,
+              decoration: InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                hintText: hint,
+                hintStyle: const TextStyle(color: Colors.black38, fontSize: 16),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

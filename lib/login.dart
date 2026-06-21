@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'signup.dart';
 import 'dashboard.dart';
 import 'main.dart';
+import 'widgets/top_message.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -29,18 +30,39 @@ class _LoginPageState extends State<LoginPage> {
     final password = _passwordController.text.trim();
 
     if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in all fields.'), backgroundColor: Colors.redAccent),
-      );
+      showTopMessage(context, 'Please fill in all fields.');
       return;
     }
 
     setState(() => _isLoading = true);
     try {
-      await supabase.auth.signInWithPassword(
+      final response = await supabase.auth.signInWithPassword(
         email: email,
         password: password,
       );
+
+      // Administrator accounts are not permitted to sign in to the mobile app.
+      // If this account exists in the admins table, deny access and sign out.
+      final authId = response.user?.id;
+      if (authId != null) {
+        final adminRow = await supabase
+            .from('admins')
+            .select('id')
+            .eq('id', authId)
+            .maybeSingle();
+        if (adminRow != null) {
+          await supabase.auth.signOut();
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Access denied. This is an administrator account and cannot be '
+            'used to sign in here. Please use a proper user account.',
+            duration: const Duration(seconds: 4),
+          );
+          return;
+        }
+      }
+
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
@@ -48,14 +70,10 @@ class _LoginPageState extends State<LoginPage> {
       );
     } on AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent),
-      );
+      showTopMessage(context, e.message);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Something went wrong. Please try again.'), backgroundColor: Colors.redAccent),
-      );
+      showTopMessage(context, 'Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

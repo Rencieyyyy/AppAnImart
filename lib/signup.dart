@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login.dart';
 import 'main.dart';
+import 'widgets/top_message.dart';
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -82,14 +83,9 @@ class _SignUpPageState extends State<SignUpPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not access ${source == ImageSource.camera ? 'camera' : 'gallery'}. Please check permissions.'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            margin: const EdgeInsets.all(16),
-          ),
+        showTopMessage(
+          context,
+          'Could not access ${source == ImageSource.camera ? 'camera' : 'gallery'}. Please check permissions.',
         );
       }
     }
@@ -279,14 +275,11 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
   }
 
   void _showSnack(String message, {Color color = Colors.redAccent}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.all(16),
-      ),
+    showTopMessage(
+      context,
+      message,
+      isError: color == Colors.redAccent,
+      backgroundColor: color,
     );
   }
 

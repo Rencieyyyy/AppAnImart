@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'widgets/top_message.dart';
 
 class ProductDetailPage extends StatefulWidget {
   final String name;
@@ -297,14 +298,13 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        backgroundColor: const Color(0xFF3A3A3A),
-        duration: const Duration(seconds: 2),
-      ),
+    showTopMessage(
+      context,
+      message,
+      isError: false,
+      backgroundColor: const Color(0xFF3A3A3A),
+      icon: Icons.info_outline,
+      duration: const Duration(seconds: 2),
     );
   }
 

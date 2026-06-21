@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:ani_mart/product_detail.dart';
+import 'widgets/top_message.dart';
 
 class SellerPage extends StatefulWidget {
   const SellerPage({super.key});
@@ -115,9 +116,7 @@ class _SellerPageState extends State<SellerPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not pick image: $e')),
-        );
+        showTopMessage(context, 'Could not pick image: $e');
       }
     }
   }
@@ -126,9 +125,7 @@ class _SellerPageState extends State<SellerPage> {
     final title = _titleController.text.trim();
     final price = _priceController.text.trim();
     if (title.isEmpty || price.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in Title and Price.')),
-      );
+      showTopMessage(context, 'Please fill in Title and Price.');
       return;
     }
 
@@ -150,11 +147,11 @@ class _SellerPageState extends State<SellerPage> {
       _selectedTab = 0;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Listing published successfully!'),
-        backgroundColor: Color(0xFF6DBF99),
-      ),
+    showTopMessage(
+      context,
+      'Listing published successfully!',
+      isError: false,
+      backgroundColor: const Color(0xFF6DBF99),
     );
   }
 

@@ -4,6 +4,7 @@ import 'dashboard.dart';
 import 'buyer.dart';
 import 'profile.dart';
 import 'main.dart';
+import 'widgets/top_message.dart';
 
 class AnnouncementPage extends StatefulWidget {
   const AnnouncementPage({super.key});
@@ -106,7 +107,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       final rows = await supabase
           .from('announcements')
           .select('*, announcement_tags(tag), '
-              'admins(first_name, last_name, avatar_url), '
+              'admins(first_name, last_name, pfp, avatar_url), '
               'announcement_views(count), '
               'announcement_likes(count), '
               'announcement_comments(id, text, created_at, user_id, users(name))')
@@ -150,6 +151,11 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
         final last = ((admin?['last_name'] as String?) ?? '').trim();
         final adminName =
             [first, last].where((s) => s.isNotEmpty).join(' ').trim();
+        // The admin panel saves the uploaded picture to `pfp`; `avatar_url`
+        // is a legacy column kept as a fallback for older accounts.
+        final pfp = (admin?['pfp'] as String?)?.trim() ?? '';
+        final adminAvatar =
+            pfp.isNotEmpty ? pfp : ((admin?['avatar_url'] as String?) ?? '');
         // Unique view count comes from the announcement_views aggregate.
         final viewAgg = r['announcement_views'] as List?;
         final viewsCount = (viewAgg != null && viewAgg.isNotEmpty)
@@ -179,7 +185,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
         mapped.add({
           'id': r['id'],
           'admin': adminName.isNotEmpty ? adminName : 'Admin',
-          'adminAvatar': (admin?['avatar_url'] as String?) ?? '',
+          'adminAvatar': adminAvatar,
           'time': _timeAgo(r['created_at'] as String?),
           'status': _prettyStatus(r['status'] as String?),
           'audience': ((r['audience'] as String?) ?? 'all').toLowerCase(),
@@ -1074,9 +1080,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     } catch (e) {
       debugPrint('Failed to save comment: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not save comment. Try again.')),
-        );
+        showTopMessage(context, 'Could not save comment. Try again.');
       }
     }
   }
@@ -1403,14 +1407,41 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
 
   /// A tag chip colored + iconed by its category (General/Urgent/Event/Promo).
   /// Unknown tags (e.g. content tags) fall back to a neutral style.
+  // Storage bucket that holds admin avatar images.
+  static const String _avatarBucket = 'avatar';
+
+  // Resolves a stored avatar value into a usable image URL.
+  //
+  // Accepts either a full http(s) URL (used as-is) or a Supabase Storage
+  // path within the avatar bucket (e.g. "<id>/avatar.png" or
+  // "avatar/<id>/avatar.png"), which is turned into a public URL. Returns an
+  // empty string when there is nothing to show.
+  String _resolveAvatarUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+    if (value.startsWith('http')) return value;
+
+    var path = value.startsWith('/') ? value.substring(1) : value;
+    // Tolerate values that redundantly include the bucket name as a prefix.
+    if (path.startsWith('$_avatarBucket/')) {
+      path = path.substring(_avatarBucket.length + 1);
+    }
+    if (path.isEmpty) return '';
+    try {
+      return supabase.storage.from(_avatarBucket).getPublicUrl(path);
+    } catch (_) {
+      return '';
+    }
+  }
+
   // Renders the posting admin's avatar: their uploaded photo when available,
   // otherwise a colored circle with the first letter of their name.
   Widget _adminAvatar(Map<String, dynamic> item,
       {required double radius, required double fontSize}) {
-    final url = (item['adminAvatar'] as String? ?? '').trim();
+    final url = _resolveAvatarUrl(item['adminAvatar'] as String? ?? '');
     final name = (item['admin'] as String?) ?? 'Admin';
     final initial = name.isNotEmpty ? name[0].toUpperCase() : 'A';
-    if (url.startsWith('http')) {
+    if (url.isNotEmpty) {
       return CircleAvatar(
         radius: radius,
         backgroundColor: item['avatarColor'] as Color,
