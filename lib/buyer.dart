@@ -3,6 +3,7 @@ import 'package:ani_mart/product_detail.dart';
 import 'dashboard.dart';
 import 'announcement_page.dart';
 import 'profile.dart';
+import 'main.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -11,42 +12,34 @@ class _Listing {
   final String price;
   final double priceValue;
   final String image;
+  final List<String> images;
   final String category;
   final String location;
   final double distanceKm;
+  final String description;
+  final String condition;
+  final String sellerName;
+  final String breed;
+  final String age;
+  final String weight;
 
   const _Listing({
     required this.name,
     required this.price,
     required this.priceValue,
     required this.image,
+    this.images = const [],
     required this.category,
     required this.location,
     required this.distanceKm,
+    this.description = '',
+    this.condition = '',
+    this.sellerName = '',
+    this.breed = '',
+    this.age = '',
+    this.weight = '',
   });
 }
-
-const List<_Listing> _allListings = [
-  // Poultry
-  _Listing(name: 'Chicken',   price: '₱350',   priceValue: 350,   image: 'images/chicken.png',   category: 'Poultry',         location: 'Tanauan',   distanceKm: 20),
-  _Listing(name: 'White Hen', price: '₱400',   priceValue: 400,   image: 'images/whitehen.png',  category: 'Poultry',         location: 'Sto. Tomas', distanceKm: 35),
-  _Listing(name: 'Duck',      price: '₱300',   priceValue: 300,   image: 'images/duck.png',      category: 'Poultry',         location: 'Lipa City', distanceKm: 12),
-  _Listing(name: 'Turkey',    price: '₱1,200', priceValue: 1200,  image: 'images/turkey.png',    category: 'Poultry',         location: 'Batangas',  distanceKm: 50),
-  _Listing(name: 'Quail',     price: '₱80',    priceValue: 80,    image: 'images/quail.png',     category: 'Poultry',         location: 'Rosario',   distanceKm: 8),
-  // Small Livestock
-  _Listing(name: 'Goat',      price: '₱5,000', priceValue: 5000,  image: 'images/goat.png',      category: 'Small Livestock', location: 'Lemery',    distanceKm: 18),
-  _Listing(name: 'Sheep',     price: '₱4,500', priceValue: 4500,  image: 'images/sheep.png',     category: 'Small Livestock', location: 'Ibaan',     distanceKm: 22),
-  _Listing(name: 'Rabbit',    price: '₱250',   priceValue: 250,   image: 'images/rabbit.png',    category: 'Small Livestock', location: 'Bauan',     distanceKm: 14),
-  _Listing(name: 'Pig',       price: '₱8,000', priceValue: 8000,  image: 'images/pig.png',       category: 'Small Livestock', location: 'San Jose',  distanceKm: 30),
-  // Large Livestock
-  _Listing(name: 'Cow',       price: '₱25,000',priceValue: 25000, image: 'images/cow.png',       category: 'Large Livestock', location: 'Malvar',    distanceKm: 40),
-  _Listing(name: 'Horse',     price: '₱45,000',priceValue: 45000, image: 'images/horse.png',     category: 'Large Livestock', location: 'Padre G.',  distanceKm: 55),
-  _Listing(name: 'Carabao',   price: '₱30,000',priceValue: 30000, image: 'images/carabao.png',   category: 'Large Livestock', location: 'Cuenca',    distanceKm: 28),
-  // Aquatics
-  _Listing(name: 'Tilapia',   price: '₱120',   priceValue: 120,   image: 'images/tilapia.png',   category: 'Aquatics',        location: 'Calaca',    distanceKm: 45),
-  _Listing(name: 'Bangus',    price: '₱180',   priceValue: 180,   image: 'images/bangus.png',    category: 'Aquatics',        location: 'Nasugbu',   distanceKm: 60),
-  _Listing(name: 'Shrimp',    price: '₱350',   priceValue: 350,   image: 'images/shrimp.png',    category: 'Aquatics',        location: 'Calatagan', distanceKm: 70),
-];
 
 const List<String> _categories = [
   'All',
@@ -73,6 +66,71 @@ class _BuyerPageState extends State<BuyerPage> {
   String _searchQuery = '';
   String _sortBy = 'Default'; // Default | Price ↑ | Price ↓ | Nearest
   final Set<String> _favourites = {};
+
+  // Listings loaded from the `listings` table.
+  List<_Listing> _allListings = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadListings();
+  }
+
+  /// Loads all active listings from Supabase, newest first.
+  Future<void> _loadListings() async {
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select('*, users(name)')
+          .eq('status', 'active')
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _allListings = (rows as List).map((r) {
+          final row = r as Map<String, dynamic>;
+          final priceValue = (row['price'] is num)
+              ? (row['price'] as num).toDouble()
+              : (double.tryParse('${row['price']}') ?? 0);
+          final img = (row['image_url'] as String?)?.trim() ?? '';
+          final imgs = (row['image_urls'] as List?)
+                  ?.map((e) => '$e')
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList() ??
+              <String>[];
+          final seller = row['users'] as Map<String, dynamic>?;
+          return _Listing(
+            name: (row['title'] as String?) ?? 'Untitled',
+            price: _formatPrice(priceValue),
+            priceValue: priceValue,
+            image: img.isNotEmpty ? img : 'images/chicken.png',
+            images: imgs,
+            category: (row['category'] as String?) ?? 'Uncategorized',
+            location: (row['location'] as String?) ?? '',
+            distanceKm: 0,
+            description: (row['description'] as String?) ?? '',
+            condition: (row['condition'] as String?) ?? '',
+            sellerName: (seller?['name'] as String?) ?? '',
+            breed: (row['breed'] as String?) ?? '',
+            age: (row['age'] as String?) ?? '',
+            weight: (row['weight'] as String?) ?? '',
+          );
+        }).toList();
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Formats a numeric price as e.g. "₱350" (no trailing ".0").
+  String _formatPrice(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
 
   // ── Derived list ───────────────────────────────────────────────────────────
 
@@ -465,16 +523,8 @@ class _BuyerPageState extends State<BuyerPage> {
                         contentPadding: EdgeInsets.zero,
                         leading: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
-                          child: Image.asset(item.image,
-                              width: 44,
-                              height: 44,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Container(
-                                  width: 44,
-                                  height: 44,
-                                  color: const Color(0xFFD6F0E4),
-                                  child: const Icon(Icons.pets,
-                                      color: Colors.white54))),
+                          child: _listingImage(item.image,
+                              width: 44, height: 44),
                         ),
                         title: Text(item.name,
                             style: const TextStyle(
@@ -706,8 +756,16 @@ class _BuyerPageState extends State<BuyerPage> {
 
                   const SizedBox(height: 12),
 
-                  // Grid or empty state
-                  items.isEmpty
+                  // Grid, loading, or empty state
+                  _loading
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 80),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                                color: Color(0xFF6DBF99)),
+                          ),
+                        )
+                      : items.isEmpty
                       ? Padding(
                           padding: const EdgeInsets.symmetric(vertical: 60),
                           child: Center(
@@ -719,7 +777,7 @@ class _BuyerPageState extends State<BuyerPage> {
                                 Text(
                                   _searchQuery.isNotEmpty
                                       ? 'No results for "$_searchQuery"'
-                                      : 'No listings in this category',
+                                      : 'No listings available yet',
                                   style: const TextStyle(
                                       color: Colors.black45, fontSize: 14),
                                 ),
@@ -749,6 +807,14 @@ class _BuyerPageState extends State<BuyerPage> {
                                     name: item.name,
                                     price: item.price,
                                     image: item.image,
+                                    images: item.images,
+                                    description: item.description,
+                                    condition: item.condition,
+                                    sellerName: item.sellerName,
+                                    location: item.location,
+                                    breed: item.breed,
+                                    age: item.age,
+                                    weight: item.weight,
                                   ),
                                 ),
                               ),
@@ -768,26 +834,17 @@ class _BuyerPageState extends State<BuyerPage> {
                                     Expanded(
                                       child: Stack(
                                         children: [
-                                          ClipRRect(
-                                            borderRadius:
-                                                const BorderRadius.only(
-                                              topLeft: Radius.circular(10),
-                                              topRight: Radius.circular(10),
-                                            ),
-                                            child: Image.asset(
-                                              item.image,
-                                              width: double.infinity,
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (_, __, ___) =>
-                                                  Container(
-                                                color:
-                                                    const Color(0xFFD6F0E4),
-                                                child: const Icon(
-                                                    Icons
-                                                        .image_not_supported_outlined,
-                                                    color: Colors.white54,
-                                                    size: 40),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            height: double.infinity,
+                                            child: ClipRRect(
+                                              borderRadius:
+                                                  const BorderRadius.only(
+                                                topLeft: Radius.circular(10),
+                                                topRight: Radius.circular(10),
                                               ),
+                                              child: _listingImage(item.image,
+                                                  width: double.infinity),
                                             ),
                                           ),
                                           // ★ Per-card fav toggle
@@ -940,6 +997,29 @@ class _BuyerPageState extends State<BuyerPage> {
         ),
       ),
     );
+  }
+
+  /// Renders a listing image from either a network URL or a bundled asset.
+  Widget _listingImage(String path,
+      {double? width, double? height, BoxFit fit = BoxFit.cover}) {
+    Widget placeholder() => Container(
+          width: width,
+          height: height,
+          color: const Color(0xFFD6F0E4),
+          child: const Icon(Icons.image_not_supported_outlined,
+              color: Colors.white54, size: 40),
+        );
+    return path.startsWith('http')
+        ? Image.network(path,
+            width: width,
+            height: height,
+            fit: fit,
+            errorBuilder: (_, __, ___) => placeholder())
+        : Image.asset(path,
+            width: width,
+            height: height,
+            fit: fit,
+            errorBuilder: (_, __, ___) => placeholder());
   }
 
   Widget _filterChip(String label, VoidCallback onRemove) {

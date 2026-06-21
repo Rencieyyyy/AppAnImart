@@ -3,44 +3,42 @@ import 'seller.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
 import 'profile.dart';
+import 'product_detail.dart';
+import 'current_user.dart';
+import 'main.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
 class LivestockItem {
-  final String label;
-  final String imagePath;
+  final String label; // listing title
+  final String imagePath; // primary image (network URL or asset path)
   final String category;
+  final String priceText; // e.g. "₱350"
+  final List<String> images; // all image URLs
+  final String description;
+  final String condition;
+  final String location;
+  final String sellerName;
+  final String breed;
+  final String age;
+  final String weight;
 
   const LivestockItem({
     required this.label,
     required this.imagePath,
     required this.category,
+    this.priceText = '',
+    this.images = const [],
+    this.description = '',
+    this.condition = '',
+    this.location = '',
+    this.sellerName = '',
+    this.breed = '',
+    this.age = '',
+    this.weight = '',
   });
 }
 
-const List<LivestockItem> _allItems = [
-  // Poultry
-  LivestockItem(label: 'Chicken',   imagePath: 'images/chicken.png',  category: 'Poultry'),
-  LivestockItem(label: 'White Hen', imagePath: 'images/whitehen.png', category: 'Poultry'),
-  LivestockItem(label: 'Duck',      imagePath: 'images/duck.png',     category: 'Poultry'),
-  LivestockItem(label: 'Turkey',    imagePath: 'images/turkey.png',   category: 'Poultry'),
-  LivestockItem(label: 'Quail',     imagePath: 'images/quail.png',    category: 'Poultry'),
-  LivestockItem(label: 'Goose',     imagePath: 'images/goose.png',    category: 'Poultry'),
-  // Small Livestock
-  LivestockItem(label: 'Rabbit',    imagePath: 'images/rabbit.png',   category: 'Small Livestock'),
-  LivestockItem(label: 'Goat',      imagePath: 'images/goat.png',     category: 'Small Livestock'),
-  LivestockItem(label: 'Sheep',     imagePath: 'images/sheep.png',    category: 'Small Livestock'),
-  LivestockItem(label: 'Pig',       imagePath: 'images/pig.png',      category: 'Small Livestock'),
-  // Large Livestock
-  LivestockItem(label: 'Cow',       imagePath: 'images/cow.png',      category: 'Large Livestock'),
-  LivestockItem(label: 'Horse',     imagePath: 'images/horse.png',    category: 'Large Livestock'),
-  LivestockItem(label: 'Carabao',   imagePath: 'images/carabao.png',  category: 'Large Livestock'),
-  // Aquatics
-  LivestockItem(label: 'Tilapia',   imagePath: 'images/tilapia.png',  category: 'Aquatics'),
-  LivestockItem(label: 'Bangus',    imagePath: 'images/bangus.png',   category: 'Aquatics'),
-  LivestockItem(label: 'Shrimp',    imagePath: 'images/shrimp.png',   category: 'Aquatics'),
-  LivestockItem(label: 'Crab',      imagePath: 'images/crab.png',     category: 'Aquatics'),
-];
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
@@ -75,11 +73,20 @@ class _DashboardPageState extends State<DashboardPage> {
   // Favourites
   final Set<String> _favourites = {};
 
+  // Signed-in user's name (loaded from the `users` table).
+  String _userName = '';
+
+  // Listings from all users, loaded from the `listings` table.
+  List<LivestockItem> _allItems = [];
+  bool _loadingItems = true;
+
   // ── Show plan popup on first load ─────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
+    _loadUserName();
+    _loadItems();
     if (!_planDialogShown) {
       // Show plan popup after the first frame renders
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -90,6 +97,67 @@ class _DashboardPageState extends State<DashboardPage> {
       });
     }
   }
+
+  Future<void> _loadUserName() async {
+    final name = await fetchCurrentUserName();
+    if (mounted) setState(() => _userName = name);
+  }
+
+  /// Loads all active listings published by any user.
+  Future<void> _loadItems() async {
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select('*, users(name)')
+          .eq('status', 'active')
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _allItems = (rows as List).map((r) {
+          final row = r as Map<String, dynamic>;
+          final priceValue = (row['price'] is num)
+              ? (row['price'] as num).toDouble()
+              : (double.tryParse('${row['price']}') ?? 0);
+          final img = (row['image_url'] as String?)?.trim() ?? '';
+          final imgs = (row['image_urls'] as List?)
+                  ?.map((e) => '$e')
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList() ??
+              <String>[];
+          final seller = row['users'] as Map<String, dynamic>?;
+          return LivestockItem(
+            label: (row['title'] as String?) ?? 'Untitled',
+            imagePath: img.isNotEmpty ? img : 'images/chicken.png',
+            category: (row['category'] as String?) ?? 'Uncategorized',
+            priceText: _formatPrice(priceValue),
+            images: imgs,
+            description: (row['description'] as String?) ?? '',
+            condition: (row['condition'] as String?) ?? '',
+            location: (row['location'] as String?) ?? '',
+            sellerName: (seller?['name'] as String?) ?? '',
+            breed: (row['breed'] as String?) ?? '',
+            age: (row['age'] as String?) ?? '',
+            weight: (row['weight'] as String?) ?? '',
+          );
+        }).toList();
+        _loadingItems = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loadingItems = false);
+    }
+  }
+
+  String _formatPrice(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
+
+  // First word of the name for a friendly greeting (e.g. "Rencee").
+  String get _firstName =>
+      _userName.trim().isEmpty ? '' : _userName.trim().split(' ').first;
 
   // ── Plan selection dialog ─────────────────────────────────────────────────
 
@@ -405,11 +473,7 @@ class _DashboardPageState extends State<DashboardPage> {
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.asset(item.imagePath,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => const Icon(
-                                    Icons.pets,
-                                    color: Colors.white54)),
+                            child: _cardImage(item.imagePath),
                           ),
                         ),
                         title: Text(item.label,
@@ -755,9 +819,11 @@ class _DashboardPageState extends State<DashboardPage> {
                                   fontSize: 12, color: Colors.black45),
                             ),
                             const SizedBox(height: 2),
-                            const Text(
-                              'Good Morning, Rencee !',
-                              style: TextStyle(
+                            Text(
+                              _firstName.isEmpty
+                                  ? 'Good Morning !'
+                                  : 'Good Morning, $_firstName !',
+                              style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.bold,
                                   color: Colors.black87),
@@ -1033,7 +1099,15 @@ class _DashboardPageState extends State<DashboardPage> {
                     const SizedBox(height: 14),
 
                     // ── Grid ───────────────────────────────────────────
-                    items.isEmpty
+                    _loadingItems
+                        ? const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 60),
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                  color: Color(0xFF6DBF99)),
+                            ),
+                          )
+                        : items.isEmpty
                         ? Padding(
                             padding:
                                 const EdgeInsets.symmetric(vertical: 40),
@@ -1044,7 +1118,9 @@ class _DashboardPageState extends State<DashboardPage> {
                                       color: Colors.black26, size: 48),
                                   const SizedBox(height: 12),
                                   Text(
-                                    'No results for "$_searchQuery"',
+                                    _searchQuery.isNotEmpty
+                                        ? 'No results for "$_searchQuery"'
+                                        : 'No listings available yet',
                                     style: const TextStyle(
                                         color: Colors.black45, fontSize: 14),
                                   ),
@@ -1152,11 +1228,40 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  Widget _cardImage(String path) {
+    Widget placeholder() => Container(
+          color: const Color(0xFFD6F0E4),
+          child: const Icon(Icons.image_not_supported_outlined,
+              color: Colors.white54, size: 40),
+        );
+    return path.startsWith('http')
+        ? Image.network(path,
+            fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder())
+        : Image.asset(path,
+            fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder());
+  }
+
   Widget _buildCategoryCard(LivestockItem item) {
     final isFav = _favourites.contains(item.label);
     return GestureDetector(
       onTap: () => Navigator.push(
-          context, MaterialPageRoute(builder: (_) => const BuyerPage())),
+        context,
+        MaterialPageRoute(
+          builder: (_) => ProductDetailPage(
+            name: item.label,
+            price: item.priceText,
+            image: item.imagePath,
+            images: item.images,
+            description: item.description,
+            condition: item.condition,
+            sellerName: item.sellerName,
+            location: item.location,
+            breed: item.breed,
+            age: item.age,
+            weight: item.weight,
+          ),
+        ),
+      ),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
@@ -1166,15 +1271,7 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Image.asset(
-              item.imagePath,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => Container(
-                color: const Color(0xFFD6F0E4),
-                child: const Icon(Icons.image_not_supported_outlined,
-                    color: Colors.white54, size: 40),
-              ),
-            ),
+            _cardImage(item.imagePath),
             Positioned(
               bottom: 0,
               left: 0,
@@ -1187,16 +1284,30 @@ class _DashboardPageState extends State<DashboardPage> {
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
                     colors: [
-                      Colors.black.withOpacity(0.45),
+                      Colors.black.withOpacity(0.55),
                       Colors.transparent,
                     ],
                   ),
                 ),
-                child: Text(item.label,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(item.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    if (item.priceText.isNotEmpty)
+                      Text(item.priceText,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500)),
+                  ],
+                ),
               ),
             ),
             Positioned(

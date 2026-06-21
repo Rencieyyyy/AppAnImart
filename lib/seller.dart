@@ -1,8 +1,20 @@
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:ani_mart/product_detail.dart';
+import 'cloudinary_function.dart';
+import 'current_user.dart';
+import 'main.dart';
 import 'widgets/top_message.dart';
+
+/// A photo chosen by the user, kept as in-memory bytes so it works on every
+/// platform including Flutter Web (where `dart:io` File is unavailable).
+class _PickedImage {
+  final Uint8List bytes;
+  final String name;
+  const _PickedImage(this.bytes, this.name);
+}
 
 class SellerPage extends StatefulWidget {
   const SellerPage({super.key});
@@ -17,27 +29,106 @@ class _SellerPageState extends State<SellerPage> {
   final _titleController = TextEditingController();
   final _priceController = TextEditingController();
   final _descController  = TextEditingController();
+  final _breedController = TextEditingController();
+  final _ageController   = TextEditingController();
+  final _weightController = TextEditingController();
   String? _selectedCategory;
   String? _selectedCondition;
+  String _weightUnit = 'kg'; // 'kg' or 'lbs'
 
-  final List<File> _pickedImages = [];
+  final List<_PickedImage> _pickedImages = [];
   final ImagePicker _imagePicker = ImagePicker();
+  bool _uploading = false;
+
+  // Signed-in user's name (loaded from the `users` table).
+  String _userName = '';
 
   final List<String> _categories  = ['Poultry', 'Small Livestock', 'Large Livestock', 'Aquatics'];
   final List<String> _conditions  = ['Good', 'Excellent', 'Fair'];
 
-  final List<Map<String, dynamic>> _myListings = [
-    {'name': 'Chicken',   'price': '₱350',   'image': 'images/chicken.png',  'isAsset': true},
-    {'name': 'White Hen', 'price': '₱400',   'image': 'images/whitehen.png', 'isAsset': true},
-    {'name': 'Duck',      'price': '₱300',   'image': 'images/duck.png',     'isAsset': true},
-    {'name': 'Turkey',    'price': '₱1,200', 'image': 'images/turkey.png',   'isAsset': true},
-  ];
+  // Listings owned by the signed-in user, loaded from the `listings` table.
+  final List<Map<String, dynamic>> _myListings = [];
+  bool _loadingListings = true;
+
+  static const String _location = 'Tanauan, Batangas Philippines -4232';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserName();
+    _loadMyListings();
+  }
+
+  Future<void> _loadUserName() async {
+    final name = await fetchCurrentUserName();
+    if (mounted) setState(() => _userName = name);
+  }
+
+  /// Loads the signed-in user's listings from Supabase, newest first.
+  Future<void> _loadMyListings() async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) {
+      if (mounted) setState(() => _loadingListings = false);
+      return;
+    }
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select()
+          .eq('seller_id', userId)
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _myListings
+          ..clear()
+          ..addAll((rows as List).map((r) {
+            final row = r as Map<String, dynamic>;
+            final img = (row['image_url'] as String?)?.trim() ?? '';
+            final imgs = (row['image_urls'] as List?)
+                    ?.map((e) => '$e')
+                    .where((e) => e.trim().isNotEmpty)
+                    .toList() ??
+                <String>[];
+            return <String, dynamic>{
+              'id': row['id'],
+              'name': (row['title'] as String?) ?? 'Untitled',
+              'price': _formatPrice(row['price']),
+              'image': img.isNotEmpty ? img : 'images/chicken.png',
+              'isAsset': img.isEmpty,
+              'images': imgs,
+              'description': (row['description'] as String?) ?? '',
+              'condition': (row['condition'] as String?) ?? '',
+              'location': (row['location'] as String?) ?? '',
+              'breed': (row['breed'] as String?) ?? '',
+              'age': (row['age'] as String?) ?? '',
+              'weight': (row['weight'] as String?) ?? '',
+            };
+          }));
+        _loadingListings = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loadingListings = false);
+    }
+  }
+
+  /// Formats a numeric price as e.g. "₱350" (no trailing ".0").
+  String _formatPrice(dynamic raw) {
+    final value = raw is num ? raw : (num.tryParse('$raw') ?? 0);
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
 
   @override
   void dispose() {
     _titleController.dispose();
     _priceController.dispose();
     _descController.dispose();
+    _breedController.dispose();
+    _ageController.dispose();
+    _weightController.dispose();
     super.dispose();
   }
 
@@ -110,8 +201,9 @@ class _SellerPageState extends State<SellerPage> {
         maxWidth: 1080,
       );
       if (picked != null) {
+        final bytes = await picked.readAsBytes();
         setState(() {
-          _pickedImages.add(File(picked.path));
+          _pickedImages.add(_PickedImage(bytes, picked.name));
         });
       }
     } catch (e) {
@@ -121,29 +213,100 @@ class _SellerPageState extends State<SellerPage> {
     }
   }
 
-  void _publishListing() {
+  Future<void> _publishListing() async {
+    if (_uploading) return;
     final title = _titleController.text.trim();
     final price = _priceController.text.trim();
-    if (title.isEmpty || price.isEmpty) {
-      showTopMessage(context, 'Please fill in Title and Price.');
+    final description = _descController.text.trim();
+    final breed = _breedController.text.trim();
+    final age = _ageController.text.trim();
+    final weightValue = _weightController.text.trim();
+    final weight = weightValue.isEmpty ? '' : '$weightValue $_weightUnit';
+
+    if (_pickedImages.isEmpty) {
+      showTopMessage(context, 'Please add at least one photo.');
+      return;
+    }
+    if (title.isEmpty ||
+        price.isEmpty ||
+        _selectedCategory == null ||
+        _selectedCondition == null ||
+        breed.isEmpty ||
+        age.isEmpty ||
+        weight.isEmpty ||
+        description.isEmpty) {
+      showTopMessage(context, 'Please fill in all fields.');
+      return;
+    }
+    final priceValue = num.tryParse(price);
+    if (priceValue == null) {
+      showTopMessage(context, 'Please enter a valid price.');
+      return;
+    }
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) {
+      showTopMessage(context, 'You are not signed in. Please log in again.');
       return;
     }
 
-    final hasPickedImage = _pickedImages.isNotEmpty;
+    final images = List<_PickedImage>.from(_pickedImages);
+    setState(() => _uploading = true);
 
-    setState(() {
-      _myListings.insert(0, {
-        'name':    title,
-        'price':   '₱$price',
-        'image':   hasPickedImage ? _pickedImages.first.path : 'images/chicken.png',
-        'isAsset': !hasPickedImage,
+    try {
+      final imageUrls = <String>[];
+      for (final image in images) {
+        // Host each image on Cloudinary, then record it in test_img.
+        final url = await uploadToCloudinary(image.bytes, image.name);
+        if (url == null) {
+          throw Exception('Cloudinary upload returned no URL.');
+        }
+        imageUrls.add(url);
+        await supabase.from('test_img').insert({
+          'file': image.name,
+          'cloud_url': url,
+          'user_id': userId,
+        });
+      }
+
+      // Persist the listing itself.
+      await supabase.from('listings').insert({
+        'title': title,
+        'price': priceValue,
+        'category': _selectedCategory,
+        'condition': _selectedCondition,
+        'description': description,
+        'breed': breed,
+        'age': age,
+        'weight': weight,
+        'location': _location,
+        'status': 'active',
+        'seller_id': userId,
+        'image_url': imageUrls.isNotEmpty ? imageUrls.first : null,
+        'image_urls': imageUrls,
       });
+
+      // Refresh My Listings from the database so it reflects what's stored.
+      await _loadMyListings();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      showTopMessage(context, 'Could not publish listing: $e');
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
       _titleController.clear();
       _priceController.clear();
       _descController.clear();
+      _breedController.clear();
+      _ageController.clear();
+      _weightController.clear();
+      _weightUnit = 'kg';
       _selectedCategory  = null;
       _selectedCondition = null;
       _pickedImages.clear();
+      _uploading = false;
       _selectedTab = 0;
     });
 
@@ -153,6 +316,19 @@ class _SellerPageState extends State<SellerPage> {
       isError: false,
       backgroundColor: const Color(0xFF6DBF99),
     );
+  }
+
+  /// Deletes a listing both locally and in Supabase.
+  Future<void> _deleteListing(int index) async {
+    final id = _myListings[index]['id'];
+    setState(() => _myListings.removeAt(index));
+    if (id == null) return;
+    try {
+      await supabase.from('listings').delete().eq('id', id);
+    } catch (e) {
+      if (mounted) showTopMessage(context, 'Could not delete listing: $e');
+      await _loadMyListings();
+    }
   }
 
   @override
@@ -181,11 +357,11 @@ class _SellerPageState extends State<SellerPage> {
                       child: const Icon(Icons.close, color: Colors.white, size: 26),
                     ),
                     GestureDetector(
-                      onTap: _selectedTab == 1 ? _publishListing : null,
+                      onTap: (_selectedTab == 1 && !_uploading) ? _publishListing : null,
                       child: Text(
-                        'Publish',
+                        _uploading ? 'Publishing…' : 'Publish',
                         style: TextStyle(
-                          color: _selectedTab == 1 ? Colors.white : Colors.white54,
+                          color: (_selectedTab == 1 && !_uploading) ? Colors.white : Colors.white54,
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
                         ),
@@ -202,13 +378,13 @@ class _SellerPageState extends State<SellerPage> {
                       child: const Icon(Icons.person, color: Colors.white, size: 26),
                     ),
                     const SizedBox(width: 12),
-                    const Column(
+                    Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Rencee Formanes',
-                          style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                        Text(_userName.isEmpty ? 'AniMart User' : _userName,
+                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                         ),
-                        Text('Listing on Marketplace',
+                        const Text('Listing on Marketplace',
                           style: TextStyle(color: Colors.white70, fontSize: 12),
                         ),
                       ],
@@ -257,11 +433,19 @@ class _SellerPageState extends State<SellerPage> {
   }
 
   Widget _buildMyListings() {
-    if (_myListings.isEmpty) {
+    if (_loadingListings) {
       return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
+        child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+      );
+    }
+
+    if (_myListings.isEmpty) {
+      return RefreshIndicator(
+        color: const Color(0xFF6DBF99),
+        onRefresh: _loadMyListings,
+        child: ListView(
+          children: const [
+            SizedBox(height: 160),
             Icon(Icons.inventory_2_outlined, size: 64, color: Colors.black26),
             SizedBox(height: 12),
             Text(
@@ -303,9 +487,17 @@ class _SellerPageState extends State<SellerPage> {
                     context,
                     MaterialPageRoute(
                       builder: (context) => ProductDetailPage(
-                        name:  item['name']!,
-                        price: item['price']!,
-                        image: item['image']!,
+                        name:  item['name'] as String,
+                        price: item['price'] as String,
+                        image: item['image'] as String,
+                        images: (item['images'] as List?)?.cast<String>() ?? const [],
+                        description: item['description'] as String? ?? '',
+                        condition: item['condition'] as String? ?? '',
+                        sellerName: _userName,
+                        location: item['location'] as String? ?? '',
+                        breed: item['breed'] as String? ?? '',
+                        age: item['age'] as String? ?? '',
+                        weight: item['weight'] as String? ?? '',
                       ),
                     ),
                   );
@@ -332,8 +524,8 @@ class _SellerPageState extends State<SellerPage> {
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) => _imagePlaceholder(),
                                 )
-                              : Image.file(
-                                  File(item['image']!),
+                              : Image.network(
+                                  item['image']!,
                                   width: double.infinity,
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) => _imagePlaceholder(),
@@ -360,7 +552,7 @@ class _SellerPageState extends State<SellerPage> {
                                   ),
                                 ),
                                 GestureDetector(
-                                  onTap: () => setState(() => _myListings.removeAt(index)),
+                                  onTap: () => _deleteListing(index),
                                   child: const Icon(Icons.delete_outline, size: 16, color: Colors.black38),
                                 ),
                               ],
@@ -457,8 +649,8 @@ class _SellerPageState extends State<SellerPage> {
                             ),
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(9),
-                              child: Image.file(
-                                _pickedImages[index],
+                              child: Image.memory(
+                                _pickedImages[index].bytes,
                                 fit: BoxFit.cover,
                                 width: 90,
                                 height: 100,
@@ -497,8 +689,11 @@ class _SellerPageState extends State<SellerPage> {
           _buildInputField(
             controller: _priceController,
             hint: 'Price',
-            keyboardType: TextInputType.number,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
             prefixText: '₱ ',
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+            ],
           ),
           const SizedBox(height: 12),
           _buildDropdown(
@@ -513,6 +708,32 @@ class _SellerPageState extends State<SellerPage> {
             value: _selectedCondition,
             items: _conditions,
             onChanged: (val) => setState(() => _selectedCondition = val),
+          ),
+          const SizedBox(height: 12),
+          _buildInputField(controller: _breedController, hint: 'Breed'),
+          const SizedBox(height: 12),
+          _buildInputField(controller: _ageController, hint: 'Age (e.g. 3 months)'),
+          const SizedBox(height: 12),
+          _buildInputField(
+            controller: _weightController,
+            hint: 'Weight (e.g. 1.5)',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+            ],
+            suffix: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _weightUnit,
+                isDense: true,
+                icon: const Icon(Icons.keyboard_arrow_down, color: Colors.black38, size: 18),
+                style: const TextStyle(color: Colors.black87, fontSize: 14),
+                items: const [
+                  DropdownMenuItem(value: 'kg', child: Text('kg')),
+                  DropdownMenuItem(value: 'lbs', child: Text('lbs')),
+                ],
+                onChanged: (val) => setState(() => _weightUnit = val ?? 'kg'),
+              ),
+            ),
           ),
           const SizedBox(height: 12),
           Container(
@@ -564,15 +785,22 @@ class _SellerPageState extends State<SellerPage> {
             width: double.infinity,
             height: 50,
             child: ElevatedButton(
-              onPressed: _publishListing,
+              onPressed: _uploading ? null : _publishListing,
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF6DBF99),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
-              child: const Text('Publish Listing',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-              ),
+              child: _uploading
+                  ? const SizedBox(
+                      width: 22, height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5, color: Colors.white,
+                      ),
+                    )
+                  : const Text('Publish Listing',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
             ),
           ),
           const SizedBox(height: 40),
@@ -586,6 +814,8 @@ class _SellerPageState extends State<SellerPage> {
     required String hint,
     TextInputType keyboardType = TextInputType.text,
     String? prefixText,
+    Widget? suffix,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -595,9 +825,11 @@ class _SellerPageState extends State<SellerPage> {
       child: TextField(
         controller: controller,
         keyboardType: keyboardType,
+        inputFormatters: inputFormatters,
         decoration: InputDecoration(
           hintText: hint,
           prefixText: prefixText,
+          suffix: suffix,
           hintStyle: const TextStyle(color: Colors.black38, fontSize: 14),
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),

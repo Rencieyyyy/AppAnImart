@@ -6,6 +6,8 @@ import 'buyer.dart';
 import 'announcement_page.dart';
 import 'login.dart';
 import 'main.dart';
+import 'product_detail.dart';
+import 'user_listings.dart';
 import 'widgets/top_message.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -34,10 +36,68 @@ class _ProfilePageState extends State<ProfilePage> {
   int _salesCount = 0;
   int _trustScore = 0;
 
+  // ── Listings owned by the signed-in user (from the `listings` table) ──────
+  List<Map<String, dynamic>> _myListings = [];
+  bool _loadingListings = true;
+
   @override
   void initState() {
     super.initState();
     _loadProfile();
+    _loadMyListings();
+  }
+
+  Future<void> _loadMyListings() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _loadingListings = false);
+      return;
+    }
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select()
+          .eq('seller_id', user.id)
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _myListings =
+            (rows as List).map((r) => r as Map<String, dynamic>).toList();
+        _loadingListings = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loadingListings = false);
+    }
+  }
+
+  String _formatPrice(dynamic raw) {
+    final value = raw is num ? raw : (num.tryParse('$raw') ?? 0);
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
+
+  void _openAllListings() {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => UserListingsPage(userId: user.id, userName: _name),
+      ),
+    );
+  }
+
+  String _relativeTime(dynamic isoDate) {
+    final dt = DateTime.tryParse('$isoDate');
+    if (dt == null) return '';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays >= 1) return '${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+    if (diff.inHours >= 1) return '${diff.inHours} hour${diff.inHours == 1 ? '' : 's'} ago';
+    if (diff.inMinutes >= 1) return '${diff.inMinutes} min ago';
+    return 'Just now';
   }
 
   Future<void> _loadProfile() async {
@@ -1575,16 +1635,59 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 16),
 
-            // ── My Listing ──────────────────────────────────────────
+            // ── My Listings ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('My Listing',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('My Listings (${_myListings.length})',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                      if (_myListings.isNotEmpty)
+                        GestureDetector(
+                          onTap: _openAllListings,
+                          child: const Row(
+                            children: [
+                              Text('See All',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF3AA876))),
+                              Icon(Icons.chevron_right, size: 18, color: Color(0xFF3AA876)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                   const SizedBox(height: 10),
-                  _listingCard(),
+                  if (_loadingListings)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+                      ),
+                    )
+                  else if (_myListings.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 28),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
+                      ),
+                      child: const Column(
+                        children: [
+                          Icon(Icons.inventory_2_outlined, size: 40, color: Colors.black26),
+                          SizedBox(height: 8),
+                          Text('No listings yet.',
+                              style: TextStyle(fontSize: 13, color: Colors.black45)),
+                        ],
+                      ),
+                    )
+                  else
+                    // Show only the latest listing; the rest are on "See All".
+                    _listingCard(_myListings.first),
                 ],
               ),
             ),
@@ -1720,9 +1823,38 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _listingCard() {
+  Widget _listingCard(Map<String, dynamic> row) {
+    final title = (row['title'] as String?) ?? 'Untitled';
+    final price = _formatPrice(row['price']);
+    final imageUrl = (row['image_url'] as String?)?.trim() ?? '';
+    final status = ((row['status'] as String?) ?? 'active');
+    final created = _relativeTime(row['created_at']);
+
     return GestureDetector(
-      onTap: () {},
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProductDetailPage(
+              name: title,
+              price: price,
+              image: imageUrl.isNotEmpty ? imageUrl : 'images/chicken.png',
+              images: (row['image_urls'] as List?)
+                      ?.map((e) => '$e')
+                      .where((e) => e.trim().isNotEmpty)
+                      .toList() ??
+                  const [],
+              description: (row['description'] as String?) ?? '',
+              condition: (row['condition'] as String?) ?? '',
+              sellerName: _name,
+              location: (row['location'] as String?) ?? '',
+              breed: (row['breed'] as String?) ?? '',
+              age: (row['age'] as String?) ?? '',
+              weight: (row['weight'] as String?) ?? '',
+            ),
+          ),
+        );
+      },
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -1736,15 +1868,7 @@ class _ProfilePageState extends State<ProfilePage> {
           children: [
             ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              child: Image.asset(
-                'images/turkey.png',
-                width: double.infinity, height: 140, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                  width: double.infinity, height: 140,
-                  color: const Color(0xFFE8F8F1),
-                  child: const Icon(Icons.image_not_supported_outlined, color: Colors.black26, size: 40),
-                ),
-              ),
+              child: _listingImage(imageUrl),
             ),
             Padding(
               padding: const EdgeInsets.all(12),
@@ -1760,12 +1884,17 @@ class _ProfilePageState extends State<ProfilePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(_name,
+                        Text(title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1A2E22))),
                         const SizedBox(height: 2),
-                        const Text('13 days', style: TextStyle(fontSize: 11, color: Colors.black38)),
-                        const SizedBox(height: 2),
-                        const Text('Good morning', style: TextStyle(fontSize: 11, color: Color(0xFF6B8578))),
+                        Text(price,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF3AA876))),
+                        if (created.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(created, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+                        ],
                       ],
                     ),
                   ),
@@ -1776,8 +1905,8 @@ class _ProfilePageState extends State<ProfilePage> {
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: const Color(0xFFC2EDD9)),
                     ),
-                    child: const Text('Active',
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF27803F))),
+                    child: Text(status[0].toUpperCase() + status.substring(1),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF27803F))),
                   ),
                 ],
               ),
@@ -1803,6 +1932,23 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       ),
     );
+  }
+
+  /// Renders a listing image from a network URL or bundled asset.
+  Widget _listingImage(String path) {
+    Widget placeholder() => Container(
+          width: double.infinity, height: 140,
+          color: const Color(0xFFE8F8F1),
+          child: const Icon(Icons.image_not_supported_outlined, color: Colors.black26, size: 40),
+        );
+    if (path.isEmpty) return placeholder();
+    return path.startsWith('http')
+        ? Image.network(path,
+            width: double.infinity, height: 140, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => placeholder())
+        : Image.asset(path,
+            width: double.infinity, height: 140, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => placeholder());
   }
 
   Widget _actionButton({

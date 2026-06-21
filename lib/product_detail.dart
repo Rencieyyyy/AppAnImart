@@ -1,17 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'widgets/top_message.dart';
+
+/// Lets scrollables (e.g. the image carousel) be dragged with a mouse/trackpad
+/// on web & desktop, not just touch — Flutter disables mouse drag by default.
+class _DragScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
+}
 
 class ProductDetailPage extends StatefulWidget {
   final String name;
   final String price;
   final String image;
+  final List<String>? images;
+  final String? description;
+  final String? condition;
+  final String? sellerName;
+  final String? location;
+  final String? breed;
+  final String? age;
+  final String? weight;
 
   const ProductDetailPage({
     super.key,
     required this.name,
     required this.price,
     required this.image,
+    this.images,
+    this.description,
+    this.condition,
+    this.sellerName,
+    this.location,
+    this.breed,
+    this.age,
+    this.weight,
   });
 
   @override
@@ -24,6 +53,18 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   final TextEditingController _messageController = TextEditingController();
   String _messageText = 'Good afternoon,\nis this still available?';
   bool _offerSent = false;
+
+  final PageController _imageController = PageController();
+  int _currentImage = 0;
+
+  /// All images to show, ignoring blanks; falls back to the single [image].
+  List<String> get _images {
+    final list = (widget.images ?? const <String>[])
+        .where((e) => e.trim().isNotEmpty)
+        .toList();
+    if (list.isNotEmpty) return list;
+    return widget.image.trim().isNotEmpty ? [widget.image] : <String>[];
+  }
 
   static const Map<String, Map<String, String>> _details = {
     'Chicken': {
@@ -75,7 +116,51 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   @override
   void dispose() {
     _messageController.dispose();
+    _imageController.dispose();
     super.dispose();
+  }
+
+  // Prefer values passed from the listing; fall back to the sample _details map.
+  String get _sellerName {
+    final s = widget.sellerName?.trim() ?? '';
+    if (s.isNotEmpty) return s;
+    return _details[widget.name]?['seller'] ?? 'Unknown';
+  }
+
+  String get _location {
+    final l = widget.location?.trim() ?? '';
+    if (l.isNotEmpty) return l;
+    return _details[widget.name]?['location'] ?? 'Unknown';
+  }
+
+  String get _condition {
+    final c = widget.condition?.trim() ?? '';
+    if (c.isNotEmpty) return c;
+    return 'Good';
+  }
+
+  String get _description {
+    final d = widget.description?.trim() ?? '';
+    if (d.isNotEmpty) return d;
+    return _details[widget.name]?['description'] ?? 'No description available.';
+  }
+
+  String get _breed {
+    final b = widget.breed?.trim() ?? '';
+    if (b.isNotEmpty) return b;
+    return _details[widget.name]?['breed'] ?? 'Unknown';
+  }
+
+  String get _age {
+    final a = widget.age?.trim() ?? '';
+    if (a.isNotEmpty) return a;
+    return _details[widget.name]?['age'] ?? 'Unknown';
+  }
+
+  String get _weight {
+    final w = widget.weight?.trim() ?? '';
+    if (w.isNotEmpty) return w;
+    return _details[widget.name]?['weight'] ?? 'Unknown';
   }
 
   void _showMoreOptions() {
@@ -134,13 +219,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     );
   }
 
-  void _showSearch() {
-    showSearch(
-      context: context,
-      delegate: _ProductSearchDelegate(),
-    );
-  }
-
   void _showReportSellerDialog() {
     final TextEditingController reportController = TextEditingController();
     String selectedReason = 'Fraud';
@@ -193,14 +271,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   void _sendMessage() {
     if (_messageText.trim().isEmpty) return;
-    final info = _details[widget.name] ?? {};
-    final sellerName = info['seller'] ?? 'Seller';
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => _ChatPage(
-          sellerName: sellerName,
+          sellerName: _sellerName,
           productName: widget.name,
           initialMessage: _messageText,
         ),
@@ -264,12 +340,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _shareProduct() {
-    final info = _details[widget.name] ?? {};
     final shareText =
         '🐔 Check out this listing!\n\n'
         '${widget.name} — ${widget.price}\n'
-        'Location: ${info['location'] ?? 'Unknown'}\n'
-        'Seller: ${info['seller'] ?? 'Unknown'}\n\n'
+        'Location: $_location\n'
+        'Seller: $_sellerName\n\n'
         'https://farm.app/listing/${widget.name.toLowerCase().replaceAll(' ', '-')}';
 
     // Copy to clipboard as a simple share fallback
@@ -288,10 +363,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       context,
       MaterialPageRoute(
         builder: (context) => _SellerProfilePage(
-          sellerName: info['seller'] ?? 'Unknown',
+          sellerName: _sellerName,
           sellerJoined: info['sellerJoined'] ?? '2024',
           breederSince: info['breederSince'],
-          location: info['location'] ?? 'Unknown',
+          location: _location,
         ),
       ),
     );
@@ -320,7 +395,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       'description': 'No description available.',
     };
 
-    final fullDescription = info['description']!;
+    final fullDescription = _description;
     final shortDescription = fullDescription.length > 100
         ? '${fullDescription.substring(0, 100)}...'
         : fullDescription;
@@ -344,54 +419,51 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       padding: EdgeInsets.zero,
                       alignment: Alignment.centerLeft,
                     ),
-                    Row(
-                      children: [
-                        GestureDetector(
-                          onTap: _showSearch,
-                          child: const Icon(Icons.search, color: Colors.black87, size: 24),
-                        ),
-                        const SizedBox(width: 12),
-                        GestureDetector(
-                          onTap: _showMoreOptions,
-                          child: const Icon(Icons.more_horiz, color: Colors.black87, size: 24),
-                        ),
-                      ],
+                    GestureDetector(
+                      onTap: _showMoreOptions,
+                      child: const Icon(Icons.more_horiz, color: Colors.black87, size: 24),
                     ),
                   ],
                 ),
               ),
 
-              // ── Product Image ────────────────────────────────────
-              Container(
+              // ── Product Image(s) — swipeable ─────────────────────
+              SizedBox(
                 width: double.infinity,
                 height: 280,
-                color: Colors.white,
-                child: Image.asset(
-                  widget.image,
-                  fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    color: const Color(0xFFD6F0E4),
-                    child: const Icon(Icons.image_not_supported_outlined,
-                        color: Colors.white54, size: 60),
-                  ),
-                ),
+                child: _images.isEmpty
+                    ? _imageFallback()
+                    : ScrollConfiguration(
+                        behavior: _DragScrollBehavior(),
+                        child: PageView.builder(
+                          controller: _imageController,
+                          itemCount: _images.length,
+                          onPageChanged: (i) => setState(() => _currentImage = i),
+                          itemBuilder: (context, index) => _carouselImage(_images[index]),
+                        ),
+                      ),
               ),
 
+              const SizedBox(height: 10),
+
               // ── Dots indicator ───────────────────────────────────
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 8, height: 8,
-                    decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black87),
-                  ),
-                  const SizedBox(width: 4),
-                  Container(
-                    width: 8, height: 8,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.grey.shade300),
-                  ),
-                ],
-              ),
+              if (_images.length > 1)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(_images.length, (i) {
+                    final active = i == _currentImage;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: active ? 18 : 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: active ? const Color(0xFF6DBF99) : Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    );
+                  }),
+                ),
 
               const SizedBox(height: 16),
 
@@ -618,7 +690,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(info['seller']!,
+                              Text(_sellerName,
                                 style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
                               ),
                               Row(
@@ -674,16 +746,16 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
                     ),
                     const SizedBox(height: 8),
-                    _buildDetailRow(Icons.pets_outlined,           'Breed',     info['breed']!),
+                    _buildDetailRow(Icons.pets_outlined,           'Breed',     _breed),
                     const SizedBox(height: 6),
-                    _buildDetailRow(Icons.cake_outlined,           'Age',       info['age']!),
+                    _buildDetailRow(Icons.cake_outlined,           'Age',       _age),
                     const SizedBox(height: 6),
-                    _buildDetailRow(Icons.monitor_weight_outlined, 'Weight',    info['weight']!),
+                    _buildDetailRow(Icons.monitor_weight_outlined, 'Weight',    _weight),
                     const SizedBox(height: 6),
-                    _buildDetailRow(Icons.location_on_outlined,    'Location',  info['location']!,
+                    _buildDetailRow(Icons.location_on_outlined,    'Location',  _location,
                         valueColor: const Color(0xFF6DBF99)),
                     const SizedBox(height: 6),
-                    _buildDetailRow(Icons.check_circle_outline,    'Condition', 'Good'),
+                    _buildDetailRow(Icons.check_circle_outline,    'Condition', _condition),
                   ],
                 ),
               ),
@@ -694,6 +766,22 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         ),
       ),
     );
+  }
+
+  Widget _imageFallback() => Container(
+        color: const Color(0xFFD6F0E4),
+        child: const Icon(Icons.image_not_supported_outlined,
+            color: Colors.white54, size: 60),
+      );
+
+  Widget _carouselImage(String path) {
+    return path.startsWith('http')
+        ? Image.network(path,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => _imageFallback())
+        : Image.asset(path,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => _imageFallback());
   }
 
   Widget _buildDetailRow(IconData icon, String label, String value,
@@ -1029,57 +1117,6 @@ class _SellerProfilePage extends StatelessWidget {
         const SizedBox(height: 2),
         Text(label, style: const TextStyle(fontSize: 12, color: Colors.black45)),
       ],
-    );
-  }
-}
-
-// ── Search Delegate ────────────────────────────────────────────────────────
-class _ProductSearchDelegate extends SearchDelegate<String> {
-  final List<String> _suggestions = [
-    'Chicken', 'White Hen', 'Duck', 'Turkey',
-    'Native Broiler', 'Pateros Duck', 'Bronze Turkey',
-    'Batangas', 'Metro Manila',
-  ];
-
-  @override
-  ThemeData appBarTheme(BuildContext context) {
-    return Theme.of(context).copyWith(
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        iconTheme: IconThemeData(color: Colors.black87),
-      ),
-      inputDecorationTheme: const InputDecorationTheme(border: InputBorder.none),
-    );
-  }
-
-  @override
-  List<Widget> buildActions(BuildContext context) => [
-    IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
-  ];
-
-  @override
-  Widget buildLeading(BuildContext context) =>
-    IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, ''));
-
-  @override
-  Widget buildResults(BuildContext context) => _buildList();
-
-  @override
-  Widget buildSuggestions(BuildContext context) => _buildList();
-
-  Widget _buildList() {
-    final results = query.isEmpty
-        ? _suggestions
-        : _suggestions.where((s) => s.toLowerCase().contains(query.toLowerCase())).toList();
-
-    return ListView.builder(
-      itemCount: results.length,
-      itemBuilder: (context, index) => ListTile(
-        leading: const Icon(Icons.search, color: Color(0xFF6DBF99)),
-        title: Text(results[index]),
-        onTap: () => close(context, results[index]),
-      ),
     );
   }
 }

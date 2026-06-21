@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   image_picker: ^1.1.2  
   supabase_flutter: ^2.15.0
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
@@ -23,3 +24,5 @@ flutter:
   uses-material-design: true
   assets:
     - images/
+
+  
