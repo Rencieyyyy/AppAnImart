@@ -1,7 +1,8 @@
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'cloudinary_function.dart';
 import 'login.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
@@ -30,8 +31,10 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _obscureRetypePassword = true;
   bool _agreedToTerms = false;
 
-  // ID upload state
-  File? _validIdFile;
+  // ID upload state. Stored as in-memory bytes (not a dart:io File) so it
+  // works on every platform including Flutter Web.
+  Uint8List? _validIdBytes;
+  String? _validIdName;
   String? _selectedIdType;
 
   static const List<String> _idTypes = [
@@ -79,7 +82,11 @@ class _SignUpPageState extends State<SignUpPage> {
         maxHeight: 1200,
       );
       if (picked != null) {
-        setState(() => _validIdFile = File(picked.path));
+        final bytes = await picked.readAsBytes();
+        setState(() {
+          _validIdBytes = bytes;
+          _validIdName = picked.name;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -153,7 +160,7 @@ class _SignUpPageState extends State<SignUpPage> {
                   _pickImage(ImageSource.gallery);
                 },
               ),
-              if (_validIdFile != null) ...[
+              if (_validIdBytes != null) ...[
                 const SizedBox(height: 12),
                 _SourceTile(
                   icon: Icons.delete_outline_rounded,
@@ -162,7 +169,10 @@ class _SignUpPageState extends State<SignUpPage> {
                   color: const Color(0xFFFFD6D6),
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _validIdFile = null);
+                    setState(() {
+                      _validIdBytes = null;
+                      _validIdName = null;
+                    });
                   },
                 ),
               ],
@@ -267,7 +277,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         if (_retypePasswordController.text.isEmpty) return 'Please retype your password.';
         if (_passwordController.text != _retypePasswordController.text) return 'Passwords do not match.';
         if (_selectedIdType == null) return 'Please select the type of your valid ID.';
-        if (_validIdFile == null) return 'Please upload a photo of your valid ID.';
+        if (_validIdBytes == null) return 'Please upload a photo of your valid ID.';
         if (!_agreedToTerms) return 'Please agree to the Terms and Conditions.';
         return null;
     }
@@ -298,45 +308,66 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
 
   Future<void> _submitRegistration() async {
     setState(() => _isSubmitting = true);
+    final name = _nameController.text.trim();
+    final email = _emailController.text.trim();
+    final phone = _phoneController.text.trim();
+    final address = _addressController.text.trim();
+    final houseNumber = _houseController.text.trim();
     try {
+      // 1) Upload the valid-ID photo to its own Cloudinary folder first (no
+      //    auth needed), so its URL can travel in the sign-up metadata below.
+      String? validIdUrl;
+      if (_validIdBytes != null) {
+        try {
+          validIdUrl = await uploadToCloudinary(
+            _validIdBytes!,
+            _validIdName ?? 'valid_id_${DateTime.now().millisecondsSinceEpoch}.jpg',
+            folder: 'sign ups(animart)',
+          );
+        } catch (e) {
+          debugPrint('Valid ID upload failed: $e');
+        }
+      }
+
+      // 2) Create the Auth user. A database trigger creates the matching row
+      //    in `users` from this metadata (which bypasses RLS and works even
+      //    when email confirmation is on, so there's no client write here).
+      //    `valid_id_url` / `id_type` are backfilled into that row on the
+      //    user's first login, when a session is guaranteed to exist.
       final res = await supabase.auth.signUp(
-        email: _emailController.text.trim(),
+        email: email,
         password: _passwordController.text,
-        // Profile details are stored on the Auth user's metadata.
-        // Move these to a `profiles` table later if you prefer.
         data: {
-          'full_name': _nameController.text.trim(),
-          'phone': _phoneController.text.trim(),
-          'address': _addressController.text.trim(),
-          'house_no': _houseController.text.trim(),
+          'name': name,
+          'phone': phone,
+          'address': address,
+          'house_number': houseNumber,
           'id_type': _selectedIdType,
+          'valid_id_url': validIdUrl,
         },
       );
 
-      if (!mounted) return;
+      if (res.user == null) {
+        if (mounted) _showSnack('Could not create your account. Please try again.');
+        return;
+      }
 
-      // NOTE: the uploaded ID photo (_validIdFile) is not yet sent anywhere.
-      // To store it, create a Supabase Storage bucket and upload it here, e.g.:
-      //   await supabase.storage.from('valid-ids').upload(path, _validIdFile!);
+      if (!mounted) return;
 
       if (res.session != null) {
         // Email confirmation is disabled — user is signed in immediately.
         _showSnack('Account created!', color: const Color(0xFF4CAF7D));
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const LoginPage()),
-        );
       } else {
         // Email confirmation is enabled — prompt the user to verify.
         _showSnack(
           'Account created! Please check your email to confirm, then log in.',
           color: const Color(0xFF4CAF7D),
         );
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const LoginPage()),
-        );
       }
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginPage()),
+      );
     } on AuthException catch (e) {
       if (mounted) _showSnack(e.message);
     } catch (e) {
@@ -588,12 +619,12 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                   borderRadius: BorderRadius.circular(20),
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: _validIdFile != null
+                child: _validIdBytes != null
                     ? Stack(
                         children: [
                           // Preview image
-                          Image.file(
-                            _validIdFile!,
+                          Image.memory(
+                            _validIdBytes!,
                             width: double.infinity,
                             height: 160,
                             fit: BoxFit.cover,

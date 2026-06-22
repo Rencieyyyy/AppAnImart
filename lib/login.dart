@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'signup.dart';
 import 'dashboard.dart';
+import 'current_user.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -57,6 +58,33 @@ class _LoginPageState extends State<LoginPage> {
             context,
             'Access denied. This is an administrator account and cannot be '
             'used to sign in here. Please use a proper user account.',
+            duration: const Duration(seconds: 4),
+          );
+          return;
+        }
+      }
+
+      // Copy the valid-ID details captured at sign-up onto the user's row
+      // now that a session exists. Best-effort — never blocks login.
+      await backfillValidIdFromMetadata();
+
+      // Admin-approval gate: accounts must be approved (is_verified = true) on
+      // the admin website before they can use the app. Until then, deny access
+      // and sign out so no session is left hanging.
+      if (authId != null) {
+        final profile = await supabase
+            .from('users')
+            .select('is_verified')
+            .eq('id', authId)
+            .maybeSingle();
+        final isVerified = (profile?['is_verified'] as bool?) ?? false;
+        if (!isVerified) {
+          await supabase.auth.signOut();
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Your account is awaiting admin approval. You\'ll be able to log in '
+            'once it has been reviewed and approved.',
             duration: const Duration(seconds: 4),
           );
           return;

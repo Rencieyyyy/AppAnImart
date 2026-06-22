@@ -7,7 +7,15 @@ import 'package:http/http.dart' as http;
 ///
 /// Bytes are used instead of a `File` so this works on every platform,
 /// including Flutter Web where `dart:io` File is unavailable.
-Future<String?> uploadToCloudinary(Uint8List bytes, String filename) async {
+///
+/// [folder] controls which Cloudinary folder the image lands in. Listing
+/// photos use the default `Animart`; sensitive uploads such as sign-up valid
+/// IDs pass their own folder (e.g. `Animart/valid_ids`) to keep them separate.
+Future<String?> uploadToCloudinary(
+  Uint8List bytes,
+  String filename, {
+  String folder = 'Animart',
+}) async {
   const String cloudName = "dor6aqawk";
   const String uploadPreset = "Animart";
 
@@ -17,7 +25,7 @@ Future<String?> uploadToCloudinary(Uint8List bytes, String filename) async {
 
   final request = http.MultipartRequest('POST', url)
     ..fields['upload_preset'] = uploadPreset
-    ..fields['folder'] = 'Animart'
+    ..fields['folder'] = folder
     ..files.add(
       http.MultipartFile.fromBytes('file', bytes, filename: filename),
     );
