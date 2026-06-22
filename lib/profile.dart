@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
@@ -9,6 +10,7 @@ import 'main.dart';
 import 'product_detail.dart';
 import 'user_listings.dart';
 import 'widgets/top_message.dart';
+import 'cloudinary_function.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -1831,8 +1833,8 @@ class _ProfilePageState extends State<ProfilePage> {
     final created = _relativeTime(row['created_at']);
 
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
+      onTap: () async {
+        final result = await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ProductDetailPage(
@@ -1851,9 +1853,14 @@ class _ProfilePageState extends State<ProfilePage> {
               breed: (row['breed'] as String?) ?? '',
               age: (row['age'] as String?) ?? '',
               weight: (row['weight'] as String?) ?? '',
+              createdAt: '${row['created_at'] ?? ''}',
+              listingId: '${row['id'] ?? ''}',
+              sellerId: '${row['seller_id'] ?? ''}',
+              status: status,
             ),
           ),
         );
+        if (result == 'deleted') _loadMyListings();
       },
       child: Container(
         decoration: BoxDecoration(
@@ -2039,8 +2046,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   static const Color _accent = Color(0xFF3AA876);
   static const Color _dark = Color(0xFF1A2E22);
   static const Color _line = Color(0xFFEAF2EE);
-  // Storage bucket that holds profile pictures (shared with admin avatars).
-  static const String _avatarBucket = 'avatar';
 
   late final TextEditingController _nameCtrl;
   late final TextEditingController _phoneCtrl;
@@ -2128,6 +2133,41 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     await _uploadAvatar(source);
   }
 
+  /// Opens the crop editor so the user can frame their photo as a square
+  /// before upload. Returns null if they cancel.
+  Future<CroppedFile?> _cropToSquare(String sourcePath) async {
+    return ImageCropper().cropImage(
+      sourcePath: sourcePath,
+      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+      compressFormat: ImageCompressFormat.jpg,
+      compressQuality: 90,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Adjust photo',
+          toolbarColor: _accent,
+          toolbarWidgetColor: Colors.white,
+          backgroundColor: Colors.black,
+          activeControlsWidgetColor: _accent,
+          initAspectRatio: CropAspectRatioPreset.square,
+          lockAspectRatio: true,
+          cropStyle: CropStyle.circle,
+          aspectRatioPresets: const [CropAspectRatioPreset.square],
+        ),
+        IOSUiSettings(
+          title: 'Adjust photo',
+          aspectRatioLockEnabled: true,
+          resetAspectRatioEnabled: false,
+          cropStyle: CropStyle.circle,
+          aspectRatioPresets: const [CropAspectRatioPreset.square],
+        ),
+        WebUiSettings(
+          context: context,
+          presentStyle: WebPresentStyle.dialog,
+        ),
+      ],
+    );
+  }
+
   Future<void> _uploadAvatar(ImageSource source) async {
     final user = supabase.auth.currentUser;
     if (user == null) {
@@ -2137,31 +2177,35 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     try {
       final picked = await ImagePicker().pickImage(
         source: source,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
+        maxWidth: 1080,
+        maxHeight: 1080,
+        imageQuality: 90,
       );
       if (picked == null) return; // user cancelled
+      if (!mounted) return;
+
+      // Let the user crop/adjust to a square before uploading.
+      final cropped = await _cropToSquare(picked.path);
+      if (cropped == null) return; // user cancelled the crop
 
       setState(() => _uploadingAvatar = true);
-      final bytes = await picked.readAsBytes();
-      final ext = picked.path.split('.').last.toLowerCase();
-      final contentType = (ext == 'png')
-          ? 'image/png'
-          : (ext == 'webp' ? 'image/webp' : 'image/jpeg');
-      final path = 'users/${user.id}/avatar.$ext';
+      final bytes = await cropped.readAsBytes();
 
-      await supabase.storage.from(_avatarBucket).uploadBinary(
-            path,
-            bytes,
-            fileOptions: FileOptions(upsert: true, contentType: contentType),
-          );
+      // Upload the new profile picture to Cloudinary (folder `user_profile`).
+      final url = await uploadToCloudinary(
+        bytes,
+        '${user.id}.jpg',
+        folder: 'user_profile',
+      );
+      if (url == null) {
+        throw Exception('Image upload failed.');
+      }
 
-      // Cache-bust so the new image shows immediately instead of a cached one.
-      final url = '${supabase.storage.from(_avatarBucket).getPublicUrl(path)}'
-          '?t=${DateTime.now().millisecondsSinceEpoch}';
+      // Remove the previous picture from Cloudinary so it's truly replaced.
+      // Runs while the DB still references the old URL (best-effort).
+      await deleteCurrentAvatarImage();
 
-      // Persist the URL on the user's row.
+      // Persist the new URL on the user's row.
       await supabase
           .from('users')
           .update({'avatar_url': url}).eq('id', user.id);

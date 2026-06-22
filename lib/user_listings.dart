@@ -112,28 +112,35 @@ class _UserListingsPageState extends State<UserListingsPage> {
     final image = imageUrl.isNotEmpty ? imageUrl : 'images/chicken.png';
 
     return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ProductDetailPage(
-            name: title,
-            price: price,
-            image: image,
-            images: (row['image_urls'] as List?)
-                    ?.map((e) => '$e')
-                    .where((e) => e.trim().isNotEmpty)
-                    .toList() ??
-                const [],
-            description: (row['description'] as String?) ?? '',
-            condition: (row['condition'] as String?) ?? '',
-            sellerName: widget.userName,
-            location: (row['location'] as String?) ?? '',
-            breed: (row['breed'] as String?) ?? '',
-            age: (row['age'] as String?) ?? '',
-            weight: (row['weight'] as String?) ?? '',
+      onTap: () async {
+        final result = await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProductDetailPage(
+              name: title,
+              price: price,
+              image: image,
+              images: (row['image_urls'] as List?)
+                      ?.map((e) => '$e')
+                      .where((e) => e.trim().isNotEmpty)
+                      .toList() ??
+                  const [],
+              description: (row['description'] as String?) ?? '',
+              condition: (row['condition'] as String?) ?? '',
+              sellerName: widget.userName,
+              location: (row['location'] as String?) ?? '',
+              breed: (row['breed'] as String?) ?? '',
+              age: (row['age'] as String?) ?? '',
+              weight: (row['weight'] as String?) ?? '',
+              createdAt: '${row['created_at'] ?? ''}',
+              listingId: '${row['id'] ?? ''}',
+              sellerId: '${row['seller_id'] ?? ''}',
+              status: (row['status'] as String?) ?? 'active',
+            ),
           ),
-        ),
-      ),
+        );
+        if (result == 'deleted') _loadListings();
+      },
       child: Container(
         decoration: BoxDecoration(
           border: Border.all(color: const Color(0xFF6DBF99), width: 1.5),

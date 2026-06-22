@@ -22,6 +22,10 @@ class LivestockItem {
   final String breed;
   final String age;
   final String weight;
+  final String id; // listing row id
+  final String sellerId; // owner's user id
+  final String createdAt; // ISO timestamp
+  final String status; // 'active' | 'disabled'
 
   const LivestockItem({
     required this.label,
@@ -36,6 +40,10 @@ class LivestockItem {
     this.breed = '',
     this.age = '',
     this.weight = '',
+    this.id = '',
+    this.sellerId = '',
+    this.createdAt = '',
+    this.status = 'active',
   });
 }
 
@@ -138,6 +146,10 @@ class _DashboardPageState extends State<DashboardPage> {
             breed: (row['breed'] as String?) ?? '',
             age: (row['age'] as String?) ?? '',
             weight: (row['weight'] as String?) ?? '',
+            id: '${row['id'] ?? ''}',
+            sellerId: '${row['seller_id'] ?? ''}',
+            createdAt: '${row['created_at'] ?? ''}',
+            status: (row['status'] as String?) ?? 'active',
           );
         }).toList();
         _loadingItems = false;
@@ -1244,24 +1256,31 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildCategoryCard(LivestockItem item) {
     final isFav = _favourites.contains(item.label);
     return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ProductDetailPage(
-            name: item.label,
-            price: item.priceText,
-            image: item.imagePath,
-            images: item.images,
-            description: item.description,
-            condition: item.condition,
-            sellerName: item.sellerName,
-            location: item.location,
-            breed: item.breed,
-            age: item.age,
-            weight: item.weight,
+      onTap: () async {
+        final result = await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProductDetailPage(
+              name: item.label,
+              price: item.priceText,
+              image: item.imagePath,
+              images: item.images,
+              description: item.description,
+              condition: item.condition,
+              sellerName: item.sellerName,
+              location: item.location,
+              breed: item.breed,
+              age: item.age,
+              weight: item.weight,
+              createdAt: item.createdAt,
+              listingId: item.id,
+              sellerId: item.sellerId,
+              status: item.status,
+            ),
           ),
-        ),
-      ),
+        );
+        if (result == 'deleted') _loadItems();
+      },
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),

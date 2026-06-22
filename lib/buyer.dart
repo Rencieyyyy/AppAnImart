@@ -22,6 +22,9 @@ class _Listing {
   final String breed;
   final String age;
   final String weight;
+  final String id;
+  final String sellerId;
+  final String createdAt;
 
   const _Listing({
     required this.name,
@@ -38,6 +41,9 @@ class _Listing {
     this.breed = '',
     this.age = '',
     this.weight = '',
+    this.id = '',
+    this.sellerId = '',
+    this.createdAt = '',
   });
 }
 
@@ -114,6 +120,9 @@ class _BuyerPageState extends State<BuyerPage> {
             breed: (row['breed'] as String?) ?? '',
             age: (row['age'] as String?) ?? '',
             weight: (row['weight'] as String?) ?? '',
+            id: '${row['id'] ?? ''}',
+            sellerId: '${row['seller_id'] ?? ''}',
+            createdAt: '${row['created_at'] ?? ''}',
           );
         }).toList();
         _loading = false;
@@ -800,24 +809,31 @@ class _BuyerPageState extends State<BuyerPage> {
                             final item = items[index];
                             final isFav = _favourites.contains(item.name);
                             return GestureDetector(
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => ProductDetailPage(
-                                    name: item.name,
-                                    price: item.price,
-                                    image: item.image,
-                                    images: item.images,
-                                    description: item.description,
-                                    condition: item.condition,
-                                    sellerName: item.sellerName,
-                                    location: item.location,
-                                    breed: item.breed,
-                                    age: item.age,
-                                    weight: item.weight,
+                              onTap: () async {
+                                final result = await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => ProductDetailPage(
+                                      name: item.name,
+                                      price: item.price,
+                                      image: item.image,
+                                      images: item.images,
+                                      description: item.description,
+                                      condition: item.condition,
+                                      sellerName: item.sellerName,
+                                      location: item.location,
+                                      breed: item.breed,
+                                      age: item.age,
+                                      weight: item.weight,
+                                      createdAt: item.createdAt,
+                                      listingId: item.id,
+                                      sellerId: item.sellerId,
+                                      status: 'active',
+                                    ),
                                   ),
-                                ),
-                              ),
+                                );
+                                if (result == 'deleted') _loadListings();
+                              },
                               child: Container(
                                 decoration: BoxDecoration(
                                   border: Border.all(

@@ -1,0 +1,14 @@
+# Supabase CLI project config.
+# The project ref this links to (Project Settings → General → Reference ID).
+project_id = "kzhlhrhhfupgvpzjllce"
+
+[functions.delete-cloudinary-image]
+# Cloudinary deletion is signed by the app's signed-in user. Keep JWT
+# verification on so only authenticated users can invoke it.
+verify_jwt = true
+
+[functions.delete-avatar-image]
+# Deletes the caller's own previous profile picture. JWT verification on so
+# only authenticated users can invoke it; the function reads the caller's own
+# avatar_url, so it can only ever delete their own image.
+verify_jwt = true

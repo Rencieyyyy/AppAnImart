@@ -102,6 +102,9 @@ class _SellerPageState extends State<SellerPage> {
               'breed': (row['breed'] as String?) ?? '',
               'age': (row['age'] as String?) ?? '',
               'weight': (row['weight'] as String?) ?? '',
+              'createdAt': '${row['created_at'] ?? ''}',
+              'sellerId': '${row['seller_id'] ?? ''}',
+              'status': (row['status'] as String?) ?? 'active',
             };
           }));
         _loadingListings = false;
@@ -324,6 +327,9 @@ class _SellerPageState extends State<SellerPage> {
     setState(() => _myListings.removeAt(index));
     if (id == null) return;
     try {
+      // Best-effort Cloudinary cleanup first — the function verifies ownership
+      // and reads the image URLs from the row, so it must run before delete.
+      await deleteListingImages('$id');
       await supabase.from('listings').delete().eq('id', id);
     } catch (e) {
       if (mounted) showTopMessage(context, 'Could not delete listing: $e');
@@ -482,8 +488,8 @@ class _SellerPageState extends State<SellerPage> {
               final isAsset = item['isAsset'] as bool;
 
               return GestureDetector(
-                onTap: () {
-                  Navigator.push(
+                onTap: () async {
+                  final result = await Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (context) => ProductDetailPage(
@@ -498,9 +504,14 @@ class _SellerPageState extends State<SellerPage> {
                         breed: item['breed'] as String? ?? '',
                         age: item['age'] as String? ?? '',
                         weight: item['weight'] as String? ?? '',
+                        createdAt: item['createdAt'] as String? ?? '',
+                        listingId: '${item['id'] ?? ''}',
+                        sellerId: item['sellerId'] as String? ?? '',
+                        status: item['status'] as String? ?? 'active',
                       ),
                     ),
                   );
+                  if (result == 'deleted') _loadMyListings();
                 },
                 child: Container(
                   decoration: BoxDecoration(

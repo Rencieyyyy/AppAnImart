@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
 import 'widgets/top_message.dart';
+import 'main.dart';
+import 'cloudinary_function.dart';
 
 /// Lets scrollables (e.g. the image carousel) be dragged with a mouse/trackpad
 /// on web & desktop, not just touch — Flutter disables mouse drag by default.
@@ -28,6 +30,18 @@ class ProductDetailPage extends StatefulWidget {
   final String? age;
   final String? weight;
 
+  /// ISO-8601 timestamp of when the listing was created (for "x days ago").
+  final String? createdAt;
+
+  /// Listing row id — required for the owner delete/disable actions.
+  final String? listingId;
+
+  /// Seller's user id — used to detect whether the viewer owns this listing.
+  final String? sellerId;
+
+  /// Listing status, e.g. 'active' or 'disabled'.
+  final String? status;
+
   const ProductDetailPage({
     super.key,
     required this.name,
@@ -41,6 +55,10 @@ class ProductDetailPage extends StatefulWidget {
     this.breed,
     this.age,
     this.weight,
+    this.createdAt,
+    this.listingId,
+    this.sellerId,
+    this.status,
   });
 
   @override
@@ -56,6 +74,45 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   final PageController _imageController = PageController();
   int _currentImage = 0;
+
+  late String _status = (widget.status?.trim().isNotEmpty ?? false)
+      ? widget.status!.trim()
+      : 'active';
+
+  /// True when the current signed-in user owns this listing, so the
+  /// delete/disable actions should be offered.
+  bool get _isOwner {
+    final id = widget.listingId?.trim() ?? '';
+    final owner = widget.sellerId?.trim() ?? '';
+    if (id.isEmpty || owner.isEmpty) return false;
+    return supabase.auth.currentUser?.id == owner;
+  }
+
+  /// Human-friendly age of the post, e.g. "3 days ago". Falls back to
+  /// "Just listed" when no timestamp is available.
+  String get _postAge {
+    final dt = DateTime.tryParse(widget.createdAt ?? '');
+    if (dt == null) return 'Just listed';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays >= 365) {
+      final y = diff.inDays ~/ 365;
+      return '$y year${y == 1 ? '' : 's'} ago';
+    }
+    if (diff.inDays >= 30) {
+      final m = diff.inDays ~/ 30;
+      return '$m month${m == 1 ? '' : 's'} ago';
+    }
+    if (diff.inDays >= 1) {
+      return '${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+    }
+    if (diff.inHours >= 1) {
+      return '${diff.inHours} hour${diff.inHours == 1 ? '' : 's'} ago';
+    }
+    if (diff.inMinutes >= 1) {
+      return '${diff.inMinutes} min${diff.inMinutes == 1 ? '' : 's'} ago';
+    }
+    return 'Just now';
+  }
 
   /// All images to show, ignoring blanks; falls back to the single [image].
   List<String> get _images {
@@ -182,6 +239,23 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
+            // Owner-only actions ─────────────────────────────────────
+            if (_isOwner) ...[
+              _buildSheetOption(
+                _status == 'active' ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                _status == 'active' ? 'Disable Listing' : 'Enable Listing',
+                Colors.orange,
+                () {
+                  Navigator.pop(context);
+                  _toggleDisableListing();
+                },
+              ),
+              _buildSheetOption(Icons.delete_outline, 'Delete Listing', Colors.red, () {
+                Navigator.pop(context);
+                _confirmDeleteListing();
+              }),
+              const Divider(height: 8),
+            ],
             _buildSheetOption(Icons.report_outlined, 'Report Listing', Colors.red, () {
               Navigator.pop(context);
               _showSnackBar('Report submitted. We\'ll review this listing.');
@@ -217,6 +291,71 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       title: Text(label, style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w500)),
       onTap: onTap,
     );
+  }
+
+  /// Toggles the listing between 'active' and 'disabled'. A disabled listing
+  /// is hidden from the public browse pages (which filter on status='active').
+  Future<void> _toggleDisableListing() async {
+    final id = widget.listingId;
+    if (id == null) return;
+    final newStatus = _status == 'active' ? 'disabled' : 'active';
+    try {
+      await supabase.from('listings').update({'status': newStatus}).eq('id', id);
+      if (!mounted) return;
+      setState(() => _status = newStatus);
+      _showSnackBar(newStatus == 'disabled'
+          ? 'Listing disabled. Buyers can no longer see it.'
+          : 'Listing enabled. It\'s visible to buyers again.');
+    } catch (e) {
+      if (mounted) _showSnackBar('Could not update listing. Please try again.');
+    }
+  }
+
+  void _confirmDeleteListing() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Listing', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text(
+          'This will permanently remove this listing. This action cannot be undone.',
+          style: TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _deleteListing();
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteListing() async {
+    final id = widget.listingId;
+    if (id == null) return;
+    try {
+      // Best-effort cleanup of the hosted images before removing the row, so
+      // they don't linger in Cloudinary as orphans. Must run before the row is
+      // deleted — the function reads the row to verify ownership.
+      await deleteListingImages(id);
+
+      await supabase.from('listings').delete().eq('id', id);
+      if (!mounted) return;
+      _showSnackBar('Listing deleted.');
+      // Return a result so the previous page can refresh its list.
+      Navigator.of(context).pop('deleted');
+    } catch (e) {
+      if (mounted) _showSnackBar('Could not delete listing. Please try again.');
+    }
   }
 
   void _showReportSellerDialog() {
@@ -481,8 +620,25 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       style: const TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w500),
                     ),
                     const SizedBox(height: 4),
-                    const Text('Just listed',
-                      style: TextStyle(fontSize: 12, color: Colors.black45),
+                    Row(
+                      children: [
+                        Text(_postAge,
+                          style: const TextStyle(fontSize: 12, color: Colors.black45),
+                        ),
+                        if (_status != 'active') ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text('Disabled',
+                              style: TextStyle(fontSize: 10, color: Colors.orange, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
