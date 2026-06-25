@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
@@ -11,6 +12,7 @@ import 'product_detail.dart';
 import 'user_listings.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
+import 'support_chat.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -429,6 +431,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // ── Customer Service ──────────────────────────────────────────────────────
   void _showCustomerService() {
+    final bool chatOnline = DateTime.now().hour >= 8 && DateTime.now().hour < 17;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -436,49 +439,130 @@ class _ProfilePageState extends State<ProfilePage> {
       builder: (ctx) => Container(
         decoration: const BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         ),
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+        padding: EdgeInsets.fromLTRB(
+            20, 12, 20, 24 + MediaQuery.of(ctx).padding.bottom),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                width: 44, height: 5,
+                decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(3)),
               ),
-              const SizedBox(height: 20),
-              const CircleAvatar(
-                radius: 28,
-                backgroundColor: Color(0xFFE8F8F1),
-                child: Icon(Icons.support_agent, color: Color(0xFF3AA876), size: 30),
+              const SizedBox(height: 22),
+              Container(
+                width: 66, height: 66,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF3AA876), Color(0xFF2E8B63)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF3AA876).withOpacity(0.32),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: const Icon(Icons.support_agent_rounded,
+                    color: Colors.white, size: 34),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
               const Text('Customer Service',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                  style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF1A2E22))),
               const SizedBox(height: 6),
               const Text(
-                'We\'re here to help! Reach us through any of the channels below.',
+                'We\'re here to help! Reach us through any of the\nchannels below.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: Colors.black45, height: 1.5),
+                style: TextStyle(fontSize: 13, color: Colors.black45, height: 1.45),
               ),
-              const SizedBox(height: 20),
-              _serviceRow(Icons.phone_rounded, 'Call Us', '+63 912 345 6789', const Color(0xFF3AA876)),
-              const SizedBox(height: 10),
-              _serviceRow(Icons.email_outlined, 'Email Us', 'support@animart.ph', const Color(0xFF2196F3)),
-              const SizedBox(height: 10),
-              _serviceRow(Icons.chat_bubble_outline, 'Live Chat', 'Available 8AM – 5PM', const Color(0xFFFFB300)),
-              const SizedBox(height: 20),
+              const SizedBox(height: 22),
+              _serviceRow(
+                icon: Icons.phone_rounded,
+                title: 'Call Us',
+                subtitle: '+63 912 345 6789',
+                color: const Color(0xFF3AA876),
+                actionLabel: 'Copy',
+                onTap: () => _copyContact('Phone number', '+63 912 345 6789'),
+              ),
+              const SizedBox(height: 12),
+              _serviceRow(
+                icon: Icons.email_outlined,
+                title: 'Email Us',
+                subtitle: 'support@animart.ph',
+                color: const Color(0xFF2196F3),
+                actionLabel: 'Copy',
+                onTap: () => _copyContact('Email', 'support@animart.ph'),
+              ),
+              const SizedBox(height: 12),
+              _serviceRow(
+                icon: Icons.chat_bubble_outline_rounded,
+                title: 'Live Chat',
+                subtitle: chatOnline
+                    ? 'Online now · Typically replies in minutes'
+                    : 'Available 8AM – 5PM',
+                color: const Color(0xFFFFB300),
+                actionLabel: 'Open',
+                actionIcon: Icons.arrow_forward_rounded,
+                online: chatOnline,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SupportChatPage()),
+                  );
+                },
+              ),
+              const SizedBox(height: 18),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4F6F5),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  children: const [
+                    Icon(Icons.schedule_rounded,
+                        size: 18, color: Color(0xFF3AA876)),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Average response time under 24 hours.',
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            color: Colors.black54,
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,
-                child: OutlinedButton(
+                child: TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    side: const BorderSide(color: Colors.black12),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    backgroundColor: const Color(0xFFF2F4F3),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
-                  child: const Text('Close', style: TextStyle(color: Colors.black54)),
+                  child: const Text('Close',
+                      style: TextStyle(
+                          color: Color(0xFF1A2E22),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15)),
                 ),
               ),
             ],
@@ -488,30 +572,112 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _serviceRow(IconData icon, String title, String subtitle, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.2)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
-            child: Icon(icon, color: color, size: 18),
+  Future<void> _copyContact(String label, String value) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+    showTopMessage(context, '$label copied to clipboard',
+        isError: false, icon: Icons.copy_rounded);
+  }
+
+  Widget _serviceRow({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+    required String actionLabel,
+    IconData actionIcon = Icons.copy_rounded,
+    bool online = false,
+  }) {
+    return Material(
+      color: color.withOpacity(0.06),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(0.18)),
           ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
-              Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.black45)),
+              Container(
+                width: 46, height: 46,
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(13)),
+                child: Icon(icon, color: color, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(title,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14.5,
+                                  color: Color(0xFF1A2E22))),
+                        ),
+                        if (online) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFF3AA876).withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(10)),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: const [
+                                _Dot(),
+                                SizedBox(width: 5),
+                                Text('Online',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF3AA876))),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Colors.black54)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(actionIcon, size: 14, color: color),
+                    const SizedBox(width: 5),
+                    Text(actionLabel,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: color)),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -2389,6 +2555,23 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Small status dot used in the Customer Service sheet.
+class _Dot extends StatelessWidget {
+  const _Dot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 7,
+      height: 7,
+      decoration: const BoxDecoration(
+        color: Color(0xFF3AA876),
+        shape: BoxShape.circle,
       ),
     );
   }
