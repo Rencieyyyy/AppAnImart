@@ -4,6 +4,7 @@ import 'dashboard.dart';
 import 'announcement_page.dart';
 import 'profile.dart';
 import 'main.dart';
+import 'services/marketplace_service.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -71,7 +72,12 @@ class _BuyerPageState extends State<BuyerPage> {
   String _selectedCategory = 'All';
   String _searchQuery = '';
   String _sortBy = 'Default'; // Default | Price ↑ | Price ↓ | Nearest
-  final Set<String> _favourites = {};
+  double? _minPrice;
+  double? _maxPrice;
+
+  // Persistent favourites (listing ids) and blocked sellers (user ids).
+  Set<String> _favourites = {};
+  Set<String> _blockedSellers = {};
 
   // Listings loaded from the `listings` table.
   List<_Listing> _allListings = [];
@@ -81,6 +87,42 @@ class _BuyerPageState extends State<BuyerPage> {
   void initState() {
     super.initState();
     _loadListings();
+    _loadFavorites();
+    _loadBlocked();
+  }
+
+  /// Loads the user's saved favourites (by listing id) from Supabase.
+  Future<void> _loadFavorites() async {
+    final ids = await MarketplaceService.fetchFavoriteIds();
+    if (!mounted) return;
+    setState(() => _favourites = ids);
+  }
+
+  /// Loads the user's blocked sellers so their listings can be hidden.
+  Future<void> _loadBlocked() async {
+    final ids = await MarketplaceService.fetchBlockedIds();
+    if (!mounted) return;
+    setState(() => _blockedSellers = ids);
+  }
+
+  /// Persists a favourite toggle and updates local state optimistically.
+  Future<void> _toggleFavorite(String listingId) async {
+    if (listingId.isEmpty) return;
+    final wasFav = _favourites.contains(listingId);
+    setState(() {
+      wasFav ? _favourites.remove(listingId) : _favourites.add(listingId);
+    });
+    final nowFav = await MarketplaceService.toggleFavorite(
+      listingId,
+      currentlyFavorited: wasFav,
+    );
+    // Reconcile with the server result if the write failed.
+    if (!mounted) return;
+    if (nowFav != !wasFav) {
+      setState(() {
+        nowFav ? _favourites.add(listingId) : _favourites.remove(listingId);
+      });
+    }
   }
 
   /// Loads all active listings from Supabase, newest first.
@@ -144,10 +186,22 @@ class _BuyerPageState extends State<BuyerPage> {
   // ── Derived list ───────────────────────────────────────────────────────────
 
   List<_Listing> get _filtered {
-    List<_Listing> list = _allListings;
+    // Hide listings from sellers the user has blocked.
+    List<_Listing> list = _blockedSellers.isEmpty
+        ? _allListings
+        : _allListings
+            .where((l) => !_blockedSellers.contains(l.sellerId))
+            .toList();
 
     if (_selectedCategory != 'All') {
       list = list.where((l) => l.category == _selectedCategory).toList();
+    }
+
+    if (_minPrice != null) {
+      list = list.where((l) => l.priceValue >= _minPrice!).toList();
+    }
+    if (_maxPrice != null) {
+      list = list.where((l) => l.priceValue <= _maxPrice!).toList();
     }
 
     if (_searchQuery.isNotEmpty) {
@@ -156,7 +210,8 @@ class _BuyerPageState extends State<BuyerPage> {
           .where((l) =>
               l.name.toLowerCase().contains(q) ||
               l.category.toLowerCase().contains(q) ||
-              l.location.toLowerCase().contains(q))
+              l.location.toLowerCase().contains(q) ||
+              l.breed.toLowerCase().contains(q))
           .toList();
     }
 
@@ -285,6 +340,10 @@ class _BuyerPageState extends State<BuyerPage> {
 
   void _showFilterSheet() {
     String tempSort = _sortBy;
+    final minCtrl = TextEditingController(
+        text: _minPrice != null ? _minPrice!.toInt().toString() : '');
+    final maxCtrl = TextEditingController(
+        text: _maxPrice != null ? _maxPrice!.toInt().toString() : '');
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -353,31 +412,102 @@ class _BuyerPageState extends State<BuyerPage> {
                   );
                 }).toList(),
               ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: () {
-                    setState(() => _sortBy = tempSort);
-                    Navigator.pop(ctx);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6DBF99),
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30)),
+              const SizedBox(height: 20),
+              const Text('Price range (₱)',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black54)),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(child: _priceField(minCtrl, 'Min')),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: Text('–', style: TextStyle(color: Colors.black38)),
                   ),
-                  child: const Text('Apply',
-                      style: TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w600)),
-                ),
+                  Expanded(child: _priceField(maxCtrl, 'Max')),
+                ],
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 48,
+                      child: OutlinedButton(
+                        onPressed: () {
+                          setState(() {
+                            _sortBy = 'Default';
+                            _minPrice = null;
+                            _maxPrice = null;
+                          });
+                          Navigator.pop(ctx);
+                        },
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF6DBF99),
+                          side: const BorderSide(color: Color(0xFF6DBF99)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30)),
+                        ),
+                        child: const Text('Reset',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: SizedBox(
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            _sortBy = tempSort;
+                            _minPrice = double.tryParse(minCtrl.text.trim());
+                            _maxPrice = double.tryParse(maxCtrl.text.trim());
+                          });
+                          Navigator.pop(ctx);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF6DBF99),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(30)),
+                        ),
+                        child: const Text('Apply',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         );
       }),
+    );
+  }
+
+  Widget _priceField(TextEditingController ctrl, String hint) {
+    return TextField(
+      controller: ctrl,
+      keyboardType: TextInputType.number,
+      style: const TextStyle(fontSize: 14),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.black38, fontSize: 13),
+        filled: true,
+        fillColor: const Color(0xFFF2F2F2),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      ),
     );
   }
 
@@ -498,7 +628,7 @@ class _BuyerPageState extends State<BuyerPage> {
       context: context,
       builder: (ctx) {
         final favs =
-            _allListings.where((l) => _favourites.contains(l.name)).toList();
+            _allListings.where((l) => _favourites.contains(l.id)).toList();
         return AlertDialog(
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -542,8 +672,9 @@ class _BuyerPageState extends State<BuyerPage> {
                             style: const TextStyle(
                                 fontSize: 12, color: Colors.black45)),
                         trailing: GestureDetector(
-                          onTap: () {
-                            setState(() => _favourites.remove(item.name));
+                          onTap: () async {
+                            await _toggleFavorite(item.id);
+                            if (!ctx.mounted) return;
                             Navigator.pop(ctx);
                             _showFavourites();
                           },
@@ -571,8 +702,11 @@ class _BuyerPageState extends State<BuyerPage> {
   @override
   Widget build(BuildContext context) {
     final items = _filtered;
-    final bool hasActiveFilters =
-        _selectedCategory != 'All' || _sortBy != 'Default' || _searchQuery.isNotEmpty;
+    final bool hasPriceFilter = _minPrice != null || _maxPrice != null;
+    final bool hasActiveFilters = _selectedCategory != 'All' ||
+        _sortBy != 'Default' ||
+        _searchQuery.isNotEmpty ||
+        hasPriceFilter;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -688,7 +822,7 @@ class _BuyerPageState extends State<BuyerPage> {
                         Icons.filter_list,
                         _sortBy != 'Default' ? 'Sort: $_sortBy' : 'Filter',
                         onTap: _showFilterSheet,
-                        active: _sortBy != 'Default',
+                        active: _sortBy != 'Default' || hasPriceFilter,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -756,6 +890,13 @@ class _BuyerPageState extends State<BuyerPage> {
                           if (_sortBy != 'Default')
                             _filterChip('Sort: $_sortBy',
                                 () => setState(() => _sortBy = 'Default')),
+                          if (hasPriceFilter)
+                            _filterChip(
+                                '₱${_minPrice?.toInt() ?? 0}–${_maxPrice != null ? _maxPrice!.toInt().toString() : '∞'}',
+                                () => setState(() {
+                                      _minPrice = null;
+                                      _maxPrice = null;
+                                    })),
                           if (_searchQuery.isNotEmpty)
                             _filterChip('"$_searchQuery"',
                                 () => setState(() => _searchQuery = '')),
@@ -807,7 +948,7 @@ class _BuyerPageState extends State<BuyerPage> {
                           ),
                           itemBuilder: (context, index) {
                             final item = items[index];
-                            final isFav = _favourites.contains(item.name);
+                            final isFav = _favourites.contains(item.id);
                             return GestureDetector(
                               onTap: () async {
                                 final result = await Navigator.push(
@@ -833,6 +974,10 @@ class _BuyerPageState extends State<BuyerPage> {
                                   ),
                                 );
                                 if (result == 'deleted') _loadListings();
+                                // Favourites/blocks may have changed on the
+                                // detail screen — re-sync on return.
+                                _loadFavorites();
+                                _loadBlocked();
                               },
                               child: Container(
                                 decoration: BoxDecoration(
@@ -868,12 +1013,8 @@ class _BuyerPageState extends State<BuyerPage> {
                                             top: 6,
                                             right: 6,
                                             child: GestureDetector(
-                                              onTap: () => setState(() {
-                                                isFav
-                                                    ? _favourites
-                                                        .remove(item.name)
-                                                    : _favourites.add(item.name);
-                                              }),
+                                              onTap: () =>
+                                                  _toggleFavorite(item.id),
                                               child: Container(
                                                 width: 28,
                                                 height: 28,

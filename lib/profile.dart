@@ -13,6 +13,8 @@ import 'user_listings.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
+import 'services/marketplace_service.dart';
+import 'seller_reviews.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -39,6 +41,7 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isVerified = false;
   int _salesCount = 0;
   int _trustScore = 0;
+  SellerRating _reviewRating = SellerRating.empty;
 
   // ── Listings owned by the signed-in user (from the `listings` table) ──────
   List<Map<String, dynamic>> _myListings = [];
@@ -49,6 +52,31 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     _loadProfile();
     _loadMyListings();
+    _loadReviewRating();
+  }
+
+  /// Loads the rating this user has received as a seller. When they have
+  /// reviews, the average drives the displayed Trust Score.
+  Future<void> _loadReviewRating() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    final rating = await MarketplaceService.fetchSellerRating(user.id);
+    if (!mounted) return;
+    setState(() {
+      _reviewRating = rating;
+      if (rating.hasReviews) _trustScore = rating.trustPercent;
+    });
+  }
+
+  void _openMyReviews() {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SellerReviewsPage(sellerId: user.id, sellerName: _name),
+      ),
+    ).then((_) => _loadReviewRating());
   }
 
   Future<void> _loadMyListings() async {
@@ -785,219 +813,12 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ── Plan selection dialog ─────────────────────────────────────────────────
+  // ── Premium Subscription page ─────────────────────────────────────────────
 
-  void _showPlanDialog() {
-    String selectedPlan = 'free';
-
-    final List<Map<String, String>> plans = [
-      {
-        'id': 'free',
-        'label': 'Free',
-        'price': '₱0 / mo',
-        'desc': 'Basic browsing, view listings',
-      },
-      {
-        'id': 'premium',
-        'label': 'Premium',
-        'price': '₱199 / mo',
-        'desc': 'Post listings, buyer messaging',
-      },
-      {
-        'id': 'superpremium',
-        'label': 'Super Premium',
-        'price': '₱499 / mo',
-        'desc': 'All features + priority support',
-      },
-    ];
-
-    showDialog(
-      context: context,
-      barrierDismissible: false, // must tap X or Continue to dismiss
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setDialog) {
-            return Dialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // ── X Button ────────────────────────────────────
-                    Align(
-                      alignment: Alignment.topRight,
-                      child: GestureDetector(
-                        onTap: () => Navigator.pop(ctx),
-                        child: Container(
-                          width: 30,
-                          height: 30,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.grey.shade100,
-                            border: Border.all(color: Colors.grey.shade300),
-                          ),
-                          child: const Icon(
-                            Icons.close,
-                            size: 16,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 4),
-
-                    // ── Crown Icon ──────────────────────────────────
-                    Container(
-                      width: 52,
-                      height: 52,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFFE1F5EE),
-                      ),
-                      child: const Icon(
-                        Icons.workspace_premium,
-                        color: Color(0xFF1D9E75),
-                        size: 26,
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    // ── Title ───────────────────────────────────────
-                    const Text(
-                      'Choose your plan',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Select the plan that fits your needs',
-                      style: TextStyle(fontSize: 13, color: Colors.black54),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // ── Plan Cards ──────────────────────────────────
-                    ...plans.map((plan) {
-                      final isSelected = selectedPlan == plan['id'];
-                      return GestureDetector(
-                        onTap: () =>
-                            setDialog(() => selectedPlan = plan['id']!),
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
-                          ),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: isSelected
-                                  ? const Color(0xFF6DBF99)
-                                  : Colors.grey.shade200,
-                              width: isSelected ? 2 : 1,
-                            ),
-                            color: isSelected
-                                ? const Color(0xFFE8F8F1)
-                                : Colors.white,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                plan['id'] == 'free'
-                                    ? Icons.person_outline
-                                    : plan['id'] == 'premium'
-                                        ? Icons.star_outline
-                                        : Icons.workspace_premium,
-                                color: const Color(0xFF6DBF99),
-                                size: 20,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      plan['label']!,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.black87,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      plan['desc']!,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.black45,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Text(
-                                plan['price']!,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF1D9E75),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }),
-
-                    const SizedBox(height: 6),
-
-                    // ── Continue Button ─────────────────────────────
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6DBF99),
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                        ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    const Text(
-                      'You can change your plan anytime in settings.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11, color: Colors.black45),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+  void _openPlansPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const _PremiumSubscriptionPage()),
     );
   }
 
@@ -1783,6 +1604,40 @@ class _ProfilePageState extends State<ProfilePage> {
                         ],
                       ),
                     ),
+                    const Divider(height: 1, thickness: 0.5),
+                    // ── My Reviews (rating received as a seller) ─────────
+                    InkWell(
+                      onTap: _openMyReviews,
+                      child: Padding(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.star_rounded,
+                                color: Color(0xFFFFB300), size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _reviewRating.hasReviews
+                                    ? '${_reviewRating.average.toStringAsFixed(1)} · ${_reviewRating.count} review${_reviewRating.count == 1 ? '' : 's'}'
+                                    : 'No reviews yet',
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A2E22)),
+                              ),
+                            ),
+                            const Text('My Reviews',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                            const Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF3AA876)),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1793,12 +1648,7 @@ class _ProfilePageState extends State<ProfilePage> {
             // ── Premium Plan Action ─────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _actionButton(
-                icon: Icons.workspace_premium,
-                label: 'Premium Subscription',
-                iconColor: const Color(0xFF1D9E75),
-                onTap: _showPlanDialog,
-              ),
+              child: _premiumSubscriptionButton(),
             ),
 
             const SizedBox(height: 16),
@@ -2124,6 +1974,67 @@ class _ProfilePageState extends State<ProfilePage> {
             errorBuilder: (_, __, ___) => placeholder());
   }
 
+  // ── Premium Subscription button (navigates to the plans page) ─────────────
+  Widget _premiumSubscriptionButton() {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _openPlansPage,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFE8F8F1), Color(0xFFD3F0E4)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.45)),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF1D9E75).withOpacity(0.12),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white,
+                ),
+                child: const Icon(Icons.workspace_premium,
+                    color: Color(0xFF1D9E75), size: 20),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Premium Subscription',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A2E22))),
+                    SizedBox(height: 2),
+                    Text('Unlock more features — view plans',
+                        style: TextStyle(fontSize: 11.5, color: Color(0xFF3D5247))),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Color(0xFF1D9E75), size: 22),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _actionButton({
     required IconData icon,
     required String label,
@@ -2172,6 +2083,404 @@ class _BenefitRow extends StatelessWidget {
       ],
     );
   }
+}
+
+// ── Premium Subscription page ──────────────────────────────────────────────
+/// Full-screen plan-selection page reached from the profile's
+/// "Premium Subscription" button. Replaces the old plan popup dialog.
+class _PremiumSubscriptionPage extends StatefulWidget {
+  const _PremiumSubscriptionPage();
+
+  @override
+  State<_PremiumSubscriptionPage> createState() =>
+      _PremiumSubscriptionPageState();
+}
+
+class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
+  // Brand palette (matches the rest of the app).
+  static const Color _green = Color(0xFF1D9E75);
+  static const Color _greenMid = Color(0xFF3AA876);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _muted = Color(0xFF7C8B83);
+
+  bool _yearly = false;
+  String _selectedPlan = 'premium';
+
+  // Shared feature checklist — each plan marks which ones it unlocks.
+  static const List<String> _features = [
+    'Browse all listings',
+    'Post your own listings',
+    'Direct buyer messaging',
+    'Verified seller badge',
+    'Priority customer support',
+  ];
+
+  static const List<_PlanData> _plans = [
+    _PlanData(
+      id: 'free',
+      label: 'Free',
+      icon: Icons.person_outline,
+      monthly: 0,
+      unlocked: [true, false, false, false, false],
+    ),
+    _PlanData(
+      id: 'premium',
+      label: 'Premium',
+      icon: Icons.star_rounded,
+      monthly: 199,
+      unlocked: [true, true, true, true, false],
+      featured: true,
+    ),
+    _PlanData(
+      id: 'superpremium',
+      label: 'Super Premium',
+      icon: Icons.workspace_premium,
+      monthly: 499,
+      unlocked: [true, true, true, true, true],
+    ),
+  ];
+
+  String _priceLabel(_PlanData plan) {
+    if (plan.monthly == 0) return '₱0';
+    final value = _yearly ? plan.monthly * 10 : plan.monthly;
+    return '₱$value';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4FAF7),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // ── Back button (upper left) ─────────────────────────────
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
+                child: IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back, color: _dark),
+                  tooltip: 'Back',
+                ),
+              ),
+            ),
+
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+                child: Column(
+                  children: [
+                    // ── Heading ─────────────────────────────────────
+                    const Text(
+                      'Simple pricing, no hidden fees',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: _dark,
+                        height: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '7-day free trial. No credit card required.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, color: _muted),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // ── Billing toggle ──────────────────────────────
+                    _billingToggle(),
+
+                    const SizedBox(height: 24),
+
+                    // ── Plan Cards ──────────────────────────────────
+                    ..._plans.map(_planCard),
+
+                    const SizedBox(height: 8),
+                    const Text(
+                      'You can change your plan anytime in settings.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11.5, color: _muted),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Bill Monthly / Bill Yearly pill toggle ────────────────────────────────
+  Widget _billingToggle() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: const Color(0xFFE2EFE9)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _toggleChip('Monthly', !_yearly, () => setState(() => _yearly = false)),
+          _toggleChip('Yearly', _yearly, () => setState(() => _yearly = true)),
+        ],
+      ),
+    );
+  }
+
+  Widget _toggleChip(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+        decoration: BoxDecoration(
+          color: active ? _green : Colors.transparent,
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: active ? Colors.white : _muted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── One plan card ─────────────────────────────────────────────────────────
+  Widget _planCard(_PlanData plan) {
+    final featured = plan.featured;
+    final selected = _selectedPlan == plan.id;
+    final onColor = featured ? Colors.white : _dark;
+    final subColor = featured ? Colors.white70 : _muted;
+
+    return GestureDetector(
+      onTap: () => setState(() => _selectedPlan = plan.id),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: featured
+              ? const LinearGradient(
+                  colors: [_greenMid, _green],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          color: featured ? null : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected && !featured
+                ? _green
+                : const Color(0xFFE7F0EB),
+            width: selected && !featured ? 1.6 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: featured
+                  ? _green.withOpacity(0.30)
+                  : Colors.black.withOpacity(0.04),
+              blurRadius: featured ? 22 : 12,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row: name + price badge
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: featured
+                        ? Colors.white.withOpacity(0.18)
+                        : const Color(0xFFE8F8F1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(plan.icon,
+                      color: featured ? Colors.white : _green, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            plan.label,
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: onColor,
+                            ),
+                          ),
+                          if (featured) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Text(
+                                'POPULAR',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.5,
+                                  color: _green,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _yearly ? 'Per year' : 'Per month',
+                        style: TextStyle(fontSize: 12, color: subColor),
+                      ),
+                    ],
+                  ),
+                ),
+                // Price badge
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: featured
+                        ? Colors.white
+                        : const Color(0xFFE8F8F1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _priceLabel(plan),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: _green,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 18),
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: featured
+                  ? Colors.white.withOpacity(0.20)
+                  : const Color(0xFFEEF4F1),
+            ),
+            const SizedBox(height: 16),
+
+            // Feature checklist
+            ...List.generate(_features.length, (i) {
+              final on = plan.unlocked[i];
+              final iconColor = featured
+                  ? (on ? Colors.white : Colors.white38)
+                  : (on ? _green : const Color(0xFFC4D3CC));
+              final textColor = featured
+                  ? (on ? Colors.white : Colors.white54)
+                  : (on ? _dark : const Color(0xFFB2C0B9));
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      on ? Icons.check_circle : Icons.cancel,
+                      size: 18,
+                      color: iconColor,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _features[i],
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: textColor,
+                          decoration:
+                              on ? null : TextDecoration.lineThrough,
+                          decorationColor: textColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+
+            const SizedBox(height: 6),
+
+            // Purchase button
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: ElevatedButton(
+                onPressed: () => _choosePlan(plan),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: featured ? Colors.white : _green,
+                  foregroundColor: featured ? _green : Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                ),
+                child: Text(
+                  plan.monthly == 0 ? 'Get Started' : 'Choose Plan',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _choosePlan(_PlanData plan) {
+    setState(() => _selectedPlan = plan.id);
+    showTopMessage(context, '${plan.label} plan selected');
+    Navigator.pop(context);
+  }
+}
+
+// Static description of a subscription plan rendered by [_PremiumSubscriptionPage].
+class _PlanData {
+  final String id;
+  final String label;
+  final IconData icon;
+  final int monthly;
+  final List<bool> unlocked;
+  final bool featured;
+
+  const _PlanData({
+    required this.id,
+    required this.label,
+    required this.icon,
+    required this.monthly,
+    required this.unlocked,
+    this.featured = false,
+  });
 }
 
 /// Full-screen "Edit Profile" page.

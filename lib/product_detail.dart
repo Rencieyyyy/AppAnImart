@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart';
 import 'widgets/top_message.dart';
 import 'main.dart';
 import 'cloudinary_function.dart';
+import 'services/marketplace_service.dart';
+import 'seller_reviews.dart';
 
 /// Lets scrollables (e.g. the image carousel) be dragged with a mouse/trackpad
 /// on web & desktop, not just touch — Flutter disables mouse drag by default.
@@ -67,6 +69,8 @@ class ProductDetailPage extends StatefulWidget {
 
 class _ProductDetailPageState extends State<ProductDetailPage> {
   bool _isFavorited = false;
+  bool _isBlocked = false;
+  SellerRating _sellerRating = SellerRating.empty;
   bool _isDescriptionExpanded = false;
   final TextEditingController _messageController = TextEditingController();
   String _messageText = 'Good afternoon,\nis this still available?';
@@ -171,6 +175,36 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   };
 
   @override
+  void initState() {
+    super.initState();
+    _loadMarketplaceState();
+  }
+
+  /// Loads whether this listing is favourited, the seller's rating, and
+  /// whether the viewer has blocked this seller.
+  Future<void> _loadMarketplaceState() async {
+    final listingId = widget.listingId?.trim() ?? '';
+    final sellerId = widget.sellerId?.trim() ?? '';
+    final results = await Future.wait([
+      listingId.isEmpty
+          ? Future.value(false)
+          : MarketplaceService.isFavorited(listingId),
+      sellerId.isEmpty
+          ? Future.value(SellerRating.empty)
+          : MarketplaceService.fetchSellerRating(sellerId),
+      sellerId.isEmpty
+          ? Future.value(false)
+          : MarketplaceService.isBlocked(sellerId),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _isFavorited = results[0] as bool;
+      _sellerRating = results[1] as SellerRating;
+      _isBlocked = results[2] as bool;
+    });
+  }
+
+  @override
   void dispose() {
     _messageController.dispose();
     _imageController.dispose();
@@ -256,18 +290,25 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               }),
               const Divider(height: 8),
             ],
-            _buildSheetOption(Icons.report_outlined, 'Report Listing', Colors.red, () {
-              Navigator.pop(context);
-              _showSnackBar('Report submitted. We\'ll review this listing.');
-            }),
-            _buildSheetOption(Icons.gavel_outlined, 'Report Seller', Colors.red, () {
-              Navigator.pop(context);
-              _showReportSellerDialog();
-            }),
-            _buildSheetOption(Icons.block_outlined, 'Block Seller', Colors.black87, () {
-              Navigator.pop(context);
-              _showSnackBar('Seller has been blocked.');
-            }),
+            if (!_isOwner) ...[
+              _buildSheetOption(Icons.report_outlined, 'Report Listing', Colors.red, () {
+                Navigator.pop(context);
+                _showReportDialog(targetType: 'listing');
+              }),
+              _buildSheetOption(Icons.gavel_outlined, 'Report Seller', Colors.red, () {
+                Navigator.pop(context);
+                _showReportDialog(targetType: 'seller');
+              }),
+              _buildSheetOption(
+                _isBlocked ? Icons.person_add_alt_1 : Icons.block_outlined,
+                _isBlocked ? 'Unblock Seller' : 'Block Seller',
+                Colors.black87,
+                () {
+                  Navigator.pop(context);
+                  _toggleBlockSeller();
+                },
+              ),
+            ],
             _buildSheetOption(Icons.copy_outlined, 'Copy Link', Colors.black87, () {
               Navigator.pop(context);
               Clipboard.setData(ClipboardData(
@@ -358,54 +399,114 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     }
   }
 
-  void _showReportSellerDialog() {
-    final TextEditingController reportController = TextEditingController();
-    String selectedReason = 'Fraud';
-    final List<String> reasons = ['Fraud', 'Inaccurate Listings', 'Poor Communication', 'Other'];
+  /// Unified report dialog for either a listing or its seller. Persists the
+  /// report to the `reports` table via [MarketplaceService].
+  void _showReportDialog({required String targetType}) {
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to submit a report.');
+      return;
+    }
+    final isSeller = targetType == 'seller';
+    final TextEditingController detailsController = TextEditingController();
+    final List<String> reasons = isSeller
+        ? ['Fraud / scam', 'Poor communication', 'Misleading listings', 'Other']
+        : ['Prohibited animal', 'Misleading info', 'Wrong category', 'Spam', 'Other'];
+    String selectedReason = reasons.first;
+    bool submitting = false;
 
     showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setLocalState) => AlertDialog(
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocalState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Report Seller', style: TextStyle(fontWeight: FontWeight.bold)),
+          title: Text(isSeller ? 'Report Seller' : 'Report Listing',
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Why are you reporting this seller?', style: TextStyle(fontSize: 13, color: Colors.black54)),
+              Text(
+                isSeller
+                    ? 'Why are you reporting this seller?'
+                    : 'Why are you reporting this listing?',
+                style: const TextStyle(fontSize: 13, color: Colors.black54),
+              ),
               const SizedBox(height: 12),
               DropdownButton<String>(
                 value: selectedReason,
                 isExpanded: true,
-                items: reasons.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
+                items: reasons
+                    .map((r) => DropdownMenuItem(value: r, child: Text(r)))
+                    .toList(),
                 onChanged: (val) => setLocalState(() => selectedReason = val!),
               ),
               const SizedBox(height: 12),
               TextField(
-                controller: reportController,
+                controller: detailsController,
                 maxLines: 3,
                 decoration: InputDecoration(
-                  hintText: 'Additional details...',
+                  hintText: 'Additional details (optional)...',
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Cancel')),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-              onPressed: () {
-                Navigator.pop(context);
-                _showSnackBar('Seller report submitted for "$selectedReason".');
-              },
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      setLocalState(() => submitting = true);
+                      final error = await MarketplaceService.submitReport(
+                        targetType: targetType,
+                        listingId: widget.listingId?.trim(),
+                        sellerId: widget.sellerId?.trim(),
+                        reason: selectedReason,
+                        details: detailsController.text,
+                      );
+                      if (!dialogCtx.mounted) return;
+                      Navigator.pop(dialogCtx);
+                      _showSnackBar(error ??
+                          'Report submitted. Our team will review it. Thank you.');
+                    },
               child: const Text('Submit Report', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
       ),
     );
+  }
+
+  /// Blocks or unblocks the seller. Blocked sellers' listings are hidden from
+  /// the buyer's browse page.
+  Future<void> _toggleBlockSeller() async {
+    final sellerId = widget.sellerId?.trim() ?? '';
+    if (sellerId.isEmpty) {
+      _showSnackBar('Blocking is unavailable for this listing.');
+      return;
+    }
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to block a seller.');
+      return;
+    }
+    if (sellerId == supabase.auth.currentUser?.id) {
+      _showSnackBar('You cannot block yourself.');
+      return;
+    }
+    final wasBlocked = _isBlocked;
+    final nowBlocked = await MarketplaceService.toggleBlock(
+      sellerId,
+      currentlyBlocked: wasBlocked,
+    );
+    if (!mounted) return;
+    setState(() => _isBlocked = nowBlocked);
+    _showSnackBar(nowBlocked
+        ? 'Seller blocked. Their listings are now hidden.'
+        : 'Seller unblocked.');
   }
 
   void _sendMessage() {
@@ -491,9 +592,44 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     _showSnackBar('Listing info copied! You can now paste it to share.');
   }
 
-  void _toggleFavorite() {
-    setState(() => _isFavorited = !_isFavorited);
-    _showSnackBar(_isFavorited ? 'Added to favorites!' : 'Removed from favorites.');
+  Future<void> _toggleFavorite() async {
+    final listingId = widget.listingId?.trim() ?? '';
+    if (listingId.isEmpty) {
+      _showSnackBar('Sign in and open a real listing to save favourites.');
+      return;
+    }
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to save favourites.');
+      return;
+    }
+    final wasFav = _isFavorited;
+    setState(() => _isFavorited = !wasFav);
+    _showSnackBar(!wasFav ? 'Added to favorites!' : 'Removed from favorites.');
+    final nowFav = await MarketplaceService.toggleFavorite(
+      listingId,
+      currentlyFavorited: wasFav,
+    );
+    if (mounted && nowFav != !wasFav) {
+      setState(() => _isFavorited = nowFav);
+    }
+  }
+
+  /// Opens the seller's public reviews & rating page.
+  void _openSellerReviews() {
+    final sellerId = widget.sellerId?.trim() ?? '';
+    if (sellerId.isEmpty) {
+      _showSnackBar('Seller reviews are unavailable for this listing.');
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SellerReviewsPage(
+          sellerId: sellerId,
+          sellerName: _sellerName,
+        ),
+      ),
+    ).then((_) => _loadMarketplaceState());
   }
 
   void _visitSeller() {
@@ -506,6 +642,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
           sellerJoined: info['sellerJoined'] ?? '2024',
           breederSince: info['breederSince'],
           location: _location,
+          sellerId: widget.sellerId?.trim() ?? '',
+          rating: _sellerRating,
         ),
       ),
     );
@@ -849,17 +987,30 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                               Text(_sellerName,
                                 style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
                               ),
-                              Row(
-                                children: [
-                                  Icon(Icons.verified, color: Colors.blue, size: 12),
-                                  const SizedBox(width: 4),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                    decoration: BoxDecoration(color: Color(0xFFFFB300), borderRadius: BorderRadius.circular(4)),
-                                    child: const Text('Trusted Seller', 
-                                      style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  ),
-                                ],
+                              GestureDetector(
+                                onTap: _openSellerReviews,
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.star_rounded,
+                                        color: Color(0xFFFFB300), size: 14),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      _sellerRating.hasReviews
+                                          ? '${_sellerRating.average.toStringAsFixed(1)} (${_sellerRating.count})'
+                                          : 'No reviews yet',
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black54),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    const Text('· See reviews',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFF6DBF99),
+                                            fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
                               ),
                               Text('Member since ${info['sellerJoined']}',
                                 style: const TextStyle(fontSize: 11, color: Colors.black45),
@@ -1150,12 +1301,16 @@ class _SellerProfilePage extends StatelessWidget {
   final String sellerJoined;
   final String? breederSince;
   final String location;
+  final String sellerId;
+  final SellerRating rating;
 
   const _SellerProfilePage({
     required this.sellerName,
     required this.sellerJoined,
     this.breederSince,
     required this.location,
+    required this.sellerId,
+    required this.rating,
   });
 
   @override
@@ -1224,11 +1379,42 @@ class _SellerProfilePage extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _buildStat('Listings', '12'),
-                _buildStat('Rating', '4.8 ⭐'),
-                _buildStat('Sales', '47'),
-                _buildStat('Trust', '98%'),
+                _buildStat(
+                    'Rating',
+                    rating.hasReviews
+                        ? '${rating.average.toStringAsFixed(1)} ⭐'
+                        : '—'),
+                _buildStat('Reviews', '${rating.count}'),
+                _buildStat('Trust',
+                    rating.hasReviews ? '${rating.trustPercent}%' : '—'),
               ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF6DBF99),
+                  side: const BorderSide(color: Color(0xFF6DBF99)),
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: sellerId.isEmpty
+                    ? null
+                    : () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => SellerReviewsPage(
+                              sellerId: sellerId,
+                              sellerName: sellerName,
+                            ),
+                          ),
+                        ),
+                icon: const Icon(Icons.reviews_outlined, size: 18),
+                label: const Text('See all reviews',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
             ),
             const SizedBox(height: 24),
             Container(
