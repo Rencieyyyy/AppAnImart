@@ -22,8 +22,9 @@ android {
     defaultConfig {
         applicationId = "com.example.ani_mart"
         
-        // Forced to 21 to prevent crashes with modern plugins
-        minSdk = 21 
+        // Bumped to 23: passkeys_android requires minSdk >= 23
+        // (ua_client_hints needs >= 22), so 23 satisfies all plugins.
+        minSdk = 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

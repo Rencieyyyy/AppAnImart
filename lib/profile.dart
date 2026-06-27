@@ -14,6 +14,7 @@ import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
 import 'services/marketplace_service.dart';
+import 'services/subscription_service.dart';
 import 'seller_reviews.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -34,7 +35,9 @@ class _ProfilePageState extends State<ProfilePage> {
   String _address = '';
   String _houseNumber = '';
   String _businessName = '';
-  String _plan = '';
+  // App-facing name of the user's active subscription plan (from the
+  // `subscriptions` table managed by the admin website). 'Free' by default.
+  String _planName = 'Free';
   String _memberSince = '';
   String _avatarUrl = '';
   bool _isSeller = false;
@@ -157,7 +160,6 @@ class _ProfilePageState extends State<ProfilePage> {
         _houseNumber = (data['house_number'] as String?) ?? '';
         _businessName = (data['business_name'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
-        _plan = (data['plan'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _isVerified = (data['is_verified'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
@@ -166,6 +168,11 @@ class _ProfilePageState extends State<ProfilePage> {
             (data['member_since'] as String?) ?? user.createdAt);
         _loadingProfile = false;
       });
+
+      // Resolve the active subscription plan (Free / Premium / Super Premium)
+      // from the admin-managed `subscriptions` table.
+      final planName = await SubscriptionService.activePlanLabel();
+      if (mounted) setState(() => _planName = planName);
     } catch (e) {
       debugPrint('Failed to load profile from users table: $e');
       if (!mounted) return;
@@ -191,11 +198,6 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   String get _initial => _name.trim().isNotEmpty ? _name.trim()[0].toUpperCase() : 'U';
-
-  String get _planLabel {
-    if (_plan.isEmpty) return 'Free';
-    return _plan[0].toUpperCase() + _plan.substring(1);
-  }
 
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
@@ -1331,7 +1333,7 @@ class _ProfilePageState extends State<ProfilePage> {
             // ── Header ──────────────────────────────────────────────
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.only(top: 50, bottom: 20, left: 16, right: 16),
+              padding: const EdgeInsets.only(top: 44, bottom: 16, left: 16, right: 16),
               decoration: const BoxDecoration(
                 color: Color(0xFF6DBF99),
                 borderRadius: BorderRadius.only(
@@ -1342,17 +1344,26 @@ class _ProfilePageState extends State<ProfilePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  GestureDetector(
-                    onTap: () { if (Navigator.canPop(context)) Navigator.pop(context); },
-                    child: const Icon(Icons.arrow_back, color: Colors.white, size: 24),
+                  // Back arrow + centered title on a single row.
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: GestureDetector(
+                          onTap: () {
+                            if (Navigator.canPop(context)) Navigator.pop(context);
+                          },
+                          child: const Icon(Icons.arrow_back,
+                              color: Colors.white, size: 24),
+                        ),
+                      ),
+                      const Text('PROFILE',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                              color: Colors.white, letterSpacing: 1.5)),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  const Center(
-                    child: Text('PROFILE',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                            color: Colors.white, letterSpacing: 1.5)),
-                  ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 14),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1402,18 +1413,8 @@ class _ProfilePageState extends State<ProfilePage> {
                               runSpacing: 4,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(_loadingProfile ? 'Loading…' : _name,
-                                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                                    if (_isVerified)
-                                      const Padding(
-                                        padding: EdgeInsets.only(left: 4),
-                                        child: Icon(Icons.verified, color: Colors.blue, size: 18),
-                                      ),
-                                  ],
-                                ),
+                                Text(_loadingProfile ? 'Loading…' : _name,
+                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                                 if (_isSeller) ...[
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1436,17 +1437,6 @@ class _ProfilePageState extends State<ProfilePage> {
                                         style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                                   ),
                                 ],
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF2196F3),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    'Trust Score: $_trustScore%',
-                                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
                               ],
                             ),
                             const SizedBox(height: 4),
@@ -1596,7 +1586,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       child: Row(
                         children: [
-                          _statItem(_planLabel, 'Plan'),
+                          _statItem(_planName, 'Plan'),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
                           _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
@@ -1832,8 +1822,13 @@ class _ProfilePageState extends State<ProfilePage> {
     return Expanded(
       child: Column(
         children: [
-          Text(value,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: valueColor)),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(value,
+                maxLines: 1,
+                style: TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.bold, color: valueColor)),
+          ),
           const SizedBox(height: 2),
           Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF6B8578))),
         ],
@@ -2106,6 +2101,9 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   bool _yearly = false;
   String _selectedPlan = 'premium';
 
+  // Id of the plan whose request is currently being submitted, if any.
+  String? _submittingId;
+
   // Shared feature checklist — each plan marks which ones it unlocks.
   static const List<String> _features = [
     'Browse all listings',
@@ -2127,7 +2125,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
       id: 'premium',
       label: 'Premium',
       icon: Icons.star_rounded,
-      monthly: 199,
+      monthly: 699,
       unlocked: [true, true, true, true, false],
       featured: true,
     ),
@@ -2135,7 +2133,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
       id: 'superpremium',
       label: 'Super Premium',
       icon: Icons.workspace_premium,
-      monthly: 499,
+      monthly: 1299,
       unlocked: [true, true, true, true, true],
     ),
   ];
@@ -2433,22 +2431,35 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
               width: double.infinity,
               height: 46,
               child: ElevatedButton(
-                onPressed: () => _choosePlan(plan),
+                onPressed:
+                    _submittingId != null ? null : () => _choosePlan(plan),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: featured ? Colors.white : _green,
                   foregroundColor: featured ? _green : Colors.white,
+                  disabledBackgroundColor:
+                      (featured ? Colors.white : _green).withOpacity(0.6),
+                  disabledForegroundColor: featured ? _green : Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(30),
                   ),
                 ),
-                child: Text(
-                  plan.monthly == 0 ? 'Get Started' : 'Choose Plan',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+                child: _submittingId == plan.id
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          color: featured ? _green : Colors.white,
+                        ),
+                      )
+                    : Text(
+                        plan.monthly == 0 ? 'Get Started' : 'Choose Plan',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
               ),
             ),
           ],
@@ -2457,10 +2468,32 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     );
   }
 
-  void _choosePlan(_PlanData plan) {
+  Future<void> _choosePlan(_PlanData plan) async {
     setState(() => _selectedPlan = plan.id);
-    showTopMessage(context, '${plan.label} plan selected');
-    Navigator.pop(context);
+    final appPlan = SubscriptionService.planById(plan.id);
+
+    // Free needs no admin approval.
+    if (appPlan.isFree) {
+      showTopMessage(context, "You're on the Free plan.", isError: false);
+      Navigator.pop(context);
+      return;
+    }
+
+    setState(() => _submittingId = plan.id);
+    final error = await SubscriptionService.requestPlan(appPlan);
+    if (!mounted) return;
+    setState(() => _submittingId = null);
+
+    if (error == null) {
+      showTopMessage(
+        context,
+        '${appPlan.label} request submitted — pending admin approval.',
+        isError: false,
+      );
+      Navigator.pop(context);
+    } else {
+      showTopMessage(context, error);
+    }
   }
 }
 

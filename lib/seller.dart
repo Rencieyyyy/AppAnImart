@@ -40,8 +40,9 @@ class _SellerPageState extends State<SellerPage> {
   final ImagePicker _imagePicker = ImagePicker();
   bool _uploading = false;
 
-  // Signed-in user's name (loaded from the `users` table).
+  // Signed-in user's name + avatar (loaded from the `users` table).
   String _userName = '';
+  String _avatarUrl = '';
 
   final List<String> _categories  = ['Poultry', 'Small Livestock', 'Large Livestock', 'Aquatics'];
   final List<String> _conditions  = ['Good', 'Excellent', 'Fair'];
@@ -62,6 +63,21 @@ class _SellerPageState extends State<SellerPage> {
   Future<void> _loadUserName() async {
     final name = await fetchCurrentUserName();
     if (mounted) setState(() => _userName = name);
+
+    // Also load the avatar so the header shows the user's real photo.
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      final row = await supabase
+          .from('users')
+          .select('avatar_url')
+          .eq('id', userId)
+          .maybeSingle();
+      final url = (row?['avatar_url'] as String?)?.trim() ?? '';
+      if (mounted && url.isNotEmpty) setState(() => _avatarUrl = url);
+    } catch (_) {
+      // Ignore — fall back to the default person icon.
+    }
   }
 
   /// Loads the signed-in user's listings from Supabase, newest first.
@@ -380,8 +396,20 @@ class _SellerPageState extends State<SellerPage> {
                   children: [
                     Container(
                       width: 44, height: 44,
-                      decoration: const BoxDecoration(color: Colors.black87, shape: BoxShape.circle),
-                      child: const Icon(Icons.person, color: Colors.white, size: 26),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        shape: BoxShape.circle,
+                        image: _avatarUrl.isNotEmpty
+                            ? DecorationImage(
+                                image: NetworkImage(_avatarUrl),
+                                fit: BoxFit.cover,
+                              )
+                            : null,
+                      ),
+                      child: _avatarUrl.isNotEmpty
+                          ? null
+                          : const Icon(Icons.person,
+                              color: Colors.white, size: 26),
                     ),
                     const SizedBox(width: 12),
                     Column(

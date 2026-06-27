@@ -6,6 +6,8 @@ import 'profile.dart';
 import 'product_detail.dart';
 import 'current_user.dart';
 import 'main.dart';
+import 'services/subscription_service.dart';
+import 'widgets/top_message.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -175,32 +177,41 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _showPlanDialog() {
     String selectedPlan = 'free';
+    bool submitting = false;
 
-    final List<Map<String, String>> plans = [
-      {
-        'id': 'free',
-        'label': 'Free',
-        'price': '₱0 / mo',
-        'desc': 'Basic browsing, view listings',
-      },
-      {
-        'id': 'premium',
-        'label': 'Premium',
-        'price': '₱199 / mo',
-        'desc': 'Post listings, buyer messaging',
-      },
-      {
-        'id': 'superpremium',
-        'label': 'Super Premium',
-        'price': '₱499 / mo',
-        'desc': 'All features + priority support',
-      },
-    ];
+    final List<AppPlan> plans = SubscriptionService.plans;
 
     showDialog(
       context: context,
       barrierDismissible: false, // must tap X or Continue to dismiss
       builder: (ctx) {
+        // Submits the chosen plan as a pending request for admin approval.
+        Future<void> submit(StateSetter setDialog) async {
+          final plan = SubscriptionService.planById(selectedPlan);
+
+          // Free needs no approval — just close.
+          if (plan.isFree) {
+            Navigator.pop(ctx);
+            showTopMessage(context, "You're on the Free plan.",
+                isError: false);
+            return;
+          }
+
+          setDialog(() => submitting = true);
+          final error = await SubscriptionService.requestPlan(plan);
+          if (!mounted) return;
+          Navigator.pop(ctx);
+          if (error == null) {
+            showTopMessage(
+              context,
+              '${plan.label} request submitted — pending admin approval.',
+              isError: false,
+            );
+          } else {
+            showTopMessage(context, error);
+          }
+        }
+
         return StatefulBuilder(
           builder: (ctx, setDialog) {
             return Dialog(
@@ -217,7 +228,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     Align(
                       alignment: Alignment.topRight,
                       child: GestureDetector(
-                        onTap: () => Navigator.pop(ctx),
+                        onTap: submitting ? null : () => Navigator.pop(ctx),
                         child: Container(
                           width: 30,
                           height: 30,
@@ -273,10 +284,11 @@ class _DashboardPageState extends State<DashboardPage> {
 
                     // ── Plan Cards ──────────────────────────────────
                     ...plans.map((plan) {
-                      final isSelected = selectedPlan == plan['id'];
+                      final isSelected = selectedPlan == plan.id;
                       return GestureDetector(
-                        onTap: () =>
-                            setDialog(() => selectedPlan = plan['id']!),
+                        onTap: submitting
+                            ? null
+                            : () => setDialog(() => selectedPlan = plan.id),
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.symmetric(
@@ -298,9 +310,9 @@ class _DashboardPageState extends State<DashboardPage> {
                           child: Row(
                             children: [
                               Icon(
-                                plan['id'] == 'free'
+                                plan.id == 'free'
                                     ? Icons.person_outline
-                                    : plan['id'] == 'premium'
+                                    : plan.id == 'premium'
                                         ? Icons.star_outline
                                         : Icons.workspace_premium,
                                 color: const Color(0xFF6DBF99),
@@ -312,7 +324,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      plan['label']!,
+                                      plan.label,
                                       style: const TextStyle(
                                         fontSize: 14,
                                         fontWeight: FontWeight.w600,
@@ -321,7 +333,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      plan['desc']!,
+                                      plan.description,
                                       style: const TextStyle(
                                         fontSize: 12,
                                         color: Colors.black45,
@@ -331,7 +343,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                 ),
                               ),
                               Text(
-                                plan['price']!,
+                                plan.priceLabel,
                                 style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
@@ -351,22 +363,35 @@ class _DashboardPageState extends State<DashboardPage> {
                       width: double.infinity,
                       height: 48,
                       child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx),
+                        onPressed:
+                            submitting ? null : () => submit(setDialog),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF6DBF99),
                           foregroundColor: Colors.white,
+                          disabledBackgroundColor:
+                              const Color(0xFF6DBF99).withOpacity(0.6),
+                          disabledForegroundColor: Colors.white,
                           elevation: 0,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(30),
                           ),
                         ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                        child: submitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.4,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text(
+                                'Continue',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                       ),
                     ),
 

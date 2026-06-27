@@ -1065,11 +1065,16 @@ class _BuyerPageState extends State<BuyerPage> {
                                                   size: 11,
                                                   color: Colors.black38),
                                               const SizedBox(width: 2),
-                                              Text(
-                                                '${item.location} · ${item.distanceKm.toInt()} km',
-                                                style: const TextStyle(
-                                                    fontSize: 10,
-                                                    color: Colors.black38),
+                                              Expanded(
+                                                child: Text(
+                                                  '${item.location} · ${item.distanceKm.toInt()} km',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.black38),
+                                                ),
                                               ),
                                             ],
                                           ),
