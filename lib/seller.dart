@@ -337,6 +337,35 @@ class _SellerPageState extends State<SellerPage> {
     );
   }
 
+  /// Asks the user to confirm before permanently deleting a listing.
+  Future<void> _confirmDeleteListing(int index) async {
+    final title = (_myListings[index]['name'] as String?) ?? 'this listing';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Listing',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(
+          'Permanently delete "$title"? This action cannot be undone.',
+          style: const TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await _deleteListing(index);
+  }
+
   /// Deletes a listing both locally and in Supabase.
   Future<void> _deleteListing(int index) async {
     final id = _myListings[index]['id'];
@@ -591,7 +620,7 @@ class _SellerPageState extends State<SellerPage> {
                                   ),
                                 ),
                                 GestureDetector(
-                                  onTap: () => _deleteListing(index),
+                                  onTap: () => _confirmDeleteListing(index),
                                   child: const Icon(Icons.delete_outline, size: 16, color: Colors.black38),
                                 ),
                               ],

@@ -41,7 +41,6 @@ class _ProfilePageState extends State<ProfilePage> {
   String _memberSince = '';
   String _avatarUrl = '';
   bool _isSeller = false;
-  bool _isVerified = false;
   int _salesCount = 0;
   int _trustScore = 0;
   SellerRating _reviewRating = SellerRating.empty;
@@ -122,7 +121,10 @@ class _ProfilePageState extends State<ProfilePage> {
       MaterialPageRoute(
         builder: (_) => UserListingsPage(userId: user.id, userName: _name),
       ),
-    );
+      // Listings may have been deleted/disabled there, so refresh on return.
+      // This keeps the "Seller" indicator in sync — it disappears once the
+      // user has no listings left.
+    ).then((_) => _loadMyListings());
   }
 
   String _relativeTime(dynamic isoDate) {
@@ -161,7 +163,6 @@ class _ProfilePageState extends State<ProfilePage> {
         _businessName = (data['business_name'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
-        _isVerified = (data['is_verified'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
         _trustScore = (data['trust_score'] as int?) ?? 0;
         _memberSince = _formatMemberSince(
@@ -198,6 +199,15 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   String get _initial => _name.trim().isNotEmpty ? _name.trim()[0].toUpperCase() : 'U';
+
+  /// Whether the user has published at least one listing — drives the "Seller"
+  /// label shown under their name.
+  bool get _hasListings => _myListings.isNotEmpty;
+
+  /// Whether the active subscription is a paid tier (Premium / Super Premium).
+  /// Only these tiers earn the "Verified Seller" badge.
+  bool get _isPremiumTier =>
+      _planName == 'Premium' || _planName == 'Super Premium';
 
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
@@ -1387,7 +1397,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 ? null
                                 : const Icon(Icons.person, color: Colors.white, size: 40),
                           ),
-                          if (_isSeller)
+                          if (_hasListings)
                             Positioned(
                               bottom: 0, right: 0,
                               child: Container(
@@ -1408,58 +1418,40 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 4,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Text(_loadingProfile ? 'Loading…' : _name,
-                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                                if (_isSeller) ...[
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: _salesCount >= 3 ? const Color(0xFFFFB300) : const Color(0xFF4CAF50),
-                                      borderRadius: BorderRadius.circular(6),
+                            Text(_loadingProfile ? 'Loading…' : _name,
+                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                            if (_hasListings || _isPremiumTier) ...[
+                              const SizedBox(height: 5),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  // "Seller" appears once the user has published a listing.
+                                  if (_hasListings)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF4CAF50),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Text('Seller',
+                                          style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                                     ),
-                                    child: Text(_salesCount >= 3 ? 'Trusted Seller' : 'New Farmer',
-                                        style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  ),
-                                ],
-                                if (_isVerified) ...[
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF2196F3),
-                                      borderRadius: BorderRadius.circular(6),
+                                  // "Verified Seller" is reserved for paid tiers
+                                  // (Premium / Super Premium).
+                                  if (_isPremiumTier)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF2196F3),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Text('Verified Seller',
+                                          style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                                     ),
-                                    child: const Text('Verified Seller',
-                                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  ),
                                 ],
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-                            _infoRow(Icons.place_outlined,
-                                _address.isNotEmpty ? _address : 'Add your address'),
-                            if (_houseNumber.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              _infoRow(Icons.home_outlined, _houseNumber),
-                            ],
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.phone_outlined,
-                                _phone.isNotEmpty ? _phone : 'Add your phone number'),
-                            if (_email.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              _infoRow(Icons.email_outlined, _email),
-                            ],
-                            if (_memberSince.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              _infoRow(Icons.calendar_month_outlined, _memberSince),
-                            ],
-                            if (_isSeller && _businessName.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              _infoRow(Icons.storefront_outlined, _businessName),
+                              ),
                             ],
                           ],
                         ),
@@ -1484,6 +1476,25 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ],
                   ),
+                  // ── Contact details (relocated under the profile picture) ──
+                  const SizedBox(height: 14),
+                  _infoRow(Icons.place_outlined,
+                      _address.isNotEmpty ? _address : 'Add your address'),
+                  const SizedBox(height: 4),
+                  _infoRow(Icons.phone_outlined,
+                      _phone.isNotEmpty ? _phone : 'Add your phone number'),
+                  if (_email.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    _infoRow(Icons.email_outlined, _email),
+                  ],
+                  if (_memberSince.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    _infoRow(Icons.calendar_month_outlined, _memberSince),
+                  ],
+                  if (_isSeller && _businessName.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    _infoRow(Icons.storefront_outlined, _businessName),
+                  ],
                 ],
               ),
             ),
@@ -2858,7 +2869,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
           _row('Name', _nameCtrl, 'Your full name'),
           _row('Phone', _phoneCtrl, 'Your phone number', type: TextInputType.phone),
           _row('Address', _addressCtrl, 'Street, Barangay, City'),
-          _row('House No.', _houseCtrl, 'e.g. Blk 5 Lot 12'),
         ],
       ),
     );
