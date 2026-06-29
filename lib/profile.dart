@@ -11,6 +11,7 @@ import 'main.dart';
 import 'product_detail.dart';
 import 'user_listings.dart';
 import 'seller.dart';
+import 'seller_analytics.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
@@ -305,6 +306,13 @@ class _ProfilePageState extends State<ProfilePage> {
           initialAddress: _address,
           initialHouse: _houseNumber,
           initialAvatarUrl: _avatarUrl,
+          email: _email,
+          memberSince: _memberSince,
+          isSeller: _isSeller,
+          initialBusinessName: _businessName,
+          initialShopCategory: _shopCategory,
+          initialShopDescription: _shopDescription,
+          initialPaymentNumber: _paymentNumber,
           onSave: _saveProfile,
           onAvatarChanged: (url) {
             if (mounted) setState(() => _avatarUrl = url);
@@ -324,6 +332,10 @@ class _ProfilePageState extends State<ProfilePage> {
     required String phone,
     required String address,
     required String houseNumber,
+    required String businessName,
+    required String shopCategory,
+    required String shopDescription,
+    required String paymentNumber,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
@@ -341,6 +353,10 @@ class _ProfilePageState extends State<ProfilePage> {
             'phone': phone,
             'address': address,
             'house_number': houseNumber,
+            'business_name': businessName,
+            'shop_category': shopCategory,
+            'shop_description': shopDescription,
+            'payment_number': paymentNumber,
           })
           .eq('id', user.id)
           .select()
@@ -358,6 +374,10 @@ class _ProfilePageState extends State<ProfilePage> {
           _phone = (row['phone'] as String?) ?? phone;
           _address = (row['address'] as String?) ?? address;
           _houseNumber = (row['house_number'] as String?) ?? houseNumber;
+          _businessName = (row['business_name'] as String?) ?? businessName;
+          _shopCategory = (row['shop_category'] as String?) ?? shopCategory;
+          _shopDescription = (row['shop_description'] as String?) ?? shopDescription;
+          _paymentNumber = (row['payment_number'] as String?) ?? paymentNumber;
         });
       }
       return null;
@@ -1893,6 +1913,37 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                     const Divider(height: 1, thickness: 0.5),
+                    // ── View Analytics (Premium / Super Premium only) ────
+                    if (_isPremiumTier) ...[
+                      InkWell(
+                        onTap: () => showSellerAnalytics(context, _planName),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.insights_rounded,
+                                  color: Color(0xFF1D9E75), size: 20),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text('Sales Analytics',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF1A2E22))),
+                              ),
+                              const Text('View Analytics',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF3AA876),
+                                      fontWeight: FontWeight.w600)),
+                              const Icon(Icons.chevron_right,
+                                  size: 18, color: Color(0xFF3AA876)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 1, thickness: 0.5),
+                    ],
                     // ── My Reviews (rating received as a seller) ─────────
                     InkWell(
                       onTap: _openMyReviews,
@@ -2859,11 +2910,23 @@ class _EditProfilePage extends StatefulWidget {
   final String initialAddress;
   final String initialHouse;
   final String initialAvatarUrl;
+  // Details extras (read-only) + shop details (editable, seller-only).
+  final String email;
+  final String memberSince;
+  final bool isSeller;
+  final String initialBusinessName;
+  final String initialShopCategory;
+  final String initialShopDescription;
+  final String initialPaymentNumber;
   final Future<String?> Function({
     required String name,
     required String phone,
     required String address,
     required String houseNumber,
+    required String businessName,
+    required String shopCategory,
+    required String shopDescription,
+    required String paymentNumber,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
 
@@ -2873,6 +2936,13 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialAddress,
     required this.initialHouse,
     required this.initialAvatarUrl,
+    required this.email,
+    required this.memberSince,
+    required this.isSeller,
+    required this.initialBusinessName,
+    required this.initialShopCategory,
+    required this.initialShopDescription,
+    required this.initialPaymentNumber,
     required this.onSave,
     required this.onAvatarChanged,
   });
@@ -2890,9 +2960,17 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _phoneCtrl;
   late final TextEditingController _addressCtrl;
   late final TextEditingController _houseCtrl;
+  late final TextEditingController _businessCtrl;
+  late final TextEditingController _shopDescCtrl;
+  late final TextEditingController _paymentCtrl;
+  late String _shopCategory;
   late String _avatarUrl;
   bool _isSaving = false;
   bool _uploadingAvatar = false;
+
+  static const List<String> _categories = [
+    'Poultry', 'Livestock', 'Aquatics', 'Mixed / All'
+  ];
 
   @override
   void initState() {
@@ -2901,6 +2979,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _phoneCtrl = TextEditingController(text: widget.initialPhone);
     _addressCtrl = TextEditingController(text: widget.initialAddress);
     _houseCtrl = TextEditingController(text: widget.initialHouse);
+    _businessCtrl = TextEditingController(text: widget.initialBusinessName);
+    _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
+    _paymentCtrl = TextEditingController(text: widget.initialPaymentNumber);
+    _shopCategory = widget.initialShopCategory;
     _avatarUrl = widget.initialAvatarUrl;
   }
 
@@ -2910,6 +2992,9 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _phoneCtrl.dispose();
     _addressCtrl.dispose();
     _houseCtrl.dispose();
+    _businessCtrl.dispose();
+    _shopDescCtrl.dispose();
+    _paymentCtrl.dispose();
     super.dispose();
   }
 
@@ -2921,6 +3006,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       phone: _phoneCtrl.text.trim(),
       address: _addressCtrl.text.trim(),
       houseNumber: _houseCtrl.text.trim(),
+      businessName: _businessCtrl.text.trim(),
+      shopCategory: _shopCategory,
+      shopDescription: _shopDescCtrl.text.trim(),
+      paymentNumber: _paymentCtrl.text.trim(),
     );
     if (!mounted) return;
     if (error == null) {
@@ -3185,41 +3274,164 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             ),
           ),
           const SizedBox(height: 14),
-          const Divider(height: 1, thickness: 1, color: _line),
+          _sectionHeader('Details'),
           _row('Name', _nameCtrl, 'Your full name'),
           _row('Phone', _phoneCtrl, 'Your phone number', type: TextInputType.phone),
           _row('Address', _addressCtrl, 'Street, Barangay, City'),
+          if (widget.email.isNotEmpty) _readonlyRow('Email', widget.email),
+          if (widget.memberSince.isNotEmpty)
+            _readonlyRow('Member', widget.memberSince),
+          // ── Shop details (sellers only) ──
+          if (widget.isSeller) ...[
+            _sectionHeader('Shop'),
+            _row('Shop Name', _businessCtrl, 'Shop / Farm name'),
+            _categoryRow(),
+            _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
+            _row('Payment', _paymentCtrl, 'GCash / Bank number',
+                type: TextInputType.text),
+          ],
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
 
+  // Section heading row (e.g. "Details", "Shop").
+  Widget _sectionHeader(String label) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFF7FBF9),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: Text(
+        label,
+        style: const TextStyle(
+            fontSize: 13, fontWeight: FontWeight.bold, color: _accent),
+      ),
+    );
+  }
+
+  // A read-only label/value row for fields that can't be edited here.
+  Widget _readonlyRow(String label, String value) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _line)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(label,
+                style: const TextStyle(
+                    fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(fontSize: 16, color: Colors.black45)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Tappable category row that opens a picker.
+  Widget _categoryRow() {
+    return InkWell(
+      onTap: _pickCategory,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: _line)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 104,
+              child: Text('Category',
+                  style: TextStyle(
+                      fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+            ),
+            Expanded(
+              child: Text(
+                _shopCategory.isNotEmpty ? _shopCategory : 'Select category',
+                style: TextStyle(
+                    fontSize: 16,
+                    color: _shopCategory.isNotEmpty ? _dark : Colors.black38),
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down_rounded,
+                color: Colors.black38, size: 22),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickCategory() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                  color: const Color(0xFFDCEFE6),
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 8),
+            ..._categories.map((c) => ListTile(
+                  title: Text(c),
+                  trailing: _shopCategory == c
+                      ? const Icon(Icons.check_circle_rounded, color: _accent)
+                      : null,
+                  onTap: () => Navigator.pop(ctx, c),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) setState(() => _shopCategory = picked);
+  }
+
   // A single label/value row: fixed-width label on the left, inline editable
   // text field on the right, with a thin divider beneath.
   Widget _row(String label, TextEditingController ctrl, String hint,
-      {TextInputType type = TextInputType.text}) {
+      {TextInputType type = TextInputType.text, int maxLines = 1}) {
     return Container(
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: _line)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 104,
-            child: Text(
-              label,
-              style: const TextStyle(fontSize: 16, color: _dark, fontWeight: FontWeight.w500),
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: SizedBox(
+              width: 104,
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 16, color: _dark, fontWeight: FontWeight.w500),
+              ),
             ),
           ),
           Expanded(
             child: TextField(
               controller: ctrl,
               keyboardType: type,
+              maxLines: maxLines,
               style: const TextStyle(fontSize: 16, color: _dark),
               cursorColor: _accent,
               decoration: InputDecoration(
                 isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 border: InputBorder.none,
                 hintText: hint,
                 hintStyle: const TextStyle(color: Colors.black38, fontSize: 16),
