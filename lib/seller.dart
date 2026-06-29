@@ -17,14 +17,17 @@ class _PickedImage {
 }
 
 class SellerPage extends StatefulWidget {
-  const SellerPage({super.key});
+  /// Which tab to open on: 0 = My Listings, 1 = Create Listing.
+  const SellerPage({super.key, this.initialTab = 0});
+
+  final int initialTab;
 
   @override
   State<SellerPage> createState() => _SellerPageState();
 }
 
 class _SellerPageState extends State<SellerPage> {
-  int _selectedTab = 0;
+  late int _selectedTab = widget.initialTab;
 
   final _titleController = TextEditingController();
   final _priceController = TextEditingController();

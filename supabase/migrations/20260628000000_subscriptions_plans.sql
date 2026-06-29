@@ -78,8 +78,14 @@ alter table public.subscriptions
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- 5. Mirror the rename onto users.plan, if that column exists.
+--    Like the subscriptions column above, drop any legacy CHECK constraint
+--    (e.g. free/basic/pro/elite) *before* the rewrite, otherwise setting the
+--    new labels (Free/Premium/Super Premium) violates the old allow-list, then
+--    re-lock the column to the three allowed values.
 -- ════════════════════════════════════════════════════════════════════════════
 do $$
+declare
+  r record;
 begin
   if exists (
     select 1
@@ -88,6 +94,18 @@ begin
       and table_name = 'users'
       and column_name = 'plan'
   ) then
+    -- Drop any existing CHECK constraint on users.plan so the rewrite can't be
+    -- blocked by the legacy allow-list.
+    for r in
+      select conname
+      from pg_constraint
+      where conrelid = 'public.users'::regclass
+        and contype = 'c'
+        and pg_get_constraintdef(oid) ilike '%plan%'
+    loop
+      execute format('alter table public.users drop constraint %I', r.conname);
+    end loop;
+
     update public.users
     set plan = case lower(trim(coalesce(plan, '')))
       when 'free'          then 'Free'
@@ -102,6 +120,10 @@ begin
        or plan not in ('Free', 'Premium', 'Super Premium');
 
     execute 'alter table public.users alter column plan set default ''Free''';
+
+    execute 'alter table public.users
+      add constraint users_plan_check
+      check (plan in (''Free'', ''Premium'', ''Super Premium''))';
   end if;
 end $$;
 

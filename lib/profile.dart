@@ -10,6 +10,7 @@ import 'login.dart';
 import 'main.dart';
 import 'product_detail.dart';
 import 'user_listings.dart';
+import 'seller.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
@@ -35,6 +36,11 @@ class _ProfilePageState extends State<ProfilePage> {
   String _address = '';
   String _houseNumber = '';
   String _businessName = '';
+  // Shop details captured when the user becomes a seller. Shown in the
+  // "Details" section once `_isSeller` is true.
+  String _shopCategory = '';
+  String _shopDescription = '';
+  String _paymentNumber = '';
   // App-facing name of the user's active subscription plan (from the
   // `subscriptions` table managed by the admin website). 'Free' by default.
   String _planName = 'Free';
@@ -161,6 +167,9 @@ class _ProfilePageState extends State<ProfilePage> {
         _address = (data['address'] as String?) ?? '';
         _houseNumber = (data['house_number'] as String?) ?? '';
         _businessName = (data['business_name'] as String?) ?? '';
+        _shopCategory = (data['shop_category'] as String?) ?? '';
+        _shopDescription = (data['shop_description'] as String?) ?? '';
+        _paymentNumber = (data['payment_number'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
@@ -357,6 +366,47 @@ class _ProfilePageState extends State<ProfilePage> {
       return e.message;
     } catch (e) {
       debugPrint('Profile update error: $e');
+      return e.toString();
+    }
+  }
+
+  /// Persists the shop details to the `users` table when a user becomes a
+  /// seller. Returns null on success, or an error message describing the
+  /// failure. State is updated optimistically by the caller, so on failure we
+  /// surface the message but keep the entered values on screen.
+  Future<String?> _saveSellerDetails({
+    required String businessName,
+    required String shopDescription,
+    required String shopCategory,
+    required String paymentNumber,
+  }) async {
+    final user = supabase.auth.currentUser;
+    if (user == null || supabase.auth.currentSession == null) {
+      return 'You are not signed in. Please log in again.';
+    }
+    try {
+      final row = await supabase
+          .from('users')
+          .update({
+            'is_seller': true,
+            'business_name': businessName,
+            'shop_description': shopDescription,
+            'shop_category': shopCategory,
+            'payment_number': paymentNumber,
+          })
+          .eq('id', user.id)
+          .select()
+          .maybeSingle();
+
+      if (row == null) {
+        return 'Your account has no profile record yet. Please contact support.';
+      }
+      return null;
+    } on PostgrestException catch (e) {
+      debugPrint('Seller details update PostgrestException: ${e.message}');
+      return e.message;
+    } catch (e) {
+      debugPrint('Seller details update error: $e');
       return e.toString();
     }
   }
@@ -1053,7 +1103,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         children: [
                           Text('Become a Seller',
                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                          Text('Set up your shop and start selling',
+                          Text('Start selling your animals & products',
                               style: TextStyle(fontSize: 12, color: Colors.black45)),
                         ],
                       ),
@@ -1166,16 +1216,42 @@ class _ProfilePageState extends State<ProfilePage> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: () {
+                      onPressed: () async {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
                           _showMessage(
                               'Please fill in all required fields.', Colors.redAccent);
                           return;
                         }
+                        final businessName = shopNameCtrl.text.trim();
+                        final shopDescription = shopDescCtrl.text.trim();
+                        final shopCategory = selectedCategory ?? '';
+                        final paymentNumber = bankCtrl.text.trim();
+
                         Navigator.pop(ctx);
-                        setState(() => _isSeller = true);
-                        _showMessage('🎉 You are now a Seller! Welcome aboard.',
-                            const Color(0xFF3AA876));
+                        // Optimistically reflect the new seller state, then
+                        // persist to the database.
+                        setState(() {
+                          _isSeller = true;
+                          _businessName = businessName;
+                          _shopDescription = shopDescription;
+                          _shopCategory = shopCategory;
+                          _paymentNumber = paymentNumber;
+                        });
+                        final error = await _saveSellerDetails(
+                          businessName: businessName,
+                          shopDescription: shopDescription,
+                          shopCategory: shopCategory,
+                          paymentNumber: paymentNumber,
+                        );
+                        if (!mounted) return;
+                        if (error != null) {
+                          _showMessage(
+                              'Saved on this device, but syncing failed: $error',
+                              Colors.redAccent);
+                        } else {
+                          _showMessage('🎉 You are now a Seller! Welcome aboard.',
+                              const Color(0xFF3AA876));
+                        }
                       },
                       icon: const Icon(Icons.storefront_rounded, size: 18),
                       label: const Text('Submit & Become a Seller',
@@ -1243,9 +1319,9 @@ class _ProfilePageState extends State<ProfilePage> {
                     // Stats row
                     Row(
                       children: [
-                        _dashStat('1', 'Listings', const Color(0xFF3AA876)),
+                        _dashStat('${_myListings.length}', 'Listings', const Color(0xFF3AA876)),
                         const SizedBox(width: 12),
-                        _dashStat('1', 'Sales', const Color(0xFF2196F3)),
+                        _dashStat('$_salesCount', 'Sales', const Color(0xFF2196F3)),
                         const SizedBox(width: 12),
                         _dashStat('₱0', 'Earnings', const Color(0xFFFFB300)),
                       ],
@@ -1255,17 +1331,229 @@ class _ProfilePageState extends State<ProfilePage> {
                     const Text('Quick Actions',
                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
                     const SizedBox(height: 10),
-                    _dashAction(Icons.add_circle_outline, 'Add New Listing', 'Post a new animal or product', const Color(0xFF3AA876)),
+                    _dashAction(Icons.add_circle_outline, 'Add New Listing', 'Post a new animal or product', const Color(0xFF3AA876),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openSeller(initialTab: 1);
+                    }),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.bar_chart_rounded, 'View Sales', 'Track your orders and earnings', const Color(0xFF2196F3)),
+                    _dashAction(Icons.bar_chart_rounded, 'View Sales', 'Track your orders and earnings', const Color(0xFF2196F3),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openSeller(initialTab: 0);
+                    }),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300)),
+                    _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openMyReviews();
+                    }),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.settings_outlined, 'Shop Settings', 'Update your shop info', Colors.black38),
+                    _dashAction(Icons.settings_outlined, 'Shop Settings', 'Update your shop info', Colors.black38,
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _showShopSettings();
+                    }),
                   ],
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Opens the seller listings page on the given tab (0 = My Listings,
+  /// 1 = Create Listing) and refreshes this page's listings on return.
+  Future<void> _openSeller({int initialTab = 0}) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SellerPage(initialTab: initialTab)),
+    );
+    if (mounted) _loadMyListings();
+  }
+
+  /// Shop Settings — edit and persist the seller's shop details.
+  void _showShopSettings() {
+    final shopNameCtrl = TextEditingController(text: _businessName);
+    final shopDescCtrl = TextEditingController(text: _shopDescription);
+    final bankCtrl = TextEditingController(text: _paymentNumber);
+    String? selectedCategory = _shopCategory.isNotEmpty ? _shopCategory : null;
+    const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (ctx2, setLocal) => Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40, height: 4,
+                      decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Container(
+                        width: 44, height: 44,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE8F8F1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.settings_outlined, color: Color(0xFF3AA876), size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Shop Settings',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                          Text('Update your shop info',
+                              style: TextStyle(fontSize: 12, color: Colors.black45)),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  _editField(shopNameCtrl, 'Shop / Farm Name', Icons.store_outlined),
+                  const SizedBox(height: 10),
+                  _editField(shopDescCtrl, 'Shop Description', Icons.description_outlined),
+                  const SizedBox(height: 10),
+
+                  // Category picker
+                  GestureDetector(
+                    onTap: () {
+                      showModalBottomSheet(
+                        context: ctx,
+                        shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                        builder: (_) => Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Center(
+                                child: Container(
+                                  width: 40, height: 4,
+                                  decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              const Text('Select Category',
+                                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                              const SizedBox(height: 12),
+                              ...categories.map((cat) => ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text(cat, style: const TextStyle(fontSize: 14)),
+                                    trailing: selectedCategory == cat
+                                        ? const Icon(Icons.check_circle_rounded, color: Color(0xFF6DBF99))
+                                        : null,
+                                    onTap: () {
+                                      setLocal(() => selectedCategory = cat);
+                                      Navigator.pop(context);
+                                    },
+                                  )),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF4FAF7),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.category_outlined, size: 18, color: Color(0xFF6DBF99)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              selectedCategory ?? 'Select Category',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: selectedCategory != null ? Colors.black87 : Colors.black38,
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black38, size: 20),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _editField(bankCtrl, 'GCash / Bank Number for Payments', Icons.account_balance_outlined),
+                  const SizedBox(height: 20),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
+                          _showMessage(
+                              'Please fill in all required fields.', Colors.redAccent);
+                          return;
+                        }
+                        final businessName = shopNameCtrl.text.trim();
+                        final shopDescription = shopDescCtrl.text.trim();
+                        final shopCategory = selectedCategory ?? '';
+                        final paymentNumber = bankCtrl.text.trim();
+
+                        Navigator.pop(ctx);
+                        setState(() {
+                          _businessName = businessName;
+                          _shopDescription = shopDescription;
+                          _shopCategory = shopCategory;
+                          _paymentNumber = paymentNumber;
+                        });
+                        final error = await _saveSellerDetails(
+                          businessName: businessName,
+                          shopDescription: shopDescription,
+                          shopCategory: shopCategory,
+                          paymentNumber: paymentNumber,
+                        );
+                        if (!mounted) return;
+                        if (error != null) {
+                          _showMessage(
+                              'Saved on this device, but syncing failed: $error',
+                              Colors.redAccent);
+                        } else {
+                          _showMessage('Shop details updated.', const Color(0xFF3AA876));
+                        }
+                      },
+                      icon: const Icon(Icons.check_rounded, size: 18),
+                      label: const Text('Save Changes',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3AA876),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -1292,32 +1580,41 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _dashAction(IconData icon, String title, String subtitle, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
+  Widget _dashAction(IconData icon, String title, String subtitle, Color color,
+      {required VoidCallback onTap}) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.15)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 38, height: 38,
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: color, size: 20),
+        child: Ink(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withOpacity(0.15)),
           ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
-              Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+              Container(
+                width: 38, height: 38,
+                decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
+                  Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+                ],
+              ),
+              const Spacer(),
+              const Icon(Icons.chevron_right_rounded, color: Colors.black26, size: 20),
             ],
           ),
-          const Spacer(),
-          const Icon(Icons.chevron_right_rounded, color: Colors.black26, size: 20),
-        ],
+        ),
       ),
     );
   }
@@ -1418,26 +1715,30 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(_loadingProfile ? 'Loading…' : _name,
-                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                            if (_hasListings || _isPremiumTier) ...[
+                            // Tapping the name (with its ">" indicator) opens Edit Profile.
+                            GestureDetector(
+                              onTap: _showEditProfile,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(_loadingProfile ? 'Loading…' : _name,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.chevron_right, color: Colors.white, size: 22),
+                                ],
+                              ),
+                            ),
+                            if (_isPremiumTier) ...[
                               const SizedBox(height: 5),
                               Wrap(
                                 spacing: 6,
                                 runSpacing: 4,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  // "Seller" appears once the user has published a listing.
-                                  if (_hasListings)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF4CAF50),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: const Text('Seller',
-                                          style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                    ),
                                   // "Verified Seller" is reserved for paid tiers
                                   // (Premium / Super Premium).
                                   if (_isPremiumTier)
@@ -1457,44 +1758,32 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Column(
-                        children: [
-                          _headerButton(
-                            icon: Icons.edit,
-                            label: 'Edit Profile',
-                            color: const Color(0xFF4CAF50),
-                            onTap: _showEditProfile,
-                          ),
-                          const SizedBox(height: 6),
-                          _headerButton(
-                            icon: Icons.messenger_outline,
-                            label: 'Send me a\nMessage',
+                      // Sized to match the avatar's height (70), a touch wider.
+                      GestureDetector(
+                        onTap: _showSendMessage,
+                        child: Container(
+                          width: 92,
+                          height: 70,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
                             color: const Color(0xFF2196F3),
-                            onTap: _showSendMessage,
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                        ],
+                          child: const Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.messenger_outline, color: Colors.white, size: 18),
+                              SizedBox(height: 4),
+                              Text('Send me a\nMessage',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                  // ── Contact details (relocated under the profile picture) ──
-                  const SizedBox(height: 14),
-                  _infoRow(Icons.place_outlined,
-                      _address.isNotEmpty ? _address : 'Add your address'),
-                  const SizedBox(height: 4),
-                  _infoRow(Icons.phone_outlined,
-                      _phone.isNotEmpty ? _phone : 'Add your phone number'),
-                  if (_email.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    _infoRow(Icons.email_outlined, _email),
-                  ],
-                  if (_memberSince.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    _infoRow(Icons.calendar_month_outlined, _memberSince),
-                  ],
-                  if (_isSeller && _businessName.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    _infoRow(Icons.storefront_outlined, _businessName),
-                  ],
                 ],
               ),
             ),
@@ -1535,25 +1824,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _isSeller ? 'Seller Dashboard' : 'Become a Seller',
-                              style: const TextStyle(
-                                  color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                            Text(
-                              _isSeller
-                                  ? 'Manage your listings & earnings'
-                                  : 'Start selling your animals & products',
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            ),
-                          ],
+                        child: Text(
+                          _isSeller ? 'Seller Dashboard' : 'Become a Seller',
+                          style: const TextStyle(
+                              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
                         ),
                       ),
+                      const SizedBox(width: 10),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(20),
@@ -1561,13 +1840,21 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Text(
                           _isSeller ? 'Open' : 'Get Started',
                           style: const TextStyle(
-                              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── Premium Plan Action (relocated just above Account Stats) ──
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _premiumSubscriptionButton(),
             ),
 
             const SizedBox(height: 16),
@@ -1646,10 +1933,67 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 16),
 
-            // ── Premium Plan Action ─────────────────────────────────
+            // ── Details (relocated just below Account Stats) ────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _premiumSubscriptionButton(),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 3)),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Details',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                    const SizedBox(height: 10),
+                    _infoRow(Icons.place_outlined,
+                        _address.isNotEmpty ? _address : 'Add your address'),
+                    const SizedBox(height: 8),
+                    _infoRow(Icons.phone_outlined,
+                        _phone.isNotEmpty ? _phone : 'Add your phone number'),
+                    if (_email.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _infoRow(Icons.email_outlined, _email),
+                    ],
+                    if (_memberSince.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _infoRow(Icons.calendar_month_outlined, _memberSince),
+                    ],
+                    // ── Shop details (shown once the user is a seller) ──
+                    if (_isSeller) ...[
+                      const SizedBox(height: 14),
+                      const Divider(height: 1, thickness: 0.5),
+                      const SizedBox(height: 14),
+                      const Text('Shop',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                      const SizedBox(height: 10),
+                      if (_businessName.isNotEmpty) ...[
+                        _infoRow(Icons.storefront_outlined, _businessName),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_shopCategory.isNotEmpty) ...[
+                        _infoRow(Icons.category_outlined, _shopCategory),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_shopDescription.isNotEmpty) ...[
+                        _infoRow(Icons.description_outlined, _shopDescription),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_paymentNumber.isNotEmpty)
+                        _infoRow(Icons.account_balance_outlined, _paymentNumber),
+                    ],
+                  ],
+                ),
+              ),
             ),
 
             const SizedBox(height: 16),
@@ -1794,38 +2138,14 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _infoRow(IconData icon, String text) {
     return Row(
       children: [
-        Icon(icon, size: 11, color: Colors.white70),
-        const SizedBox(width: 4),
+        Icon(icon, size: 15, color: const Color(0xFF6B8578)),
+        const SizedBox(width: 8),
         Flexible(
           child: Text(text,
-              style: const TextStyle(fontSize: 11, color: Colors.white70),
+              style: const TextStyle(fontSize: 13, color: Color(0xFF3D5247)),
               overflow: TextOverflow.ellipsis),
         ),
       ],
-    );
-  }
-
-  Widget _headerButton({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(10)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: Colors.white, size: 13),
-            const SizedBox(width: 4),
-            Text(label, textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
-          ],
-        ),
-      ),
     );
   }
 
@@ -2024,12 +2344,12 @@ class _ProfilePageState extends State<ProfilePage> {
                   children: [
                     Text('Premium Subscription',
                         style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 15,
                             fontWeight: FontWeight.bold,
                             color: Color(0xFF1A2E22))),
                     SizedBox(height: 2),
                     Text('Unlock more features — view plans',
-                        style: TextStyle(fontSize: 11.5, color: Color(0xFF3D5247))),
+                        style: TextStyle(fontSize: 12.5, color: Color(0xFF3D5247))),
                   ],
                 ),
               ),

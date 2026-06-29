@@ -98,14 +98,197 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadUserName();
     _loadItems();
     if (!_planDialogShown) {
-      // Show plan popup after the first frame renders
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() => _planDialogShown = true);
+      // Once per app session, after the first frame renders, decide what to
+      // show the user: premium members see their basic sales analytics; free
+      // members see the "choose a plan" popup.
+      _planDialogShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        final plan = await SubscriptionService.activePlanLabel();
+        if (!mounted) return;
+        final isPremium = plan == 'Premium' || plan == 'Super Premium';
+        if (isPremium) {
+          _showSalesAnalytics(plan);
+        } else {
           _showPlanDialog();
         }
       });
     }
+  }
+
+  // ── Basic sales analytics (premium members) ───────────────────────────────
+
+  /// Fetches the signed-in user's listings + sales/rating and shows a compact
+  /// analytics dialog. Shown after login for Premium / Super Premium members in
+  /// place of the plan-selection popup.
+  Future<void> _showSalesAnalytics(String plan) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+
+    int totalListings = 0;
+    int activeListings = 0;
+    double inventoryValue = 0;
+    int salesCount = 0;
+    int trustScore = 0;
+
+    try {
+      final listings = await supabase
+          .from('listings')
+          .select('price, status')
+          .eq('seller_id', user.id);
+      for (final row in (listings as List)) {
+        final r = row as Map<String, dynamic>;
+        totalListings++;
+        final status = (r['status'] as String?) ?? 'active';
+        final price = (r['price'] is num)
+            ? (r['price'] as num).toDouble()
+            : (double.tryParse('${r['price']}') ?? 0);
+        if (status == 'active') {
+          activeListings++;
+          inventoryValue += price;
+        }
+      }
+
+      final profile = await supabase
+          .from('users')
+          .select('sales_count, trust_score')
+          .eq('id', user.id)
+          .maybeSingle();
+      if (profile != null) {
+        salesCount = (profile['sales_count'] as int?) ?? 0;
+        trustScore = (profile['trust_score'] as int?) ?? 0;
+      }
+    } catch (e) {
+      debugPrint('Failed to load sales analytics: $e');
+    }
+
+    if (!mounted) return;
+
+    final avgPrice = activeListings > 0 ? inventoryValue / activeListings : 0;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42, height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F8F1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.insights_rounded, color: Color(0xFF1D9E75), size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Sales Analytics',
+                            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                        Text('$plan member overview',
+                            style: const TextStyle(fontSize: 12, color: Colors.black45)),
+                      ],
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(Icons.close, color: Colors.black45, size: 22),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  _analyticsCard('$totalListings', 'Total Listings', Icons.inventory_2_outlined, const Color(0xFF3AA876)),
+                  const SizedBox(width: 10),
+                  _analyticsCard('$activeListings', 'Active', Icons.check_circle_outline, const Color(0xFF2196F3)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _analyticsCard('$salesCount', 'Sales', Icons.shopping_bag_outlined, const Color(0xFFFFB300)),
+                  const SizedBox(width: 10),
+                  _analyticsCard('$trustScore%', 'Trust Score', Icons.verified_outlined, const Color(0xFF1D9E75)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _analyticsCard(_peso(inventoryValue), 'Inventory Value', Icons.account_balance_wallet_outlined, const Color(0xFF3AA876)),
+                  const SizedBox(width: 10),
+                  _analyticsCard(_peso(avgPrice.toDouble()), 'Avg. Price', Icons.sell_outlined, const Color(0xFF2196F3)),
+                ],
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const SellerPage()));
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3AA876),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    elevation: 0,
+                  ),
+                  child: const Text('Manage Listings',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Formats a peso amount compactly (e.g. ₱1.2k, ₱350).
+  String _peso(double value) {
+    if (value >= 1000) {
+      final k = value / 1000;
+      final text = k == k.roundToDouble() ? k.toInt().toString() : k.toStringAsFixed(1);
+      return '₱${text}k';
+    }
+    return '₱${value == value.roundToDouble() ? value.toInt() : value.toStringAsFixed(0)}';
+  }
+
+  Widget _analyticsCard(String value, String label, IconData icon, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withOpacity(0.18)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(height: 8),
+            Text(value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
+            const SizedBox(height: 2),
+            Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadUserName() async {

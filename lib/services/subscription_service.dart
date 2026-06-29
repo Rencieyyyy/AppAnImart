@@ -87,22 +87,38 @@ class SubscriptionService {
     }
   }
 
+  /// Subscription statuses that count as a live, paid plan. The admin website
+  /// marks an approved request as `'approved'`; `'active'` is kept for any
+  /// legacy rows. Anything else (pending / expired / rejected) is treated as
+  /// Free.
+  static const Set<String> _activeStatuses = {'approved', 'active'};
+
   /// The app-facing label of the user's currently *active* plan, or 'Free' if
-  /// they have no approved subscription. Pending/expired/rejected count as Free.
+  /// they have no live subscription. A row counts only when its status is
+  /// approved/active AND it hasn't passed its `expires_at`.
   static Future<String> activePlanLabel() async {
     final user = supabase.auth.currentUser;
     if (user == null) return 'Free';
     try {
-      final row = await supabase
+      // Fetch the user's rows and resolve the active one client-side. This is
+      // robust to multiple approved rows and avoids depending on the exact
+      // status string the admin writes.
+      final rows = await supabase
           .from('subscriptions')
-          .select('plan')
+          .select('plan, status, expires_at, started_at')
           .eq('user_id', user.id)
-          .eq('status', 'active')
-          .order('started_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
-      if (row == null) return 'Free';
-      return labelForDbPlan(row['plan'] as String?);
+          .order('started_at', ascending: false);
+
+      final now = DateTime.now().toUtc();
+      for (final row in (rows as List)) {
+        final r = row as Map<String, dynamic>;
+        final status = (r['status'] as String?)?.toLowerCase().trim() ?? '';
+        if (!_activeStatuses.contains(status)) continue;
+        final expires = DateTime.tryParse('${r['expires_at']}')?.toUtc();
+        if (expires != null && !expires.isAfter(now)) continue; // expired
+        return labelForDbPlan(r['plan'] as String?);
+      }
+      return 'Free';
     } catch (_) {
       return 'Free';
     }
