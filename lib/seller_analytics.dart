@@ -25,6 +25,17 @@ class SellerAnalytics {
   final String topCategory;
   final SellerRating rating;
 
+  /// Listings that reached `status = 'sold'`, and the revenue they earned.
+  final int soldCount;
+  final double soldValue;
+
+  /// How many times buyers favorited this seller's listings (demand signal).
+  final int savesCount;
+
+  /// Marketplace-wide average price of *active* listings in [topCategory],
+  /// or 0 when it couldn't be computed. Powers the pricing insight.
+  final double marketAvgPrice;
+
   /// Listings posted per month over the last six months (oldest first).
   final List<MonthlyCount> monthlyListings;
 
@@ -41,9 +52,17 @@ class SellerAnalytics {
     required this.avgPrice,
     required this.topCategory,
     required this.rating,
+    this.soldCount = 0,
+    this.soldValue = 0,
+    this.savesCount = 0,
+    this.marketAvgPrice = 0,
     this.monthlyListings = const [],
     this.categoryCounts = const {},
   });
+
+  /// Share of all listings that ended in a sale.
+  int get sellThroughPercent =>
+      totalListings == 0 ? 0 : ((soldCount / totalListings) * 100).round();
 
   static const empty = SellerAnalytics(
     totalListings: 0,
@@ -61,7 +80,8 @@ class SellerAnalytics {
   static Future<SellerAnalytics> load(String userId) async {
     if (userId.isEmpty) return empty;
     int total = 0, active = 0;
-    double inventory = 0;
+    int sold = 0;
+    double inventory = 0, soldValue = 0;
     final categoryCounts = <String, int>{};
     int sales = 0, trust = 0;
     // Last six calendar months (oldest first) for the activity graph.
@@ -92,6 +112,9 @@ class SellerAnalytics {
           if (cat != null && cat.isNotEmpty) {
             categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
           }
+        } else if (status == 'sold') {
+          sold++;
+          soldValue += price;
         }
         final created = DateTime.tryParse('${r['created_at'] ?? ''}');
         if (created != null) {
@@ -127,6 +150,45 @@ class SellerAnalytics {
       }
     });
 
+    // Buyer interest: how many times buyers saved this seller's listings.
+    // Comes from the seller_saves_count RPC (favorites RLS hides the rows
+    // themselves); treat any failure as "no data".
+    int saves = 0;
+    try {
+      final res = await supabase
+          .rpc('seller_saves_count', params: {'seller': userId});
+      saves = res is num ? res.toInt() : int.tryParse('$res') ?? 0;
+    } catch (e) {
+      debugPrint('Failed to load saves count: $e');
+    }
+
+    // Marketplace-wide average asking price in the seller's top category, so
+    // they can see whether their pricing is competitive.
+    double marketAvg = 0;
+    if (best > 0) {
+      try {
+        final rows = await supabase
+            .from('listings')
+            .select('price')
+            .eq('status', 'active')
+            .eq('category', topCat);
+        double sum = 0;
+        int n = 0;
+        for (final row in (rows as List)) {
+          final p = (row['price'] is num)
+              ? (row['price'] as num).toDouble()
+              : (double.tryParse('${row['price']}') ?? 0);
+          if (p > 0) {
+            sum += p;
+            n++;
+          }
+        }
+        if (n > 0) marketAvg = sum / n;
+      } catch (e) {
+        debugPrint('Failed to load market average price: $e');
+      }
+    }
+
     return SellerAnalytics(
       totalListings: total,
       activeListings: active,
@@ -137,6 +199,10 @@ class SellerAnalytics {
       avgPrice: active > 0 ? inventory / active : 0,
       topCategory: topCat,
       rating: rating,
+      soldCount: sold,
+      soldValue: soldValue,
+      savesCount: saves,
+      marketAvgPrice: marketAvg,
       monthlyListings: [
         for (final m in months)
           MonthlyCount(
@@ -150,10 +216,20 @@ class SellerAnalytics {
 /// Whether [plan] is the top "Super Premium" tier.
 bool isSuperPremiumPlan(String plan) => plan.trim() == 'Super Premium';
 
-/// Loads analytics for the signed-in user and shows the tier-aware dialog.
+/// Shows the tier-aware analytics view for the signed-in user.
+///
+/// Super Premium sellers get the dedicated full [SellerAnalyticsPage]; other
+/// premium tiers keep the compact dialog.
 Future<void> showSellerAnalytics(BuildContext context, String plan) async {
   final user = supabase.auth.currentUser;
   if (user == null) return;
+  if (isSuperPremiumPlan(plan)) {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SellerAnalyticsPage(plan: plan)),
+    );
+    return;
+  }
   final data = await SellerAnalytics.load(user.id);
   if (!context.mounted) return;
   showDialog(
@@ -162,23 +238,200 @@ Future<void> showSellerAnalytics(BuildContext context, String plan) async {
   );
 }
 
+/// Shown once right after login to Super Premium sellers: a compact popup
+/// with just the essential numbers, plus a shortcut to the full
+/// [SellerAnalyticsPage].
+Future<void> showAnalyticsSnapshot(BuildContext context, String plan) async {
+  final user = supabase.auth.currentUser;
+  if (user == null) return;
+  final data = await SellerAnalytics.load(user.id);
+  if (!context.mounted) return;
+  showDialog(
+    context: context,
+    builder: (_) => _AnalyticsSnapshotDialog(plan: plan, data: data),
+  );
+}
+
+class _AnalyticsSnapshotDialog extends StatelessWidget {
+  final String plan;
+  final SellerAnalytics data;
+  const _AnalyticsSnapshotDialog({required this.plan, required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                children: [
+                  Container(
+                    width: 42, height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F8F1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.insights_rounded, color: Color(0xFF1D9E75), size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Sales Snapshot',
+                            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                        Text('$plan member overview',
+                            style: const TextStyle(fontSize: 12, color: Colors.black45)),
+                      ],
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: const Icon(Icons.close, color: Colors.black45, size: 22),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+
+              // ── Essentials ──
+              Row(
+                children: [
+                  _metricCard('${data.totalListings}', 'Total Listings', Icons.inventory_2_outlined, const Color(0xFF3AA876)),
+                  const SizedBox(width: 10),
+                  _metricCard('${data.activeListings}', 'Active', Icons.check_circle_outline, const Color(0xFF2196F3)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _metricCard('${data.salesCount}', 'Sales', Icons.shopping_bag_outlined, const Color(0xFFFFB300)),
+                  const SizedBox(width: 10),
+                  _metricCard('${data.trustScore}%', 'Trust Score', Icons.verified_outlined, const Color(0xFF1D9E75)),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Shortcut to the full analytics page.
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    nav.push(
+                      MaterialPageRoute(
+                          builder: (_) => SellerAnalyticsPage(plan: plan)),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1D9E75),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30)),
+                  ),
+                  icon: const Icon(Icons.bar_chart_rounded, size: 18),
+                  label: const Text('View Full Analytics',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Full-page sales analytics — the Super Premium experience. Loads its own
+/// data so it can be pushed instantly, and supports pull-to-refresh.
+class SellerAnalyticsPage extends StatefulWidget {
+  final String plan;
+  const SellerAnalyticsPage({super.key, required this.plan});
+
+  @override
+  State<SellerAnalyticsPage> createState() => _SellerAnalyticsPageState();
+}
+
+class _SellerAnalyticsPageState extends State<SellerAnalyticsPage> {
+  SellerAnalytics _data = SellerAnalytics.empty;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final user = supabase.auth.currentUser;
+    final data =
+        user == null ? SellerAnalytics.empty : await SellerAnalytics.load(user.id);
+    if (!mounted) return;
+    setState(() {
+      _data = data;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4FAF7),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1D9E75),
+        foregroundColor: Colors.white,
+        elevation: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Sales Analytics',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            Text('${widget.plan} member overview',
+                style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          ],
+        ),
+      ),
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(color: Color(0xFF1D9E75)))
+          : RefreshIndicator(
+              color: const Color(0xFF1D9E75),
+              onRefresh: _load,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                children: [
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 480),
+                      child:
+                          _AnalyticsSections(plan: widget.plan, data: _data),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+}
+
 class _SellerAnalyticsDialog extends StatelessWidget {
   final String plan;
   final SellerAnalytics data;
   const _SellerAnalyticsDialog({required this.plan, required this.data});
 
-  String _peso(double value) {
-    if (value >= 1000) {
-      final k = value / 1000;
-      final text = k == k.roundToDouble() ? k.toInt().toString() : k.toStringAsFixed(1);
-      return '₱${text}k';
-    }
-    return '₱${value == value.roundToDouble() ? value.toInt() : value.toStringAsFixed(0)}';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isSuper = isSuperPremiumPlan(plan);
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
@@ -221,88 +474,7 @@ class _SellerAnalyticsDialog extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 18),
-
-                // ── Core metrics (all premium tiers) ──
-                Row(
-                  children: [
-                    _card('${data.totalListings}', 'Total Listings', Icons.inventory_2_outlined, const Color(0xFF3AA876)),
-                    const SizedBox(width: 10),
-                    _card('${data.activeListings}', 'Active', Icons.check_circle_outline, const Color(0xFF2196F3)),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    _card('${data.salesCount}', 'Sales', Icons.shopping_bag_outlined, const Color(0xFFFFB300)),
-                    const SizedBox(width: 10),
-                    _card('${data.trustScore}%', 'Trust Score', Icons.verified_outlined, const Color(0xFF1D9E75)),
-                  ],
-                ),
-                const SizedBox(height: 18),
-
-                // ── Advanced metrics ──
-                const Text('Advanced',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    _card(_peso(data.inventoryValue), 'Inventory Value', Icons.account_balance_wallet_outlined, const Color(0xFF3AA876)),
-                    const SizedBox(width: 10),
-                    _card(_peso(data.avgPrice), 'Avg. Price', Icons.sell_outlined, const Color(0xFF2196F3)),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    _card(data.topCategory, 'Top Category', Icons.category_outlined, const Color(0xFFFFB300)),
-                    const SizedBox(width: 10),
-                    _card(
-                        data.rating.hasReviews ? '${data.rating.average.toStringAsFixed(1)} (${data.rating.count})' : 'No reviews',
-                        'Avg. Rating', Icons.star_outline_rounded, const Color(0xFF1D9E75)),
-                  ],
-                ),
-                const SizedBox(height: 18),
-
-                // ── Sales graphs ──
-                const Text('Sales Graphs',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                const SizedBox(height: 10),
-                _MonthlyBarChart(data: data.monthlyListings),
-                if (data.categoryCounts.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  _CategoryBars(data: data.categoryCounts),
-                ],
-
-                if (isSuper) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF8E5BE8), Color(0xFF6A3FD1)],
-                      ),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 22),
-                        SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Priority Listing Active',
-                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                              Text('Your listings appear above Premium sellers',
-                                  style: TextStyle(color: Colors.white70, fontSize: 11)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                _AnalyticsSections(plan: plan, data: data),
               ],
             ),
           ),
@@ -310,29 +482,219 @@ class _SellerAnalyticsDialog extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _card(String value, String label, IconData icon, Color c) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
-        decoration: BoxDecoration(
-          color: c.withOpacity(0.06),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: c.withOpacity(0.18)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+/// The metric cards, graphs and perk banner shared by the compact dialog and
+/// the full-page Super Premium view.
+class _AnalyticsSections extends StatelessWidget {
+  final String plan;
+  final SellerAnalytics data;
+  const _AnalyticsSections({required this.plan, required this.data});
+
+  String _peso(double value) {
+    if (value >= 1000) {
+      final k = value / 1000;
+      final text = k == k.roundToDouble() ? k.toInt().toString() : k.toStringAsFixed(1);
+      return '₱${text}k';
+    }
+    return '₱${value == value.roundToDouble() ? value.toInt() : value.toStringAsFixed(0)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isSuper = isSuperPremiumPlan(plan);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Core metrics (all premium tiers) ──
+        Row(
           children: [
-            Icon(icon, color: c, size: 20),
-            const SizedBox(height: 8),
-            Text(value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: c)),
-            const SizedBox(height: 2),
-            Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+            _metricCard('${data.totalListings}', 'Total Listings', Icons.inventory_2_outlined, const Color(0xFF3AA876)),
+            const SizedBox(width: 10),
+            _metricCard('${data.activeListings}', 'Active', Icons.check_circle_outline, const Color(0xFF2196F3)),
           ],
         ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _metricCard('${data.salesCount}', 'Sales', Icons.shopping_bag_outlined, const Color(0xFFFFB300)),
+            const SizedBox(width: 10),
+            _metricCard('${data.trustScore}%', 'Trust Score', Icons.verified_outlined, const Color(0xFF1D9E75)),
+          ],
+        ),
+        const SizedBox(height: 18),
+
+        // ── Business performance ──
+        const Text('Business',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _metricCard(_peso(data.soldValue), 'Revenue (Sold)', Icons.payments_outlined, const Color(0xFF3AA876)),
+            const SizedBox(width: 10),
+            _metricCard('${data.sellThroughPercent}%', 'Sell-through', Icons.trending_up_rounded, const Color(0xFF2196F3)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _metricCard('${data.savesCount}', 'Saves by Buyers', Icons.favorite_border_rounded, const Color(0xFFE53E3E)),
+            const SizedBox(width: 10),
+            _metricCard(
+                data.marketAvgPrice > 0 ? _peso(data.marketAvgPrice) : '—',
+                'Market Avg. Price', Icons.storefront_outlined, const Color(0xFFFFB300)),
+          ],
+        ),
+        if (data.marketAvgPrice > 0 && data.avgPrice > 0) ...[
+          const SizedBox(height: 10),
+          _PricingInsight(data: data),
+        ],
+        const SizedBox(height: 18),
+
+        // ── Advanced metrics ──
+        const Text('Advanced',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _metricCard(_peso(data.inventoryValue), 'Inventory Value', Icons.account_balance_wallet_outlined, const Color(0xFF3AA876)),
+            const SizedBox(width: 10),
+            _metricCard(_peso(data.avgPrice), 'Avg. Price', Icons.sell_outlined, const Color(0xFF2196F3)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _metricCard(data.topCategory, 'Top Category', Icons.category_outlined, const Color(0xFFFFB300)),
+            const SizedBox(width: 10),
+            _metricCard(
+                data.rating.hasReviews ? '${data.rating.average.toStringAsFixed(1)} (${data.rating.count})' : 'No reviews',
+                'Avg. Rating', Icons.star_outline_rounded, const Color(0xFF1D9E75)),
+          ],
+        ),
+        const SizedBox(height: 18),
+
+        // ── Sales graphs ──
+        const Text('Sales Graphs',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+        const SizedBox(height: 10),
+        _MonthlyBarChart(data: data.monthlyListings),
+        if (data.categoryCounts.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _CategoryBars(data: data.categoryCounts),
+        ],
+
+        if (isSuper) ...[
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF8E5BE8), Color(0xFF6A3FD1)],
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 22),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Priority Listing Active',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                      Text('Your listings appear above Premium sellers',
+                          style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+}
+
+/// A single tinted metric card, sized to share a Row with its siblings.
+Widget _metricCard(String value, String label, IconData icon, Color c) {
+  return Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: c, size: 20),
+          const SizedBox(height: 8),
+          Text(value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: c)),
+          const SizedBox(height: 2),
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+        ],
+      ),
+    ),
+  );
+}
+
+/// One-line pricing intelligence: how the seller's average asking price in
+/// their top category compares to the marketplace-wide average.
+class _PricingInsight extends StatelessWidget {
+  final SellerAnalytics data;
+  const _PricingInsight({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final diff =
+        (data.avgPrice - data.marketAvgPrice) / data.marketAvgPrice * 100;
+    final String message;
+    final IconData icon;
+    final Color color;
+    if (diff.abs() < 5) {
+      message =
+          'Your average price is in line with the market for ${data.topCategory}.';
+      icon = Icons.price_check_rounded;
+      color = const Color(0xFF3AA876);
+    } else if (diff < 0) {
+      message =
+          'Your average price is ${diff.abs().round()}% below the market for ${data.topCategory} — room to price up.';
+      icon = Icons.trending_down_rounded;
+      color = const Color(0xFF2196F3);
+    } else {
+      message =
+          'Your average price is ${diff.round()}% above the market for ${data.topCategory} — buyers may find cheaper options.';
+      icon = Icons.trending_up_rounded;
+      color = const Color(0xFFFFB300);
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.18)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(message,
+                style: const TextStyle(
+                    fontSize: 12, color: Color(0xFF1A2E22), height: 1.35)),
+          ),
+        ],
       ),
     );
   }

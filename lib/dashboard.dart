@@ -103,15 +103,16 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadItems();
     if (!_planDialogShown) {
       // Once per app session, after the first frame renders, decide what to
-      // show the user: Super Premium members see their sales analytics popup
-      // (an exclusive perk of that tier); free members see the "choose a
-      // plan" popup; Premium members see neither.
+      // show the user: Super Premium members see a compact sales snapshot
+      // popup with a shortcut to their full analytics page (an exclusive perk
+      // of that tier); free members see the "choose a plan" popup; Premium
+      // members see neither.
       _planDialogShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         final plan = await SubscriptionService.activePlanLabel();
         if (!mounted) return;
         if (plan == 'Super Premium') {
-          showSellerAnalytics(context, plan);
+          showAnalyticsSnapshot(context, plan);
         } else if (plan != 'Premium') {
           _showPlanDialog();
         }

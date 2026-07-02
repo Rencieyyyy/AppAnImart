@@ -1428,7 +1428,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     }),
                     if (_isSuperTier) ...[
                       const SizedBox(height: 8),
-                      // Sales analytics popup — a Super Premium exclusive.
+                      // Sales analytics page — a Super Premium exclusive.
                       _dashAction(Icons.insights_rounded, 'View Analytics', 'Your sales & advanced metrics', const Color(0xFF8E5BE8),
                           onTap: () {
                         Navigator.pop(ctx);
