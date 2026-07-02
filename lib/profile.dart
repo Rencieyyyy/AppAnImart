@@ -15,9 +15,11 @@ import 'seller_analytics.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
+import 'services/location_service.dart';
 import 'services/marketplace_service.dart';
 import 'services/subscription_service.dart';
 import 'seller_reviews.dart';
+import 'widgets/city_picker.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -336,6 +338,7 @@ class _ProfilePageState extends State<ProfilePage> {
     required String shopCategory,
     required String shopDescription,
     required String paymentNumber,
+    PhCity? location,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
@@ -357,6 +360,10 @@ class _ProfilePageState extends State<ProfilePage> {
             'shop_category': shopCategory,
             'shop_description': shopDescription,
             'payment_number': paymentNumber,
+            // Coordinates power "Explore near you" distances.
+            if (location != null) 'location_name': location.label,
+            if (location != null) 'latitude': location.lat,
+            if (location != null) 'longitude': location.lng,
           })
           .eq('id', user.id)
           .select()
@@ -364,6 +371,19 @@ class _ProfilePageState extends State<ProfilePage> {
 
       if (row == null) {
         return 'Your account has no profile record yet. Please contact support.';
+      }
+
+      // Re-base everything this user has posted onto their new location so
+      // their listings show (and are ranked by) where they now live.
+      if (location != null) {
+        try {
+          await supabase
+              .from('listings')
+              .update({'location': location.label})
+              .eq('seller_id', user.id);
+        } catch (e) {
+          debugPrint('Could not re-base listings location: $e');
+        }
       }
 
       if (mounted) {
@@ -2927,6 +2947,7 @@ class _EditProfilePage extends StatefulWidget {
     required String shopCategory,
     required String shopDescription,
     required String paymentNumber,
+    PhCity? location,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
 
@@ -2958,13 +2979,15 @@ class _EditProfilePageState extends State<_EditProfilePage> {
 
   late final TextEditingController _nameCtrl;
   late final TextEditingController _phoneCtrl;
-  late final TextEditingController _addressCtrl;
   late final TextEditingController _houseCtrl;
   late final TextEditingController _businessCtrl;
   late final TextEditingController _shopDescCtrl;
   late final TextEditingController _paymentCtrl;
   late String _shopCategory;
   late String _avatarUrl;
+  // Address is picked from the PH city/municipality gazetteer, not typed.
+  late String _address;
+  PhCity? _pickedCity;
   bool _isSaving = false;
   bool _uploadingAvatar = false;
 
@@ -2977,7 +3000,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     super.initState();
     _nameCtrl = TextEditingController(text: widget.initialName);
     _phoneCtrl = TextEditingController(text: widget.initialPhone);
-    _addressCtrl = TextEditingController(text: widget.initialAddress);
+    _address = widget.initialAddress;
     _houseCtrl = TextEditingController(text: widget.initialHouse);
     _businessCtrl = TextEditingController(text: widget.initialBusinessName);
     _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
@@ -2990,7 +3013,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   void dispose() {
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
-    _addressCtrl.dispose();
     _houseCtrl.dispose();
     _businessCtrl.dispose();
     _shopDescCtrl.dispose();
@@ -3004,7 +3026,8 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     final error = await widget.onSave(
       name: _nameCtrl.text.trim(),
       phone: _phoneCtrl.text.trim(),
-      address: _addressCtrl.text.trim(),
+      address: _address.trim(),
+      location: _pickedCity,
       houseNumber: _houseCtrl.text.trim(),
       businessName: _businessCtrl.text.trim(),
       shopCategory: _shopCategory,
@@ -3277,7 +3300,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
           _sectionHeader('Details'),
           _row('Name', _nameCtrl, 'Your full name'),
           _row('Phone', _phoneCtrl, 'Your phone number', type: TextInputType.phone),
-          _row('Address', _addressCtrl, 'Street, Barangay, City'),
+          _addressRow(),
           if (widget.email.isNotEmpty) _readonlyRow('Email', widget.email),
           if (widget.memberSince.isNotEmpty)
             _readonlyRow('Member', widget.memberSince),
@@ -3332,6 +3355,57 @@ class _EditProfilePageState extends State<_EditProfilePage> {
         ],
       ),
     );
+  }
+
+  // Tappable address row that opens the searchable PH city/municipality
+  // picker instead of a free-text box.
+  Widget _addressRow() {
+    return InkWell(
+      onTap: _pickAddress,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: _line)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 104,
+              child: Text('Address',
+                  style: TextStyle(
+                      fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+            ),
+            Expanded(
+              child: Text(
+                _address.isNotEmpty ? _address : 'Select your city/municipality',
+                style: TextStyle(
+                    fontSize: 16,
+                    color: _address.isNotEmpty ? _dark : Colors.black38),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down,
+                color: Colors.black38, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAddress() async {
+    final city = await showCityPicker(
+      context,
+      selectedLabel: _address,
+      title: 'Your Address',
+      subtitle: 'Search and select your city or municipality — your listings '
+          'and "near you" distances are based on it.',
+    );
+    if (city == null || !mounted) return;
+    setState(() {
+      _pickedCity = city;
+      _address = city.label;
+    });
   }
 
   // Tappable category row that opens a picker.

@@ -69,7 +69,8 @@ class _DashboardPageState extends State<DashboardPage> {
   // Category filter
   static bool _planDialogShown = false;
   String _selectedCategory = 'Poultry';
-  bool _showAllCategories = false;
+  // "All" is the default landing section; a specific category is a filter.
+  bool _showAllCategories = true;
 
   final List<String> _categories = [
     'Poultry',
@@ -1006,16 +1007,14 @@ class _DashboardPageState extends State<DashboardPage> {
                             height: 44,
                             width: 44,
                             decoration: BoxDecoration(
-                              color: (_filterSortBy != 'Default' ||
-                                      _showAllCategories)
+                              color: _filterSortBy != 'Default'
                                   ? const Color(0xFF6DBF99)
                                   : const Color(0xFFF2F2F2),
                               borderRadius: BorderRadius.circular(22),
                             ),
                             child: Icon(
                               Icons.tune,
-                              color: (_filterSortBy != 'Default' ||
-                                      _showAllCategories)
+                              color: _filterSortBy != 'Default'
                                   ? Colors.white
                                   : Colors.black54,
                               size: 20,
@@ -1028,18 +1027,16 @@ class _DashboardPageState extends State<DashboardPage> {
                     // Active filter chips
                     if (_searchQuery.isNotEmpty ||
                         _filterSortBy != 'Default' ||
-                        _showAllCategories)
+                        !_showAllCategories)
                       Padding(
                         padding: const EdgeInsets.only(top: 10),
                         child: Wrap(
                           spacing: 6,
                           children: [
-                            if (_showAllCategories)
-                              _filterChip(
-                                  'All categories',
+                            if (!_showAllCategories)
+                              _filterChip(_selectedCategory,
                                   () => setState(() {
-                                        _showAllCategories = false;
-                                        _selectedCategory = 'Poultry';
+                                        _showAllCategories = true;
                                       })),
                             if (_filterSortBy != 'Default')
                               _filterChip(

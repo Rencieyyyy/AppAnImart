@@ -5,6 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'cloudinary_function.dart';
 import 'login.dart';
 import 'main.dart';
+import 'services/location_service.dart';
+import 'widgets/city_picker.dart';
 import 'widgets/top_message.dart';
 
 class SignUpPage extends StatefulWidget {
@@ -20,8 +22,9 @@ class _SignUpPageState extends State<SignUpPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
 
-  // Step 2 - Address
-  final TextEditingController _addressController = TextEditingController();
+  // Step 2 - Address. The city/municipality comes from the searchable PH
+  // gazetteer picker (with coordinates), not a free-text box.
+  PhCity? _selectedCity;
   final TextEditingController _houseController = TextEditingController();
 
   // Step 3 - Security & ID
@@ -65,7 +68,6 @@ class _SignUpPageState extends State<SignUpPage> {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
-    _addressController.dispose();
     _houseController.dispose();
     _passwordController.dispose();
     _retypePasswordController.dispose();
@@ -268,7 +270,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         if (_phoneController.text.trim().isEmpty) return 'Please enter your phone number.';
         return null;
       case 2:
-        if (_addressController.text.trim().isEmpty) return 'Please enter your address.';
+        if (_selectedCity == null) return 'Please select your city/municipality.';
         if (_houseController.text.trim().isEmpty) return 'Please enter your house/street/unit/lot number.';
         return null;
       case 3:
@@ -311,7 +313,8 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
     final phone = _phoneController.text.trim();
-    final address = _addressController.text.trim();
+    final city = _selectedCity;
+    final address = city?.label ?? '';
     final houseNumber = _houseController.text.trim();
     try {
       // 1) Upload the valid-ID photo to its own Cloudinary folder first (no
@@ -344,6 +347,11 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
           'house_number': houseNumber,
           'id_type': _selectedIdType,
           'valid_id_url': validIdUrl,
+          // Coordinates for "Explore near you" — backfilled into the users
+          // row on first login (see backfillLocationFromMetadata).
+          'location_name': city?.label,
+          'latitude': city?.lat,
+          'longitude': city?.lng,
         },
       );
 
@@ -551,7 +559,53 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
       case 2:
         return Column(
           children: [
-            _buildField(controller: _addressController, hint: 'Address', keyboardType: TextInputType.streetAddress),
+            // Searchable city/municipality dropdown (all PH locations).
+            GestureDetector(
+              onTap: () async {
+                final city = await showCityPicker(
+                  context,
+                  selectedLabel: _selectedCity?.label,
+                  title: 'Your Address',
+                  subtitle: 'Search and select your city or municipality.',
+                );
+                if (city != null && mounted) {
+                  setState(() => _selectedCity = city);
+                }
+              },
+              child: Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.location_on_outlined,
+                        color: Colors.black45, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _selectedCity?.label ?? 'Select City / Municipality',
+                        style: TextStyle(
+                          color: _selectedCity != null
+                              ? Colors.black87
+                              : Colors.black45,
+                          fontSize: 14,
+                          fontWeight: _selectedCity != null
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.keyboard_arrow_down_rounded,
+                        color: Colors.black45, size: 20),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 14),
             _buildField(controller: _houseController, hint: 'House No./Street/Unit/Lot No.'),
           ],

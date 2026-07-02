@@ -62,3 +62,40 @@ Future<void> backfillValidIdFromMetadata() async {
     // still succeeds.
   }
 }
+
+/// Backfills the signed-in user's location (`location_name` / `latitude` /
+/// `longitude`) into the `users` table from the city they picked at sign-up,
+/// which travels in the Auth metadata (same pattern as the valid-ID backfill:
+/// no session exists at sign-up when email confirmation is on).
+///
+/// Best-effort and idempotent: it only writes when the row has no location
+/// yet, so a location later changed in the app is never overwritten.
+Future<void> backfillLocationFromMetadata() async {
+  final user = supabase.auth.currentUser;
+  if (user == null) return;
+
+  final meta = user.userMetadata ?? const {};
+  final name = (meta['location_name'] as String?)?.trim();
+  final lat = meta['latitude'] as num?;
+  final lng = meta['longitude'] as num?;
+  if (name == null || name.isEmpty || lat == null || lng == null) return;
+
+  try {
+    final row = await supabase
+        .from('users')
+        .select('location_name')
+        .eq('id', user.id)
+        .maybeSingle();
+    final existing = (row?['location_name'] as String?)?.trim();
+    if (existing != null && existing.isNotEmpty) return; // already set
+
+    await supabase.from('users').update({
+      'location_name': name,
+      'latitude': lat.toDouble(),
+      'longitude': lng.toDouble(),
+    }).eq('id', user.id);
+  } catch (_) {
+    // Columns may not exist yet, or RLS may block it — ignore so login
+    // still succeeds.
+  }
+}

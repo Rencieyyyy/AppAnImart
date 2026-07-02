@@ -4,7 +4,9 @@ import 'dashboard.dart';
 import 'announcement_page.dart';
 import 'profile.dart';
 import 'main.dart';
+import 'services/location_service.dart';
 import 'services/marketplace_service.dart';
+import 'widgets/city_picker.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -16,7 +18,9 @@ class _Listing {
   final List<String> images;
   final String category;
   final String location;
-  final double distanceKm;
+  // Where the seller lives (from their `users` row); null when not set.
+  final double? sellerLat;
+  final double? sellerLng;
   final String description;
   final String condition;
   final String sellerName;
@@ -35,7 +39,8 @@ class _Listing {
     this.images = const [],
     required this.category,
     required this.location,
-    required this.distanceKm,
+    this.sellerLat,
+    this.sellerLng,
     this.description = '',
     this.condition = '',
     this.sellerName = '',
@@ -74,6 +79,7 @@ class _BuyerPageState extends State<BuyerPage> {
   String _sortBy = 'Default'; // Default | Price ↑ | Price ↓ | Nearest
   double? _minPrice;
   double? _maxPrice;
+  double? _maxKm; // "within X km" radius; null = any distance
 
   // Persistent favourites (listing ids) and blocked sellers (user ids).
   Set<String> _favourites = {};
@@ -83,13 +89,57 @@ class _BuyerPageState extends State<BuyerPage> {
   List<_Listing> _allListings = [];
   bool _loading = true;
 
+  // The signed-in buyer's saved location — drives "Explore near you".
+  UserLocation? _myLocation;
+
+  // Seller distances keyed by listing id, precomputed whenever the listings
+  // or the buyer's location change so sorting/filtering never re-runs the
+  // Haversine math on every rebuild.
+  Map<String, double> _distances = {};
+
   @override
   void initState() {
     super.initState();
     _loadListings();
     _loadFavorites();
     _loadBlocked();
+    _loadMyLocation();
   }
+
+  /// Loads the buyer's saved location so listing distances can be computed.
+  Future<void> _loadMyLocation() async {
+    final loc = await LocationService.fetchUserLocation();
+    if (!mounted) return;
+    setState(() {
+      _myLocation = loc;
+      _recomputeDistances();
+    });
+  }
+
+  /// Rebuilds the listing-id → distance map. Call inside setState whenever
+  /// `_allListings` or `_myLocation` changes.
+  void _recomputeDistances() {
+    final me = _myLocation;
+    final next = <String, double>{};
+    if (me != null) {
+      for (final l in _allListings) {
+        if (l.id.isEmpty || l.sellerLat == null || l.sellerLng == null) {
+          continue;
+        }
+        next[l.id] = LocationService.distanceKm(
+            me.lat, me.lng, l.sellerLat!, l.sellerLng!);
+      }
+    }
+    _distances = next;
+  }
+
+  /// Distance in km between the buyer and the listing's seller, or null when
+  /// either side has no saved location.
+  double? _distanceOf(_Listing l) => _distances[l.id];
+
+  /// Formats a distance as e.g. "3.2 km" or "24 km".
+  String _formatDistance(double km) =>
+      km < 10 ? '${km.toStringAsFixed(1)} km' : '${km.round()} km';
 
   /// Loads the user's saved favourites (by listing id) from Supabase.
   Future<void> _loadFavorites() async {
@@ -130,7 +180,7 @@ class _BuyerPageState extends State<BuyerPage> {
     try {
       final rows = await supabase
           .from('listings')
-          .select('*, users(name)')
+          .select('*, users(name, latitude, longitude)')
           .eq('status', 'active')
           .order('created_at', ascending: false);
       if (!mounted) return;
@@ -155,7 +205,8 @@ class _BuyerPageState extends State<BuyerPage> {
             images: imgs,
             category: (row['category'] as String?) ?? 'Uncategorized',
             location: (row['location'] as String?) ?? '',
-            distanceKm: 0,
+            sellerLat: (seller?['latitude'] as num?)?.toDouble(),
+            sellerLng: (seller?['longitude'] as num?)?.toDouble(),
             description: (row['description'] as String?) ?? '',
             condition: (row['condition'] as String?) ?? '',
             sellerName: (seller?['name'] as String?) ?? '',
@@ -167,6 +218,7 @@ class _BuyerPageState extends State<BuyerPage> {
             createdAt: '${row['created_at'] ?? ''}',
           );
         }).toList();
+        _recomputeDistances();
         _loading = false;
       });
     } catch (e) {
@@ -204,6 +256,14 @@ class _BuyerPageState extends State<BuyerPage> {
       list = list.where((l) => l.priceValue <= _maxPrice!).toList();
     }
 
+    // "Near you" radius — only meaningful once the buyer has a location.
+    if (_maxKm != null && _myLocation != null) {
+      list = list.where((l) {
+        final d = _distanceOf(l);
+        return d != null && d <= _maxKm!;
+      }).toList();
+    }
+
     if (_searchQuery.isNotEmpty) {
       final q = _searchQuery.toLowerCase();
       list = list
@@ -215,6 +275,18 @@ class _BuyerPageState extends State<BuyerPage> {
           .toList();
     }
 
+    // Nearest sellers first; listings with unknown distance go last (newest
+    // first among themselves).
+    int byDistance(_Listing a, _Listing b) {
+      final da = _distanceOf(a);
+      final db = _distanceOf(b);
+      if (da == null && db == null) return b.createdAt.compareTo(a.createdAt);
+      if (da == null) return 1;
+      if (db == null) return -1;
+      final c = da.compareTo(db);
+      return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+    }
+
     switch (_sortBy) {
       case 'Price ↑':
         list = [...list]..sort((a, b) => a.priceValue.compareTo(b.priceValue));
@@ -223,13 +295,45 @@ class _BuyerPageState extends State<BuyerPage> {
         list = [...list]..sort((a, b) => b.priceValue.compareTo(a.priceValue));
         break;
       case 'Nearest':
-        list = [...list]..sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+        list = [...list]..sort(byDistance);
         break;
       default:
+        // "Explore near you": once the buyer has set a location, the default
+        // ordering is by how close each seller lives.
+        if (_myLocation != null) list = [...list]..sort(byDistance);
         break;
     }
 
     return list;
+  }
+
+  // ── Location picker ────────────────────────────────────────────────────────
+
+  /// Lets the buyer pick their city/municipality; saved to their `users` row
+  /// so distances can be computed against every seller.
+  Future<void> _showLocationPicker() async {
+    final city = await showCityPicker(
+      context,
+      selectedLabel: _myLocation?.name,
+      subtitle: 'Pick your city or municipality — anywhere in the '
+          'Philippines — to see how far each seller is.',
+    );
+    if (city == null || !mounted) return;
+    // Optimistic update so distances appear immediately.
+    final previous = _myLocation;
+    setState(() {
+      _myLocation =
+          UserLocation(name: city.label, lat: city.lat, lng: city.lng);
+      _recomputeDistances();
+    });
+    final ok = await LocationService.saveUserLocation(city);
+    if (!mounted || ok) return;
+    setState(() {
+      _myLocation = previous;
+      _recomputeDistances();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not save your location. Please try again.')));
   }
 
   // ── Navigation ─────────────────────────────────────────────────────────────
@@ -340,6 +444,7 @@ class _BuyerPageState extends State<BuyerPage> {
 
   void _showFilterSheet() {
     String tempSort = _sortBy;
+    double? tempMaxKm = _maxKm;
     final minCtrl = TextEditingController(
         text: _minPrice != null ? _minPrice!.toInt().toString() : '');
     final maxCtrl = TextEditingController(
@@ -413,6 +518,61 @@ class _BuyerPageState extends State<BuyerPage> {
                 }).toList(),
               ),
               const SizedBox(height: 20),
+              const Text('Distance',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black54)),
+              const SizedBox(height: 10),
+              if (_myLocation == null)
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showLocationPicker();
+                  },
+                  child: const Row(
+                    children: [
+                      Icon(Icons.near_me_outlined,
+                          color: Color(0xFF6DBF99), size: 16),
+                      SizedBox(width: 6),
+                      Text('Set your location to filter by distance',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF6DBF99),
+                              fontWeight: FontWeight.w500)),
+                    ],
+                  ),
+                )
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [null, 10.0, 25.0, 50.0, 100.0].map((km) {
+                    final sel = tempMaxKm == km;
+                    return GestureDetector(
+                      onTap: () => setSheet(() => tempMaxKm = km),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: sel
+                              ? const Color(0xFF6DBF99)
+                              : const Color(0xFFF2F2F2),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                            km == null ? 'Any' : '${km.toInt()} km',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: sel ? Colors.white : Colors.black54,
+                                fontWeight: sel
+                                    ? FontWeight.w600
+                                    : FontWeight.normal)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              const SizedBox(height: 20),
               const Text('Price range (₱)',
                   style: TextStyle(
                       fontSize: 13,
@@ -441,6 +601,7 @@ class _BuyerPageState extends State<BuyerPage> {
                             _sortBy = 'Default';
                             _minPrice = null;
                             _maxPrice = null;
+                            _maxKm = null;
                           });
                           Navigator.pop(ctx);
                         },
@@ -466,6 +627,7 @@ class _BuyerPageState extends State<BuyerPage> {
                             _sortBy = tempSort;
                             _minPrice = double.tryParse(minCtrl.text.trim());
                             _maxPrice = double.tryParse(maxCtrl.text.trim());
+                            _maxKm = tempMaxKm;
                           });
                           Navigator.pop(ctx);
                         },
@@ -621,80 +783,248 @@ class _BuyerPageState extends State<BuyerPage> {
     );
   }
 
-  // ── Favourites dialog ──────────────────────────────────────────────────────
+  // ── Favourites bottom sheet ────────────────────────────────────────────────
 
   void _showFavourites() {
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) {
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) {
         final favs =
             _allListings.where((l) => _favourites.contains(l.id)).toList();
-        return AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
+        return SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.72,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.favorite, color: Color(0xFF6DBF99)),
-              SizedBox(width: 8),
-              Text('My Favourites',
-                  style:
-                      TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 12, bottom: 16),
+                  decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              // Header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: const BoxDecoration(
+                          color: Color(0xFFE8F7F1), shape: BoxShape.circle),
+                      child: const Icon(Icons.favorite,
+                          color: Color(0xFF6DBF99), size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('My Favourites',
+                              style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87)),
+                          Text(
+                            favs.isEmpty
+                                ? 'Nothing saved yet'
+                                : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black45),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close,
+                          color: Colors.black38, size: 22),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Divider(height: 1, color: Color(0xFFF0F0F0)),
+              // Body
+              Expanded(
+                child: favs.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 88,
+                              height: 88,
+                              decoration: const BoxDecoration(
+                                  color: Color(0xFFF4FAF7),
+                                  shape: BoxShape.circle),
+                              child: const Icon(Icons.favorite_border,
+                                  color: Color(0xFF6DBF99), size: 40),
+                            ),
+                            const SizedBox(height: 16),
+                            const Text('No favourites yet',
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87)),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Tap the ♡ on any listing and it will\nshow up here for quick access.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.black45,
+                                  height: 1.5),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                        itemCount: favs.length,
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: 10),
+                        itemBuilder: (_, i) {
+                          final item = favs[i];
+                          final distance = _distanceOf(item);
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _openListing(item);
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border:
+                                    Border.all(color: const Color(0xFFEDEDED)),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.04),
+                                    blurRadius: 10,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: _listingImage(item.image,
+                                        width: 68, height: 68),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(item.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 14,
+                                                color: Colors.black87)),
+                                        const SizedBox(height: 3),
+                                        Text(item.price,
+                                            style: const TextStyle(
+                                                color: Color(0xFF6DBF99),
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14)),
+                                        const SizedBox(height: 3),
+                                        Row(
+                                          children: [
+                                            const Icon(
+                                                Icons.location_on_outlined,
+                                                size: 12,
+                                                color: Colors.black38),
+                                            const SizedBox(width: 2),
+                                            Expanded(
+                                              child: Text(
+                                                distance != null
+                                                    ? '${item.location.split(',').first} · ${_formatDistance(distance)} away'
+                                                    : item.location,
+                                                maxLines: 1,
+                                                overflow:
+                                                    TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.black38),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // Remove from favourites
+                                  GestureDetector(
+                                    onTap: () async {
+                                      await _toggleFavorite(item.id);
+                                      if (ctx.mounted) setSheet(() {});
+                                    },
+                                    child: Container(
+                                      width: 36,
+                                      height: 36,
+                                      decoration: const BoxDecoration(
+                                          color: Color(0xFFE8F7F1),
+                                          shape: BoxShape.circle),
+                                      child: const Icon(Icons.favorite,
+                                          color: Color(0xFF6DBF99), size: 18),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
             ],
           ),
-          content: favs.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Text(
-                    'No favourites yet.\nTap ♡ on any listing to save it here.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.black54, height: 1.5),
-                  ),
-                )
-              : SizedBox(
-                  width: double.maxFinite,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: favs.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final item = favs[i];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: _listingImage(item.image,
-                              width: 44, height: 44),
-                        ),
-                        title: Text(item.name,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w500, fontSize: 14)),
-                        subtitle: Text('${item.price} · ${item.location}',
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.black45)),
-                        trailing: GestureDetector(
-                          onTap: () async {
-                            await _toggleFavorite(item.id);
-                            if (!ctx.mounted) return;
-                            Navigator.pop(ctx);
-                            _showFavourites();
-                          },
-                          child: const Icon(Icons.favorite,
-                              color: Color(0xFF6DBF99), size: 20),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Close',
-                  style: TextStyle(color: Color(0xFF6DBF99))),
-            ),
-          ],
         );
-      },
+      }),
     );
+  }
+
+  /// Opens the full product page for [item] and re-syncs state on return.
+  Future<void> _openListing(_Listing item) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailPage(
+          name: item.name,
+          price: item.price,
+          image: item.image,
+          images: item.images,
+          description: item.description,
+          condition: item.condition,
+          sellerName: item.sellerName,
+          location: item.location,
+          breed: item.breed,
+          age: item.age,
+          weight: item.weight,
+          createdAt: item.createdAt,
+          listingId: item.id,
+          sellerId: item.sellerId,
+          status: 'active',
+        ),
+      ),
+    );
+    if (result == 'deleted') _loadListings();
+    _loadFavorites();
+    _loadBlocked();
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -706,7 +1036,8 @@ class _BuyerPageState extends State<BuyerPage> {
     final bool hasActiveFilters = _selectedCategory != 'All' ||
         _sortBy != 'Default' ||
         _searchQuery.isNotEmpty ||
-        hasPriceFilter;
+        hasPriceFilter ||
+        _maxKm != null;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -822,7 +1153,9 @@ class _BuyerPageState extends State<BuyerPage> {
                         Icons.filter_list,
                         _sortBy != 'Default' ? 'Sort: $_sortBy' : 'Filter',
                         onTap: _showFilterSheet,
-                        active: _sortBy != 'Default' || hasPriceFilter,
+                        active: _sortBy != 'Default' ||
+                            hasPriceFilter ||
+                            _maxKm != null,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -863,18 +1196,67 @@ class _BuyerPageState extends State<BuyerPage> {
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.bold),
                       ),
-                      const Row(
-                        children: [
-                          Icon(Icons.location_on,
-                              color: Color(0xFF6DBF99), size: 16),
-                          SizedBox(width: 4),
-                          Text('Tanauan, 20 KM',
-                              style: TextStyle(
-                                  fontSize: 12, color: Colors.black54)),
-                        ],
+                      // Buyer's saved location — tap to set/change it.
+                      GestureDetector(
+                        onTap: _showLocationPicker,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.location_on,
+                                color: Color(0xFF6DBF99), size: 16),
+                            const SizedBox(width: 4),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 130),
+                              child: Text(
+                                _myLocation != null
+                                    ? _myLocation!.name.split(',').first
+                                    : 'Set location',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.black54),
+                              ),
+                            ),
+                            const Icon(Icons.keyboard_arrow_down,
+                                color: Colors.black38, size: 16),
+                          ],
+                        ),
                       ),
                     ],
                   ),
+
+                  // Nudge to set a location so "near you" distances work.
+                  if (!_loading && _myLocation == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: GestureDetector(
+                        onTap: _showLocationPicker,
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8F7F1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.near_me_outlined,
+                                  color: Color(0xFF6DBF99), size: 18),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Set your location to explore livestock near you',
+                                  style: TextStyle(
+                                      fontSize: 12, color: Colors.black87),
+                                ),
+                              ),
+                              Icon(Icons.chevron_right,
+                                  color: Colors.black38, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
 
                   // Active filter chips
                   if (hasActiveFilters)
@@ -890,6 +1272,9 @@ class _BuyerPageState extends State<BuyerPage> {
                           if (_sortBy != 'Default')
                             _filterChip('Sort: $_sortBy',
                                 () => setState(() => _sortBy = 'Default')),
+                          if (_maxKm != null)
+                            _filterChip('Within ${_maxKm!.toInt()} km',
+                                () => setState(() => _maxKm = null)),
                           if (hasPriceFilter)
                             _filterChip(
                                 '₱${_minPrice?.toInt() ?? 0}–${_maxPrice != null ? _maxPrice!.toInt().toString() : '∞'}',
@@ -949,36 +1334,9 @@ class _BuyerPageState extends State<BuyerPage> {
                           itemBuilder: (context, index) {
                             final item = items[index];
                             final isFav = _favourites.contains(item.id);
+                            final distance = _distanceOf(item);
                             return GestureDetector(
-                              onTap: () async {
-                                final result = await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => ProductDetailPage(
-                                      name: item.name,
-                                      price: item.price,
-                                      image: item.image,
-                                      images: item.images,
-                                      description: item.description,
-                                      condition: item.condition,
-                                      sellerName: item.sellerName,
-                                      location: item.location,
-                                      breed: item.breed,
-                                      age: item.age,
-                                      weight: item.weight,
-                                      createdAt: item.createdAt,
-                                      listingId: item.id,
-                                      sellerId: item.sellerId,
-                                      status: 'active',
-                                    ),
-                                  ),
-                                );
-                                if (result == 'deleted') _loadListings();
-                                // Favourites/blocks may have changed on the
-                                // detail screen — re-sync on return.
-                                _loadFavorites();
-                                _loadBlocked();
-                              },
+                              onTap: () => _openListing(item),
                               child: Container(
                                 decoration: BoxDecoration(
                                   border: Border.all(
@@ -1067,7 +1425,9 @@ class _BuyerPageState extends State<BuyerPage> {
                                               const SizedBox(width: 2),
                                               Expanded(
                                                 child: Text(
-                                                  '${item.location} · ${item.distanceKm.toInt()} km',
+                                                  distance != null
+                                                      ? '${item.location.split(',').first} · ${_formatDistance(distance)} away'
+                                                      : item.location,
                                                   maxLines: 1,
                                                   overflow:
                                                       TextOverflow.ellipsis,

@@ -6,6 +6,7 @@ import 'package:ani_mart/product_detail.dart';
 import 'cloudinary_function.dart';
 import 'current_user.dart';
 import 'main.dart';
+import 'services/location_service.dart';
 import 'widgets/top_message.dart';
 
 /// A photo chosen by the user, kept as in-memory bytes so it works on every
@@ -290,6 +291,10 @@ class _SellerPageState extends State<SellerPage> {
         });
       }
 
+      // Tag the listing with the seller's saved location (set from the
+      // Explore page's location picker); fall back to the default.
+      final savedLocation = await LocationService.fetchUserLocation();
+
       // Persist the listing itself.
       await supabase.from('listings').insert({
         'title': title,
@@ -300,7 +305,7 @@ class _SellerPageState extends State<SellerPage> {
         'breed': breed,
         'age': age,
         'weight': weight,
-        'location': _location,
+        'location': savedLocation?.name ?? _location,
         'status': 'active',
         'seller_id': userId,
         'image_url': imageUrls.isNotEmpty ? imageUrls.first : null,

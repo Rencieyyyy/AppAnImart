@@ -1296,7 +1296,7 @@ class _ChatPageState extends State<_ChatPage> {
 }
 
 // ── Seller Profile Page ────────────────────────────────────────────────────
-class _SellerProfilePage extends StatelessWidget {
+class _SellerProfilePage extends StatefulWidget {
   final String sellerName;
   final String sellerJoined;
   final String? breederSince;
@@ -1312,6 +1312,123 @@ class _SellerProfilePage extends StatelessWidget {
     required this.sellerId,
     required this.rating,
   });
+
+  @override
+  State<_SellerProfilePage> createState() => _SellerProfilePageState();
+}
+
+class _SellerProfilePageState extends State<_SellerProfilePage> {
+  String get sellerName => widget.sellerName;
+  String get sellerJoined => widget.sellerJoined;
+  String? get breederSince => widget.breederSince;
+  String get location => widget.location;
+  String get sellerId => widget.sellerId;
+  SellerRating get rating => widget.rating;
+
+  // The seller's avatar and their active listings, loaded from Supabase.
+  String _avatarUrl = '';
+  List<Map<String, dynamic>> _sellerListings = [];
+  bool _loadingListings = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSellerDetails();
+    _loadSellerListings();
+  }
+
+  Future<void> _loadSellerDetails() async {
+    if (sellerId.isEmpty) return;
+    try {
+      final row = await supabase
+          .from('users')
+          .select('avatar_url')
+          .eq('id', sellerId)
+          .maybeSingle();
+      final url = (row?['avatar_url'] as String?)?.trim() ?? '';
+      if (mounted && url.isNotEmpty) setState(() => _avatarUrl = url);
+    } catch (_) {
+      // Fall back to the default person icon.
+    }
+  }
+
+  /// Loads everything this seller currently has posted (active listings).
+  Future<void> _loadSellerListings() async {
+    if (sellerId.isEmpty) {
+      setState(() => _loadingListings = false);
+      return;
+    }
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select()
+          .eq('seller_id', sellerId)
+          .eq('status', 'active')
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _sellerListings = (rows as List)
+            .map((r) => r as Map<String, dynamic>)
+            .toList();
+        _loadingListings = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load seller listings: $e');
+      if (mounted) setState(() => _loadingListings = false);
+    }
+  }
+
+  String _formatPrice(dynamic raw) {
+    final value = raw is num ? raw : (num.tryParse('$raw') ?? 0);
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
+
+  void _openListing(Map<String, dynamic> row) {
+    final img = (row['image_url'] as String?)?.trim() ?? '';
+    final imgs = (row['image_urls'] as List?)
+            ?.map((e) => '$e')
+            .where((e) => e.trim().isNotEmpty)
+            .toList() ??
+        <String>[];
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailPage(
+          name: (row['title'] as String?) ?? 'Untitled',
+          price: _formatPrice(row['price']),
+          image: img.isNotEmpty ? img : 'images/chicken.png',
+          images: imgs,
+          description: (row['description'] as String?) ?? '',
+          condition: (row['condition'] as String?) ?? '',
+          sellerName: sellerName,
+          location: (row['location'] as String?) ?? '',
+          breed: (row['breed'] as String?) ?? '',
+          age: (row['age'] as String?) ?? '',
+          weight: (row['weight'] as String?) ?? '',
+          createdAt: '${row['created_at'] ?? ''}',
+          listingId: '${row['id'] ?? ''}',
+          sellerId: '${row['seller_id'] ?? ''}',
+          status: (row['status'] as String?) ?? 'active',
+        ),
+      ),
+    );
+  }
+
+  Widget _listingThumb(String path) {
+    Widget placeholder() => Container(
+          color: const Color(0xFFD6F0E4),
+          child: const Icon(Icons.image_not_supported_outlined,
+              color: Colors.white54, size: 32),
+        );
+    return path.startsWith('http')
+        ? Image.network(path,
+            fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder())
+        : Image.asset(path,
+            fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1335,7 +1452,13 @@ class _SellerProfilePage extends StatelessWidget {
             Container(
               width: 80, height: 80,
               decoration: const BoxDecoration(color: Color(0xFFD6F0E4), shape: BoxShape.circle),
-              child: const Icon(Icons.person, color: Color(0xFF6DBF99), size: 44),
+              clipBehavior: Clip.antiAlias,
+              child: _avatarUrl.isNotEmpty
+                  ? Image.network(_avatarUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const Icon(Icons.person,
+                          color: Color(0xFF6DBF99), size: 44))
+                  : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 44),
             ),
             const SizedBox(height: 12),
             Row(
@@ -1432,7 +1555,136 @@ class _SellerProfilePage extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 24),
+
+            // ── Seller's posted listings ─────────────────────────────────
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Listings by $sellerName',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87),
+                  ),
+                ),
+                if (!_loadingListings)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F7F1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text('${_sellerListings.length}',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF6DBF99),
+                            fontWeight: FontWeight.bold)),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_loadingListings)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 30),
+                child: Center(
+                  child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+                ),
+              )
+            else if (_sellerListings.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 28),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF9F9F9),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Column(
+                  children: [
+                    Icon(Icons.storefront_outlined,
+                        color: Colors.black26, size: 36),
+                    SizedBox(height: 8),
+                    Text('No active listings right now',
+                        style: TextStyle(fontSize: 13, color: Colors.black45)),
+                  ],
+                ),
+              )
+            else
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _sellerListings.length,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 0.82,
+                ),
+                itemBuilder: (context, index) {
+                  final row = _sellerListings[index];
+                  final img = (row['image_url'] as String?)?.trim() ?? '';
+                  return GestureDetector(
+                    onTap: () => _openListing(row),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                            color: const Color(0xFF6DBF99), width: 1.5),
+                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.white,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: ClipRRect(
+                                borderRadius: const BorderRadius.only(
+                                  topLeft: Radius.circular(10),
+                                  topRight: Radius.circular(10),
+                                ),
+                                child: _listingThumb(
+                                    img.isNotEmpty ? img : 'images/chicken.png'),
+                              ),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text((row['title'] as String?) ?? 'Untitled',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                                const SizedBox(height: 2),
+                                Text(_formatPrice(row['price']),
+                                    style: const TextStyle(
+                                        color: Color(0xFF6DBF99),
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13)),
+                                const SizedBox(height: 2),
+                                Text((row['category'] as String?) ?? '',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 10, color: Colors.black38)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(

@@ -64,9 +64,10 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
 
-      // Copy the valid-ID details captured at sign-up onto the user's row
+      // Copy the valid-ID details and sign-up location onto the user's row
       // now that a session exists. Best-effort — never blocks login.
       await backfillValidIdFromMetadata();
+      await backfillLocationFromMetadata();
 
       // Admin-approval gate: accounts must be approved (is_verified = true) on
       // the admin website before they can use the app. Until then, deny access
