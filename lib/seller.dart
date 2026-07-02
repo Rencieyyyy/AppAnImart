@@ -36,6 +36,7 @@ class _SellerPageState extends State<SellerPage> {
   final _breedController = TextEditingController();
   final _ageController   = TextEditingController();
   final _weightController = TextEditingController();
+  final _stockController = TextEditingController();
   String? _selectedCategory;
   String? _selectedCondition;
   String _weightUnit = 'kg'; // 'kg' or 'lbs'
@@ -152,6 +153,7 @@ class _SellerPageState extends State<SellerPage> {
     _breedController.dispose();
     _ageController.dispose();
     _weightController.dispose();
+    _stockController.dispose();
     super.dispose();
   }
 
@@ -245,6 +247,7 @@ class _SellerPageState extends State<SellerPage> {
     final age = _ageController.text.trim();
     final weightValue = _weightController.text.trim();
     final weight = weightValue.isEmpty ? '' : '$weightValue $_weightUnit';
+    final stockText = _stockController.text.trim();
 
     if (_pickedImages.isEmpty) {
       showTopMessage(context, 'Please add at least one photo.');
@@ -257,6 +260,7 @@ class _SellerPageState extends State<SellerPage> {
         breed.isEmpty ||
         age.isEmpty ||
         weight.isEmpty ||
+        stockText.isEmpty ||
         description.isEmpty) {
       showTopMessage(context, 'Please fill in all fields.');
       return;
@@ -264,6 +268,11 @@ class _SellerPageState extends State<SellerPage> {
     final priceValue = num.tryParse(price);
     if (priceValue == null) {
       showTopMessage(context, 'Please enter a valid price.');
+      return;
+    }
+    final stockValue = int.tryParse(stockText);
+    if (stockValue == null || stockValue < 1) {
+      showTopMessage(context, 'Please enter a valid stock quantity.');
       return;
     }
     final userId = supabase.auth.currentUser?.id;
@@ -305,6 +314,7 @@ class _SellerPageState extends State<SellerPage> {
         'breed': breed,
         'age': age,
         'weight': weight,
+        'stock': stockValue,
         'location': savedLocation?.name ?? _location,
         'status': 'active',
         'seller_id': userId,
@@ -329,6 +339,7 @@ class _SellerPageState extends State<SellerPage> {
       _breedController.clear();
       _ageController.clear();
       _weightController.clear();
+      _stockController.clear();
       _weightUnit = 'kg';
       _selectedCategory  = null;
       _selectedCondition = null;
@@ -576,7 +587,7 @@ class _SellerPageState extends State<SellerPage> {
                       ),
                     ),
                   );
-                  if (result == 'deleted') _loadMyListings();
+                  if (result == 'deleted' || result == 'updated') _loadMyListings();
                 },
                 child: Container(
                   decoration: BoxDecoration(
@@ -810,6 +821,13 @@ class _SellerPageState extends State<SellerPage> {
                 onChanged: (val) => setState(() => _weightUnit = val ?? 'kg'),
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          _buildInputField(
+            controller: _stockController,
+            hint: 'Stock (quantity available)',
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           ),
           const SizedBox(height: 12),
           Container(

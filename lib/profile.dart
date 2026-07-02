@@ -2295,7 +2295,7 @@ class _ProfilePageState extends State<ProfilePage> {
             ),
           ),
         );
-        if (result == 'deleted') _loadMyListings();
+        if (result == 'deleted' || result == 'updated') _loadMyListings();
       },
       child: Container(
         decoration: BoxDecoration(

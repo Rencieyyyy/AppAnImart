@@ -83,6 +83,22 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       ? widget.status!.trim()
       : 'active';
 
+  /// Quantity available. Fetched from the listing row by id (so every entry
+  /// point shows it without having to pass it in); null = unknown/not set.
+  int? _stock;
+
+  /// Owner edits override the values passed in via the constructor, so the
+  /// page reflects a save immediately without re-fetching.
+  String? _editTitle, _editPrice, _editDesc, _editBreed, _editAge,
+      _editWeight, _editCondition;
+
+  /// Whether the owner saved any edits — reported back on pop so list pages
+  /// can refresh.
+  bool _edited = false;
+
+  String get _title => _editTitle ?? widget.name;
+  String get _priceText => _editPrice ?? widget.price;
+
   /// True when the current signed-in user owns this listing, so the
   /// delete/disable actions should be offered.
   bool get _isOwner {
@@ -202,6 +218,24 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       _sellerRating = results[1] as SellerRating;
       _isBlocked = results[2] as bool;
     });
+    _loadStock(listingId);
+  }
+
+  /// Fetches the stock quantity from the listing row; callers don't pass it.
+  Future<void> _loadStock(String listingId) async {
+    if (listingId.isEmpty) return;
+    try {
+      final row = await supabase
+          .from('listings')
+          .select('stock')
+          .eq('id', listingId)
+          .maybeSingle();
+      final raw = row?['stock'];
+      final stock = raw is num ? raw.toInt() : int.tryParse('$raw');
+      if (mounted && stock != null) setState(() => _stock = stock);
+    } catch (e) {
+      debugPrint('Failed to load stock: $e');
+    }
   }
 
   @override
@@ -225,31 +259,31 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   String get _condition {
-    final c = widget.condition?.trim() ?? '';
+    final c = _editCondition ?? widget.condition?.trim() ?? '';
     if (c.isNotEmpty) return c;
     return 'Good';
   }
 
   String get _description {
-    final d = widget.description?.trim() ?? '';
+    final d = _editDesc ?? widget.description?.trim() ?? '';
     if (d.isNotEmpty) return d;
     return _details[widget.name]?['description'] ?? 'No description available.';
   }
 
   String get _breed {
-    final b = widget.breed?.trim() ?? '';
+    final b = _editBreed ?? widget.breed?.trim() ?? '';
     if (b.isNotEmpty) return b;
     return _details[widget.name]?['breed'] ?? 'Unknown';
   }
 
   String get _age {
-    final a = widget.age?.trim() ?? '';
+    final a = _editAge ?? widget.age?.trim() ?? '';
     if (a.isNotEmpty) return a;
     return _details[widget.name]?['age'] ?? 'Unknown';
   }
 
   String get _weight {
-    final w = widget.weight?.trim() ?? '';
+    final w = _editWeight ?? widget.weight?.trim() ?? '';
     if (w.isNotEmpty) return w;
     return _details[widget.name]?['weight'] ?? 'Unknown';
   }
@@ -275,6 +309,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
             ),
             // Owner-only actions ─────────────────────────────────────
             if (_isOwner) ...[
+              _buildSheetOption(Icons.edit_outlined, 'Edit Listing',
+                  const Color(0xFF6DBF99), () {
+                Navigator.pop(context);
+                _showEditListing();
+              }),
               _buildSheetOption(
                 _status == 'active' ? Icons.visibility_off_outlined : Icons.visibility_outlined,
                 _status == 'active' ? 'Disable Listing' : 'Enable Listing',
@@ -350,6 +389,213 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     } catch (e) {
       if (mounted) _showSnackBar('Could not update listing. Please try again.');
     }
+  }
+
+  /// Owner-only: edit the listing's content in place. Saves to the `listings`
+  /// row and updates the page immediately via the _edit* overrides.
+  void _showEditListing() {
+    final id = widget.listingId?.trim() ?? '';
+    if (id.isEmpty) return;
+    final titleCtrl = TextEditingController(text: _title);
+    final priceCtrl = TextEditingController(
+        text: _priceText.replaceAll(RegExp(r'[^0-9.]'), ''));
+    final breedCtrl = TextEditingController(text: _breed);
+    final ageCtrl = TextEditingController(text: _age);
+    final weightCtrl = TextEditingController(text: _weight);
+    final stockCtrl = TextEditingController(text: '${_stock ?? ''}');
+    final descCtrl = TextEditingController(text: _description);
+    const conditions = ['Good', 'Excellent', 'Fair'];
+    String condition =
+        conditions.contains(_condition) ? _condition : conditions.first;
+    bool saving = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheet) => Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(sheetCtx).viewInsets.bottom + 24,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Edit Listing',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                _editField(titleCtrl, 'Title'),
+                const SizedBox(height: 12),
+                _editField(priceCtrl, 'Price',
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    prefixText: '₱ '),
+                const SizedBox(height: 12),
+                _editField(breedCtrl, 'Breed'),
+                const SizedBox(height: 12),
+                _editField(ageCtrl, 'Age'),
+                const SizedBox(height: 12),
+                _editField(weightCtrl, 'Weight (e.g. 1.5 kg)'),
+                const SizedBox(height: 12),
+                _editField(stockCtrl, 'Stock (quantity available)',
+                    keyboardType: TextInputType.number),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: condition,
+                      icon: const Icon(Icons.keyboard_arrow_down,
+                          color: Colors.black38),
+                      items: conditions
+                          .map((c) =>
+                              DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (val) =>
+                          setSheet(() => condition = val ?? condition),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _editField(descCtrl, 'Description', maxLines: 4),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            final title = titleCtrl.text.trim();
+                            final priceValue =
+                                num.tryParse(priceCtrl.text.trim());
+                            final stockValue =
+                                int.tryParse(stockCtrl.text.trim());
+                            if (title.isEmpty ||
+                                priceValue == null ||
+                                stockValue == null ||
+                                stockValue < 0) {
+                              showTopMessage(sheetCtx,
+                                  'Please enter a valid title, price and stock.');
+                              return;
+                            }
+                            setSheet(() => saving = true);
+                            try {
+                              await supabase.from('listings').update({
+                                'title': title,
+                                'price': priceValue,
+                                'breed': breedCtrl.text.trim(),
+                                'age': ageCtrl.text.trim(),
+                                'weight': weightCtrl.text.trim(),
+                                'stock': stockValue,
+                                'condition': condition,
+                                'description': descCtrl.text.trim(),
+                              }).eq('id', id);
+                            } catch (e) {
+                              if (sheetCtx.mounted) {
+                                setSheet(() => saving = false);
+                                showTopMessage(sheetCtx,
+                                    'Could not save changes: $e');
+                              }
+                              return;
+                            }
+                            if (!mounted) return;
+                            setState(() {
+                              _editTitle = title;
+                              _editPrice = _formatPeso(priceValue);
+                              _editBreed = breedCtrl.text.trim();
+                              _editAge = ageCtrl.text.trim();
+                              _editWeight = weightCtrl.text.trim();
+                              _stock = stockValue;
+                              _editCondition = condition;
+                              _editDesc = descCtrl.text.trim();
+                              _edited = true;
+                            });
+                            if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                            _showSnackBar('Listing updated.');
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6DBF99),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(30)),
+                    ),
+                    child: saving
+                        ? const SizedBox(
+                            width: 22, height: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.5, color: Colors.white),
+                          )
+                        : const Text('Save Changes',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _editField(TextEditingController controller, String hint,
+      {TextInputType keyboardType = TextInputType.text,
+      String? prefixText,
+      int maxLines = 1}) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        maxLines: maxLines,
+        decoration: InputDecoration(
+          hintText: hint,
+          labelText: hint,
+          prefixText: prefixText,
+          labelStyle: const TextStyle(color: Colors.black45, fontSize: 13),
+          hintStyle: const TextStyle(color: Colors.black38, fontSize: 14),
+          border: InputBorder.none,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        ),
+      ),
+    );
+  }
+
+  /// Formats a numeric price as e.g. "₱350" (no trailing ".0").
+  String _formatPeso(num value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
   }
 
   void _confirmDeleteListing() {
@@ -582,7 +828,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   void _shareProduct() {
     final shareText =
         '🐔 Check out this listing!\n\n'
-        '${widget.name} — ${widget.price}\n'
+        '$_title — $_priceText\n'
         'Location: $_location\n'
         'Seller: $_sellerName\n\n'
         'https://farm.app/listing/${widget.name.toLowerCase().replaceAll(' ', '-')}';
@@ -691,7 +937,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     IconButton(
-                      onPressed: () => Navigator.of(context).maybePop(),
+                      onPressed: () =>
+                          Navigator.of(context).maybePop(_edited ? 'updated' : null),
                       icon: const Icon(Icons.close, color: Colors.black87, size: 26),
                       padding: EdgeInsets.zero,
                       alignment: Alignment.centerLeft,
@@ -750,11 +997,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(widget.name,
+                    Text(_title,
                       style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87),
                     ),
                     const SizedBox(height: 4),
-                    Text(widget.price,
+                    Text(_priceText,
                       style: const TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w500),
                     ),
                     const SizedBox(height: 4),
@@ -784,7 +1031,52 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
               const SizedBox(height: 16),
 
+              // ── Owner banner (own listing: no messaging yourself) ─
+              if (_isOwner)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F8F1),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.storefront_outlined,
+                            color: Color(0xFF1D9E75), size: 20),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text('This is your listing.',
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF1A2E22))),
+                        ),
+                        GestureDetector(
+                          onTap: _showEditListing,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6DBF99),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('Edit',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
               // ── Message Seller Box ───────────────────────────────
+              if (!_isOwner)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Container(
@@ -891,28 +1183,32 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               const SizedBox(height: 16),
 
               // ── Action Buttons ───────────────────────────────────
+              // Owners can't offer on or favourite their own listing; they
+              // only get the share action.
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    _buildActionButton(
-                      icon: _offerSent ? Icons.pan_tool : Icons.pan_tool_outlined,
-                      color: _offerSent ? const Color(0xFF6DBF99) : null,
-                      onTap: _showMakeOfferDialog,
-                      tooltip: 'Make Offer',
-                    ),
+                    if (!_isOwner)
+                      _buildActionButton(
+                        icon: _offerSent ? Icons.pan_tool : Icons.pan_tool_outlined,
+                        color: _offerSent ? const Color(0xFF6DBF99) : null,
+                        onTap: _showMakeOfferDialog,
+                        tooltip: 'Make Offer',
+                      ),
                     _buildActionButton(
                       icon: Icons.share_outlined,
                       onTap: _shareProduct,
                       tooltip: 'Share',
                     ),
-                    _buildActionButton(
-                      icon: _isFavorited ? Icons.favorite : Icons.favorite_border,
-                      color: _isFavorited ? Colors.red : null,
-                      onTap: _toggleFavorite,
-                      tooltip: _isFavorited ? 'Unfavorite' : 'Favorite',
-                    ),
+                    if (!_isOwner)
+                      _buildActionButton(
+                        icon: _isFavorited ? Icons.favorite : Icons.favorite_border,
+                        color: _isFavorited ? Colors.red : null,
+                        onTap: _toggleFavorite,
+                        tooltip: _isFavorited ? 'Unfavorite' : 'Favorite',
+                      ),
                   ],
                 ),
               ),
@@ -1058,6 +1354,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                     _buildDetailRow(Icons.cake_outlined,           'Age',       _age),
                     const SizedBox(height: 6),
                     _buildDetailRow(Icons.monitor_weight_outlined, 'Weight',    _weight),
+                    if (_stock != null) ...[
+                      const SizedBox(height: 6),
+                      _buildDetailRow(Icons.inventory_2_outlined, 'Stock',
+                          _stock == 0 ? 'Out of stock' : '$_stock available',
+                          valueColor: _stock == 0 ? Colors.red : Colors.black54),
+                    ],
                     const SizedBox(height: 6),
                     _buildDetailRow(Icons.location_on_outlined,    'Location',  _location,
                         valueColor: const Color(0xFF6DBF99)),

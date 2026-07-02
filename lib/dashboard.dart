@@ -7,6 +7,7 @@ import 'profile.dart';
 import 'product_detail.dart';
 import 'current_user.dart';
 import 'main.dart';
+import 'services/marketplace_service.dart';
 import 'services/subscription_service.dart';
 import 'widgets/top_message.dart';
 
@@ -84,8 +85,8 @@ class _DashboardPageState extends State<DashboardPage> {
   String _filterSortBy = 'Default';
   final TextEditingController _searchController = TextEditingController();
 
-  // Favourites
-  final Set<String> _favourites = {};
+  // Favourites — persisted in Supabase by listing id (same as Explore).
+  Set<String> _favourites = {};
 
   // Signed-in user's name (loaded from the `users` table).
   String _userName = '';
@@ -101,6 +102,7 @@ class _DashboardPageState extends State<DashboardPage> {
     super.initState();
     _loadUserName();
     _loadItems();
+    _loadFavorites();
     if (!_planDialogShown) {
       // Once per app session, after the first frame renders, decide what to
       // show the user: Super Premium members see a compact sales snapshot
@@ -123,6 +125,33 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _loadUserName() async {
     final name = await fetchCurrentUserName();
     if (mounted) setState(() => _userName = name);
+  }
+
+  /// Loads the user's saved favourites (by listing id) from Supabase.
+  Future<void> _loadFavorites() async {
+    final ids = await MarketplaceService.fetchFavoriteIds();
+    if (!mounted) return;
+    setState(() => _favourites = ids);
+  }
+
+  /// Persists a favourite toggle and updates local state optimistically.
+  Future<void> _toggleFavorite(String listingId) async {
+    if (listingId.isEmpty) return;
+    final wasFav = _favourites.contains(listingId);
+    setState(() {
+      wasFav ? _favourites.remove(listingId) : _favourites.add(listingId);
+    });
+    final nowFav = await MarketplaceService.toggleFavorite(
+      listingId,
+      currentlyFavorited: wasFav,
+    );
+    // Reconcile with the server result if the write failed.
+    if (!mounted) return;
+    if (nowFav != !wasFav) {
+      setState(() {
+        nowFav ? _favourites.add(listingId) : _favourites.remove(listingId);
+      });
+    }
   }
 
   /// Loads all active listings published by any user.
@@ -508,84 +537,220 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // ── Favourites dialog ─────────────────────────────────────────────────────
+  // ── Favourites sheet (same design & behavior as the Explore section) ──────
 
   void _showFavourites() {
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) {
-        final favItems =
-            _allItems.where((i) => _favourites.contains(i.label)).toList();
-        return AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) {
+        final favs =
+            _allItems.where((i) => _favourites.contains(i.id)).toList();
+        return SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.72,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.favorite, color: Color(0xFF6DBF99)),
-              SizedBox(width: 8),
-              Text('My Favourites',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 12, bottom: 16),
+                  decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              // Header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: const BoxDecoration(
+                          color: Color(0xFFE8F7F1), shape: BoxShape.circle),
+                      child: const Icon(Icons.favorite,
+                          color: Color(0xFF6DBF99), size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('My Favourites',
+                              style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87)),
+                          Text(
+                            favs.isEmpty
+                                ? 'Nothing saved yet'
+                                : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black45),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close,
+                          color: Colors.black38, size: 22),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Divider(height: 1, color: Color(0xFFF0F0F0)),
+              // Body
+              Expanded(
+                child: favs.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 88,
+                              height: 88,
+                              decoration: const BoxDecoration(
+                                  color: Color(0xFFF4FAF7),
+                                  shape: BoxShape.circle),
+                              child: const Icon(Icons.favorite_border,
+                                  color: Color(0xFF6DBF99), size: 40),
+                            ),
+                            const SizedBox(height: 16),
+                            const Text('No favourites yet',
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87)),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Tap the ♡ on any listing and it will\nshow up here for quick access.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.black45,
+                                  height: 1.5),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                        itemCount: favs.length,
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: 10),
+                        itemBuilder: (_, i) {
+                          final item = favs[i];
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _openListing(item);
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border:
+                                    Border.all(color: const Color(0xFFEDEDED)),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.04),
+                                    blurRadius: 10,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: SizedBox(
+                                      width: 68,
+                                      height: 68,
+                                      child: _cardImage(item.imagePath),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(item.label,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 14,
+                                                color: Colors.black87)),
+                                        const SizedBox(height: 3),
+                                        Text(item.priceText,
+                                            style: const TextStyle(
+                                                color: Color(0xFF6DBF99),
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14)),
+                                        const SizedBox(height: 3),
+                                        Row(
+                                          children: [
+                                            const Icon(
+                                                Icons.location_on_outlined,
+                                                size: 12,
+                                                color: Colors.black38),
+                                            const SizedBox(width: 2),
+                                            Expanded(
+                                              child: Text(
+                                                item.location.isNotEmpty
+                                                    ? item.location
+                                                    : item.category,
+                                                maxLines: 1,
+                                                overflow:
+                                                    TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.black38),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // Remove from favourites
+                                  GestureDetector(
+                                    onTap: () async {
+                                      await _toggleFavorite(item.id);
+                                      if (ctx.mounted) setSheet(() {});
+                                    },
+                                    child: Container(
+                                      width: 36,
+                                      height: 36,
+                                      decoration: const BoxDecoration(
+                                          color: Color(0xFFE8F7F1),
+                                          shape: BoxShape.circle),
+                                      child: const Icon(Icons.favorite,
+                                          color: Color(0xFF6DBF99), size: 18),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
             ],
           ),
-          content: favItems.isEmpty
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Text(
-                    'No favourites yet.\nTap the ♡ on any animal to save it here.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.black54, height: 1.5),
-                  ),
-                )
-              : SizedBox(
-                  width: double.maxFinite,
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: favItems.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final item = favItems[i];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(8),
-                            color: const Color(0xFFD6F0E4),
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: _cardImage(item.imagePath),
-                          ),
-                        ),
-                        title: Text(item.label,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w500, fontSize: 14)),
-                        subtitle: Text(item.category,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.black45)),
-                        trailing: GestureDetector(
-                          onTap: () {
-                            setState(() => _favourites.remove(item.label));
-                            Navigator.pop(ctx);
-                            _showFavourites();
-                          },
-                          child: const Icon(Icons.favorite,
-                              color: Color(0xFF6DBF99), size: 20),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Close',
-                  style: TextStyle(color: Color(0xFF6DBF99))),
-            ),
-          ],
         );
-      },
+      }),
     );
   }
 
@@ -1319,34 +1484,39 @@ class _DashboardPageState extends State<DashboardPage> {
             fit: BoxFit.cover, errorBuilder: (_, __, ___) => placeholder());
   }
 
+  /// Opens the full product page for [item] and re-syncs state on return.
+  Future<void> _openListing(LivestockItem item) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailPage(
+          name: item.label,
+          price: item.priceText,
+          image: item.imagePath,
+          images: item.images,
+          description: item.description,
+          condition: item.condition,
+          sellerName: item.sellerName,
+          location: item.location,
+          breed: item.breed,
+          age: item.age,
+          weight: item.weight,
+          createdAt: item.createdAt,
+          listingId: item.id,
+          sellerId: item.sellerId,
+          status: item.status,
+        ),
+      ),
+    );
+    if (result == 'deleted' || result == 'updated') _loadItems();
+    // The detail page can also toggle this listing's favourite.
+    _loadFavorites();
+  }
+
   Widget _buildCategoryCard(LivestockItem item) {
-    final isFav = _favourites.contains(item.label);
+    final isFav = _favourites.contains(item.id);
     return GestureDetector(
-      onTap: () async {
-        final result = await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ProductDetailPage(
-              name: item.label,
-              price: item.priceText,
-              image: item.imagePath,
-              images: item.images,
-              description: item.description,
-              condition: item.condition,
-              sellerName: item.sellerName,
-              location: item.location,
-              breed: item.breed,
-              age: item.age,
-              weight: item.weight,
-              createdAt: item.createdAt,
-              listingId: item.id,
-              sellerId: item.sellerId,
-              status: item.status,
-            ),
-          ),
-        );
-        if (result == 'deleted') _loadItems();
-      },
+      onTap: () => _openListing(item),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
@@ -1399,15 +1569,7 @@ class _DashboardPageState extends State<DashboardPage> {
               top: 8,
               right: 8,
               child: GestureDetector(
-                onTap: () {
-                  setState(() {
-                    if (isFav) {
-                      _favourites.remove(item.label);
-                    } else {
-                      _favourites.add(item.label);
-                    }
-                  });
-                },
+                onTap: () => _toggleFavorite(item.id),
                 child: Container(
                   width: 30,
                   height: 30,

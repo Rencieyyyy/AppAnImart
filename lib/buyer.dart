@@ -1085,7 +1085,7 @@ class _BuyerPageState extends State<BuyerPage> {
         ),
       ),
     );
-    if (result == 'deleted') _loadListings();
+    if (result == 'deleted' || result == 'updated') _loadListings();
     _loadFavorites();
     _loadBlocked();
   }
