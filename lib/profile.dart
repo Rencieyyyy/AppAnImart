@@ -221,6 +221,10 @@ class _ProfilePageState extends State<ProfilePage> {
   bool get _isPremiumTier =>
       _planName == 'Premium' || _planName == 'Super Premium';
 
+  /// Whether the active subscription is the top tier. Sales analytics is a
+  /// Super Premium exclusive.
+  bool get _isSuperTier => _planName == 'Super Premium';
+
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
     if (index == _selectedIndex) return;
@@ -813,8 +817,30 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── Rate Us ───────────────────────────────────────────────────────────────
+
+  /// Persists the user's app rating to `app_reviews` (one row per user —
+  /// re-submitting updates it). The admin website's Reviews page reads this
+  /// table. Returns true on success.
+  Future<bool> _submitAppRating(int rating, String comment) async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return false;
+    try {
+      await supabase.from('app_reviews').upsert({
+        'reviewer_id': userId,
+        'rating': rating,
+        'comment': comment.isEmpty ? null : comment,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'reviewer_id');
+      return true;
+    } catch (e) {
+      debugPrint('Failed to submit app rating: $e');
+      return false;
+    }
+  }
+
   void _showRateUs() {
     int selectedStars = 0;
+    bool submitting = false;
     final feedbackCtrl = TextEditingController();
     showModalBottomSheet(
       context: context,
@@ -889,12 +915,22 @@ class _ProfilePageState extends State<ProfilePage> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: selectedStars == 0
+                    onPressed: selectedStars == 0 || submitting
                         ? null
-                        : () {
-                            Navigator.pop(ctx);
-                            _showMessage(
-                                'Thanks for your rating! ⭐', const Color(0xFFFFB300));
+                        : () async {
+                            setLocal(() => submitting = true);
+                            final ok = await _submitAppRating(
+                                selectedStars, feedbackCtrl.text.trim());
+                            if (!ctx.mounted) return;
+                            if (ok) {
+                              Navigator.pop(ctx);
+                              _showMessage('Thanks for your rating! ⭐',
+                                  const Color(0xFFFFB300));
+                            } else {
+                              setLocal(() => submitting = false);
+                              showTopMessage(ctx,
+                                  'Could not submit your rating. Please try again.');
+                            }
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFFB300),
@@ -904,7 +940,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
                     ),
-                    child: const Text('Submit Rating', style: TextStyle(fontWeight: FontWeight.w700)),
+                    child: submitting
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Submit Rating',
+                            style: TextStyle(fontWeight: FontWeight.w700)),
                   ),
                 ),
               ],
@@ -1377,11 +1421,20 @@ class _ProfilePageState extends State<ProfilePage> {
                       _openSeller(initialTab: 1);
                     }),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.bar_chart_rounded, 'View Sales', 'Track your orders and earnings', const Color(0xFF2196F3),
+                    _dashAction(Icons.inventory_2_outlined, 'Listings', 'View and manage your listings', const Color(0xFF2196F3),
                         onTap: () {
                       Navigator.pop(ctx);
                       _openSeller(initialTab: 0);
                     }),
+                    if (_isSuperTier) ...[
+                      const SizedBox(height: 8),
+                      // Sales analytics popup — a Super Premium exclusive.
+                      _dashAction(Icons.insights_rounded, 'View Analytics', 'Your sales & advanced metrics', const Color(0xFF8E5BE8),
+                          onTap: () {
+                        Navigator.pop(ctx);
+                        showSellerAnalytics(context, _planName);
+                      }),
+                    ],
                     const SizedBox(height: 8),
                     _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300),
                         onTap: () {
@@ -1933,37 +1986,6 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                     const Divider(height: 1, thickness: 0.5),
-                    // ── View Analytics (Premium / Super Premium only) ────
-                    if (_isPremiumTier) ...[
-                      InkWell(
-                        onTap: () => showSellerAnalytics(context, _planName),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.insights_rounded,
-                                  color: Color(0xFF1D9E75), size: 20),
-                              const SizedBox(width: 8),
-                              const Expanded(
-                                child: Text('Sales Analytics',
-                                    style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                        color: Color(0xFF1A2E22))),
-                              ),
-                              const Text('View Analytics',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: Color(0xFF3AA876),
-                                      fontWeight: FontWeight.w600)),
-                              const Icon(Icons.chevron_right,
-                                  size: 18, color: Color(0xFF3AA876)),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const Divider(height: 1, thickness: 0.5),
-                    ],
                     // ── My Reviews (rating received as a seller) ─────────
                     InkWell(
                       onTap: _openMyReviews,
@@ -2506,44 +2528,162 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   // Id of the plan whose request is currently being submitted, if any.
   String? _submittingId;
 
-  // Shared feature checklist — each plan marks which ones it unlocks.
-  static const List<String> _features = [
-    'Browse all listings',
-    'Post your own listings',
-    'Direct buyer messaging',
-    'Verified seller badge',
-    'Priority customer support',
-  ];
+  /// Free-tier benefit list; the active-listing cap comes from the `prices`
+  /// row's `listing_capacity` column.
+  static List<_Benefit> _freeBenefits(int capacity) => [
+        _Benefit('Up to $capacity active listings'),
+        const _Benefit('Email support'),
+        const _Benefit('Verified seller badge', included: false),
+        const _Benefit('Standard analytics dashboard', included: false),
+        const _Benefit('Priority listing placement', included: false),
+        const _Benefit('Featured on homepage', included: false),
+        const _Benefit('Buyer direct messaging', included: false),
+      ];
 
-  static const List<_PlanData> _plans = [
+  // Fallbacks (shown until the `prices` rows load, or if loading fails).
+  // Benefit lists mirror the admin website's plan cards.
+  List<_PlanData> _plans = [
     _PlanData(
       id: 'free',
       label: 'Free',
+      tagline: 'For new sellers starting out',
       icon: Icons.person_outline,
       monthly: 0,
-      unlocked: [true, false, false, false, false],
+      benefits: _freeBenefits(2),
     ),
-    _PlanData(
+    const _PlanData(
       id: 'premium',
       label: 'Premium',
+      tagline: 'For serious livestock traders',
       icon: Icons.star_rounded,
       monthly: 699,
-      unlocked: [true, true, true, true, false],
-      featured: true,
+      popular: true,
+      benefits: [
+        _Benefit('Unlimited active listings'),
+        _Benefit('Verified seller badge'),
+        _Benefit('Advanced analytics + reports'),
+        _Benefit('Priority listing placement'),
+        _Benefit('Buyer direct messaging'),
+        _Benefit('Priority email & chat support'),
+      ],
     ),
-    _PlanData(
+    const _PlanData(
       id: 'superpremium',
       label: 'Super Premium',
+      tagline: 'Maximum visibility & control',
       icon: Icons.workspace_premium,
       monthly: 1299,
-      unlocked: [true, true, true, true, true],
+      benefits: [
+        _Benefit('Unlimited active listings'),
+        _Benefit('Verified + Super Premium badge'),
+        _Benefit('Full analytics suite'),
+        _Benefit('Top listing placement'),
+        _Benefit('Featured on homepage banner'),
+        _Benefit('Dedicated account manager'),
+        _Benefit('Custom seller profile page'),
+      ],
     ),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _loadPrices();
+  }
+
+  /// Overrides price / tagline / POPULAR ribbon / free-tier listing capacity
+  /// with the live `prices` rows the admin website manages.
+  Future<void> _loadPrices() async {
+    try {
+      final rows = await supabase
+          .from('prices')
+          .select(
+              'plan, tagline, price, discount_percent, promo_label, promo_active, promo_deadline, is_popular, listing_capacity')
+          .order('sort_order');
+      if (!mounted || rows.isEmpty) return;
+
+      const idByPlan = {
+        'Free': 'free',
+        'Premium': 'premium',
+        'Super Premium': 'superpremium',
+      };
+      final byId = <String, Map<String, dynamic>>{};
+      for (final row in rows) {
+        final id = idByPlan[(row['plan'] as String?)?.trim()];
+        if (id != null) byId[id] = row;
+      }
+
+      setState(() {
+        _plans = _plans.map((plan) {
+          final row = byId[plan.id];
+          if (row == null) return plan;
+
+          final base = (row['price'] as num?)?.toDouble() ?? plan.monthly;
+          // Admin-set discount, honoured until its deadline passes.
+          final discount = (row['discount_percent'] as num?)?.toDouble() ?? 0;
+          final deadline = DateTime.tryParse('${row['promo_deadline'] ?? ''}');
+          final promoLive =
+              deadline == null || deadline.isAfter(DateTime.now());
+          final promoActive = (row['promo_active'] as bool?) ?? false;
+          final promoLabel = (row['promo_label'] as String?)?.trim();
+
+          final capacity = (row['listing_capacity'] as num?)?.toInt();
+          return plan.copyWith(
+            tagline: (row['tagline'] as String?)?.trim().isNotEmpty == true
+                ? (row['tagline'] as String).trim()
+                : null,
+            monthly: base,
+            discountPercent: promoLive ? discount : 0,
+            popular: (row['is_popular'] as bool?) ?? false,
+            promoLabel: (promoActive && promoLive && promoLabel?.isNotEmpty == true)
+                ? promoLabel
+                : null,
+            benefits: plan.id == 'free' && capacity != null
+                ? _freeBenefits(capacity)
+                : null,
+          );
+        }).toList();
+      });
+    } catch (e) {
+      debugPrint('Failed to load prices: $e'); // fall back to defaults
+    }
+  }
+
+  String _peso(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toStringAsFixed(2);
+    return '₱$text';
+  }
+
   String _priceLabel(_PlanData plan) {
     if (plan.monthly == 0) return '₱0';
-    final value = _yearly ? plan.monthly * 10 : plan.monthly;
-    return '₱$value';
+    return _peso(_yearly ? plan.effectiveMonthly * 10 : plan.effectiveMonthly);
+  }
+
+  /// The pre-discount price, struck through next to the discounted one.
+  String _basePriceLabel(_PlanData plan) =>
+      _peso(_yearly ? plan.monthly * 10 : plan.monthly);
+
+  /// Small pill badge shown beside the plan name (POPULAR / -X% OFF / promo).
+  Widget _planChip(String text,
+      {required Color background, required Color textColor}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+          color: textColor,
+        ),
+      ),
+    );
   }
 
   @override
@@ -2658,7 +2798,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
 
   // ── One plan card ─────────────────────────────────────────────────────────
   Widget _planCard(_PlanData plan) {
-    final featured = plan.featured;
+    final featured = plan.popular;
     final selected = _selectedPlan == plan.id;
     final onColor = featured ? Colors.white : _dark;
     final subColor = featured ? Colors.white70 : _muted;
@@ -2718,7 +2858,12 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
+                      // Wrap (not Row) so the chips can never be clipped off
+                      // the card edge on narrow screens.
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           Text(
                             plan.label,
@@ -2728,31 +2873,26 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                               color: onColor,
                             ),
                           ),
-                          if (featured) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: const Text(
-                                'POPULAR',
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 0.5,
-                                  color: _green,
-                                ),
-                              ),
+                          if (featured)
+                            _planChip('POPULAR',
+                                background: Colors.white, textColor: _green),
+                          // Discount chip, e.g. "-15% OFF".
+                          if (plan.discounted)
+                            _planChip(
+                              '-${plan.discountPercent == plan.discountPercent.roundToDouble() ? plan.discountPercent.toInt() : plan.discountPercent}% OFF',
+                              background: const Color(0xFFF43F5E),
+                              textColor: Colors.white,
                             ),
-                          ],
+                          // Admin-set promo badge (e.g. "HOLIDAY SALE").
+                          if (plan.promoLabel != null)
+                            _planChip(plan.promoLabel!.toUpperCase(),
+                                background: const Color(0xFFFFB300),
+                                textColor: Colors.white),
                         ],
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        _yearly ? 'Per year' : 'Per month',
+                        plan.tagline,
                         style: TextStyle(fontSize: 12, color: subColor),
                       ),
                     ],
@@ -2768,13 +2908,37 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                         : const Color(0xFFE8F8F1),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    _priceLabel(plan),
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: _green,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Original price, struck through when discounted.
+                      if (plan.discounted)
+                        Text(
+                          _basePriceLabel(plan),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF9AAAA2),
+                            decoration: TextDecoration.lineThrough,
+                            decorationColor: Color(0xFF9AAAA2),
+                          ),
+                        ),
+                      Text(
+                        _priceLabel(plan),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: _green,
+                        ),
+                      ),
+                      Text(
+                        plan.monthly == 0
+                            ? '/ forever'
+                            : (_yearly ? '/ year' : '/ month'),
+                        style: const TextStyle(
+                            fontSize: 10, color: Color(0xFF7C8B83)),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -2790,9 +2954,9 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
             ),
             const SizedBox(height: 16),
 
-            // Feature checklist
-            ...List.generate(_features.length, (i) {
-              final on = plan.unlocked[i];
+            // Benefit checklist (per tier, mirrors the admin website's cards)
+            ...plan.benefits.map((b) {
+              final on = b.included;
               final iconColor = featured
                   ? (on ? Colors.white : Colors.white38)
                   : (on ? _green : const Color(0xFFC4D3CC));
@@ -2811,7 +2975,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        _features[i],
+                        b.text,
                         style: TextStyle(
                           fontSize: 13,
                           color: textColor,
@@ -2899,23 +3063,71 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   }
 }
 
-// Static description of a subscription plan rendered by [_PremiumSubscriptionPage].
+// One line of a plan's benefit checklist. Excluded benefits render greyed
+// out with a strikethrough (mirrors the admin website's plan cards).
+class _Benefit {
+  final String text;
+  final bool included;
+  const _Benefit(this.text, {this.included = true});
+}
+
+// Description of a subscription plan rendered by [_PremiumSubscriptionPage].
+// Price / tagline / POPULAR ribbon / listing capacity come from the `prices`
+// table (editable on the admin website); these values are the fallbacks.
 class _PlanData {
   final String id;
   final String label;
+  final String tagline;
   final IconData icon;
-  final int monthly;
-  final List<bool> unlocked;
-  final bool featured;
+
+  /// Base monthly price before any discount.
+  final double monthly;
+
+  /// Live admin-set discount (0 = none); the card shows a "-X% OFF" chip and
+  /// strikes through the base price when this is > 0.
+  final double discountPercent;
+  final List<_Benefit> benefits;
+  final bool popular;
+  final String? promoLabel;
 
   const _PlanData({
     required this.id,
     required this.label,
+    required this.tagline,
     required this.icon,
     required this.monthly,
-    required this.unlocked,
-    this.featured = false,
+    required this.benefits,
+    this.discountPercent = 0,
+    this.popular = false,
+    this.promoLabel,
   });
+
+  bool get discounted => discountPercent > 0 && monthly > 0;
+
+  /// Monthly price with the discount applied.
+  double get effectiveMonthly =>
+      discounted ? monthly * (1 - discountPercent / 100) : monthly;
+
+  _PlanData copyWith({
+    String? tagline,
+    double? monthly,
+    double? discountPercent,
+    List<_Benefit>? benefits,
+    bool? popular,
+    String? promoLabel,
+  }) {
+    return _PlanData(
+      id: id,
+      label: label,
+      tagline: tagline ?? this.tagline,
+      icon: icon,
+      monthly: monthly ?? this.monthly,
+      discountPercent: discountPercent ?? this.discountPercent,
+      benefits: benefits ?? this.benefits,
+      popular: popular ?? this.popular,
+      promoLabel: promoLabel ?? this.promoLabel,
+    );
+  }
 }
 
 /// Full-screen "Edit Profile" page.

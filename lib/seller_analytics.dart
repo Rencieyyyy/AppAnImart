@@ -1,13 +1,19 @@
-import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'main.dart';
 import 'services/marketplace_service.dart';
 
-/// Basic sales analytics a seller uses to monitor their performance.
+/// Sales analytics a seller uses to monitor their performance.
 ///
-/// Tier-gated: a **Premium** seller sees the core metrics; the advanced
-/// metrics are locked behind a **Super Premium** upsell. A **Super Premium**
-/// seller sees everything unlocked plus their Priority Listing perk.
+/// A **Super Premium** exclusive: the popup (and its advanced metrics) is
+/// only ever shown to Super Premium sellers, alongside their Priority
+/// Listing perk.
+/// One month's worth of listing activity for the bar graph.
+class MonthlyCount {
+  final String label;
+  final int count;
+  const MonthlyCount(this.label, this.count);
+}
+
 class SellerAnalytics {
   final int totalListings;
   final int activeListings;
@@ -19,6 +25,12 @@ class SellerAnalytics {
   final String topCategory;
   final SellerRating rating;
 
+  /// Listings posted per month over the last six months (oldest first).
+  final List<MonthlyCount> monthlyListings;
+
+  /// Active listings per category, for the breakdown bars.
+  final Map<String, int> categoryCounts;
+
   const SellerAnalytics({
     required this.totalListings,
     required this.activeListings,
@@ -29,6 +41,8 @@ class SellerAnalytics {
     required this.avgPrice,
     required this.topCategory,
     required this.rating,
+    this.monthlyListings = const [],
+    this.categoryCounts = const {},
   });
 
   static const empty = SellerAnalytics(
@@ -50,10 +64,19 @@ class SellerAnalytics {
     double inventory = 0;
     final categoryCounts = <String, int>{};
     int sales = 0, trust = 0;
+    // Last six calendar months (oldest first) for the activity graph.
+    final now = DateTime.now();
+    final months =
+        List.generate(6, (i) => DateTime(now.year, now.month - 5 + i));
+    final monthlyBuckets = {for (final m in months) '${m.year}-${m.month}': 0};
+    const monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
     try {
       final listings = await supabase
           .from('listings')
-          .select('price, status, category')
+          .select('price, status, category, created_at')
           .eq('seller_id', userId);
       for (final row in (listings as List)) {
         final r = row as Map<String, dynamic>;
@@ -68,6 +91,13 @@ class SellerAnalytics {
           final cat = (r['category'] as String?)?.trim();
           if (cat != null && cat.isNotEmpty) {
             categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
+          }
+        }
+        final created = DateTime.tryParse('${r['created_at'] ?? ''}');
+        if (created != null) {
+          final key = '${created.year}-${created.month}';
+          if (monthlyBuckets.containsKey(key)) {
+            monthlyBuckets[key] = monthlyBuckets[key]! + 1;
           }
         }
       }
@@ -107,6 +137,12 @@ class SellerAnalytics {
       avgPrice: active > 0 ? inventory / active : 0,
       topCategory: topCat,
       rating: rating,
+      monthlyListings: [
+        for (final m in months)
+          MonthlyCount(
+              monthNames[m.month - 1], monthlyBuckets['${m.year}-${m.month}']!),
+      ],
+      categoryCounts: categoryCounts,
     );
   }
 }
@@ -204,91 +240,38 @@ class _SellerAnalyticsDialog extends StatelessWidget {
                 ),
                 const SizedBox(height: 18),
 
-                // ── Advanced metrics (Super Premium only) ──
+                // ── Advanced metrics ──
+                const Text('Advanced',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                const SizedBox(height: 10),
                 Row(
                   children: [
-                    const Text('Advanced',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                    const SizedBox(width: 8),
-                    if (!isSuper)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8E5BE8).withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.lock_outline, size: 11, color: Color(0xFF8E5BE8)),
-                            SizedBox(width: 3),
-                            Text('Super Premium',
-                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFF8E5BE8))),
-                          ],
-                        ),
-                      ),
+                    _card(_peso(data.inventoryValue), 'Inventory Value', Icons.account_balance_wallet_outlined, const Color(0xFF3AA876)),
+                    const SizedBox(width: 10),
+                    _card(_peso(data.avgPrice), 'Avg. Price', Icons.sell_outlined, const Color(0xFF2196F3)),
                   ],
                 ),
                 const SizedBox(height: 10),
-                Stack(
+                Row(
                   children: [
-                    Column(
-                      children: [
-                        Row(
-                          children: [
-                            _card(_peso(data.inventoryValue), 'Inventory Value', Icons.account_balance_wallet_outlined, const Color(0xFF3AA876), muted: !isSuper),
-                            const SizedBox(width: 10),
-                            _card(_peso(data.avgPrice), 'Avg. Price', Icons.sell_outlined, const Color(0xFF2196F3), muted: !isSuper),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            _card(data.topCategory, 'Top Category', Icons.category_outlined, const Color(0xFFFFB300), muted: !isSuper),
-                            const SizedBox(width: 10),
-                            _card(
-                                data.rating.hasReviews ? '${data.rating.average.toStringAsFixed(1)} (${data.rating.count})' : 'No reviews',
-                                'Avg. Rating', Icons.star_outline_rounded, const Color(0xFF1D9E75), muted: !isSuper),
-                          ],
-                        ),
-                      ],
-                    ),
-                    if (!isSuper)
-                      Positioned.fill(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: BackdropFilter(
-                            // Heavy blur so the advanced numbers are completely
-                            // unreadable until the seller upgrades.
-                            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                            child: Container(
-                              color: Colors.white.withOpacity(0.35),
-                              alignment: Alignment.center,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 10),
-                                  ],
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.lock_rounded, size: 16, color: Color(0xFF8E5BE8)),
-                                    SizedBox(width: 8),
-                                    Text('Upgrade to Super Premium\nto unlock advanced analytics',
-                                        style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4A4A4A))),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                    _card(data.topCategory, 'Top Category', Icons.category_outlined, const Color(0xFFFFB300)),
+                    const SizedBox(width: 10),
+                    _card(
+                        data.rating.hasReviews ? '${data.rating.average.toStringAsFixed(1)} (${data.rating.count})' : 'No reviews',
+                        'Avg. Rating', Icons.star_outline_rounded, const Color(0xFF1D9E75)),
                   ],
                 ),
+                const SizedBox(height: 18),
+
+                // ── Sales graphs ──
+                const Text('Sales Graphs',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                const SizedBox(height: 10),
+                _MonthlyBarChart(data: data.monthlyListings),
+                if (data.categoryCounts.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _CategoryBars(data: data.categoryCounts),
+                ],
 
                 if (isSuper) ...[
                   const SizedBox(height: 16),
@@ -328,8 +311,7 @@ class _SellerAnalyticsDialog extends StatelessWidget {
     );
   }
 
-  Widget _card(String value, String label, IconData icon, Color color, {bool muted = false}) {
-    final c = muted ? Colors.grey : color;
+  Widget _card(String value, String label, IconData icon, Color c) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
@@ -352,6 +334,163 @@ class _SellerAnalyticsDialog extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Bar graph of listings posted per month over the last six months.
+class _MonthlyBarChart extends StatelessWidget {
+  final List<MonthlyCount> data;
+  const _MonthlyBarChart({required this.data});
+
+  static const double _maxBarHeight = 64;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxCount =
+        data.fold<int>(0, (m, e) => e.count > m ? e.count : m);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF3AA876).withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF3AA876).withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.bar_chart_rounded, color: Color(0xFF3AA876), size: 16),
+              SizedBox(width: 6),
+              Text('Listings posted',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF1A2E22))),
+              Spacer(),
+              Text('Last 6 months',
+                  style: TextStyle(fontSize: 10, color: Colors.black45)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (var i = 0; i < data.length; i++) ...[
+                if (i > 0) const SizedBox(width: 6),
+                Expanded(child: _bar(data[i], maxCount, isCurrent: i == data.length - 1)),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bar(MonthlyCount m, int maxCount, {required bool isCurrent}) {
+    // Minimum stub height so empty months still show a baseline.
+    final h = maxCount == 0
+        ? 4.0
+        : 4 + _maxBarHeight * (m.count / maxCount);
+    final color = isCurrent ? const Color(0xFF3AA876) : const Color(0xFF3AA876).withOpacity(0.35);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('${m.count}',
+            style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: isCurrent ? const Color(0xFF3AA876) : Colors.black45)),
+        const SizedBox(height: 4),
+        Container(
+          height: h,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(m.label, style: const TextStyle(fontSize: 10, color: Colors.black45)),
+      ],
+    );
+  }
+}
+
+/// Horizontal breakdown bars of active listings per category.
+class _CategoryBars extends StatelessWidget {
+  final Map<String, int> data;
+  const _CategoryBars({required this.data});
+
+  static const List<Color> _palette = [
+    Color(0xFF3AA876),
+    Color(0xFF2196F3),
+    Color(0xFFFFB300),
+    Color(0xFF8E5BE8),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = data.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final top = entries.take(4).toList();
+    final total = data.values.fold<int>(0, (s, n) => s + n);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2196F3).withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF2196F3).withOpacity(0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.donut_small_rounded, color: Color(0xFF2196F3), size: 16),
+              SizedBox(width: 6),
+              Text('Active listings by category',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF1A2E22))),
+            ],
+          ),
+          const SizedBox(height: 12),
+          for (var i = 0; i < top.length; i++) ...[
+            if (i > 0) const SizedBox(height: 10),
+            _categoryRow(top[i].key, top[i].value, total, _palette[i % _palette.length]),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _categoryRow(String label, int count, int total, Color color) {
+    final fraction = total == 0 ? 0.0 : count / total;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF1A2E22))),
+            ),
+            Text('$count · ${(fraction * 100).round()}%',
+                style: const TextStyle(fontSize: 10, color: Colors.black45)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            height: 7,
+            color: color.withOpacity(0.15),
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: fraction,
+              child: Container(color: color),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

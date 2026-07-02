@@ -51,6 +51,48 @@ class LocationService {
     }
   }
 
+  /// Fallback for users with no saved coordinates: derives their location
+  /// from the profile `address` (a "City, Province" label when picked from
+  /// the gazetteer) and persists it so distances work immediately — both as
+  /// a buyer and for their own listings as a seller.
+  static Future<UserLocation?> adoptLocationFromAddress() async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return null;
+    try {
+      final row = await supabase
+          .from('users')
+          .select('address')
+          .eq('id', userId)
+          .maybeSingle();
+      final address = ((row?['address'] as String?) ?? '').trim();
+      if (address.isEmpty) return null;
+
+      final city = matchCity(address);
+      if (city == null) return null;
+
+      await saveUserLocation(city); // best-effort persist
+      return UserLocation(name: city.label, lat: city.lat, lng: city.lng);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Finds the gazetteer city matching [address]: an exact "City, Province"
+  /// label first, then a city whose name equals the address's first segment.
+  static PhCity? matchCity(String address) {
+    final q = address.toLowerCase().trim();
+    if (q.isEmpty) return null;
+    for (final c in phCities) {
+      if (c.label.toLowerCase() == q) return c;
+    }
+    final first = q.split(',').first.trim();
+    if (first.isEmpty) return null;
+    for (final c in phCities) {
+      if (c.name.toLowerCase() == first) return c;
+    }
+    return null;
+  }
+
   /// Saves [city] as the signed-in user's location. Returns true on success.
   static Future<bool> saveUserLocation(PhCity city) async {
     final userId = supabase.auth.currentUser?.id;

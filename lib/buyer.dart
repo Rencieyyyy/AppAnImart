@@ -31,6 +31,10 @@ class _Listing {
   final String sellerId;
   final String createdAt;
 
+  /// Seller's subscription tier: 'Free' | 'Premium' | 'Super Premium'.
+  /// Drives feed priority and the card's border/tag colors.
+  final String sellerTier;
+
   const _Listing({
     required this.name,
     required this.price,
@@ -50,6 +54,7 @@ class _Listing {
     this.id = '',
     this.sellerId = '',
     this.createdAt = '',
+    this.sellerTier = 'Free',
   });
 }
 
@@ -107,8 +112,10 @@ class _BuyerPageState extends State<BuyerPage> {
   }
 
   /// Loads the buyer's saved location so listing distances can be computed.
+  /// Users who never picked one default to their profile address.
   Future<void> _loadMyLocation() async {
-    final loc = await LocationService.fetchUserLocation();
+    final loc = await LocationService.fetchUserLocation() ??
+        await LocationService.adoptLocationFromAddress();
     if (!mounted) return;
     setState(() {
       _myLocation = loc;
@@ -183,10 +190,31 @@ class _BuyerPageState extends State<BuyerPage> {
           .select('*, users(name, latitude, longitude)')
           .eq('status', 'active')
           .order('created_at', ascending: false);
+
+      // Resolve each seller's current subscription tier so paid sellers get
+      // priority placement + colored borders. Buyers can't read others'
+      // subscriptions directly (RLS), so we go through the seller_tiers RPC.
+      final sellerIds = <String>{
+        for (final r in (rows as List))
+          if ('${(r as Map)['seller_id'] ?? ''}'.isNotEmpty)
+            '${r['seller_id']}'
+      }.toList();
+      final tierBySeller = <String, String>{};
+      if (sellerIds.isNotEmpty) {
+        try {
+          final tiers = await supabase
+              .rpc('seller_tiers', params: {'seller_ids': sellerIds});
+          for (final t in (tiers as List)) {
+            tierBySeller['${(t as Map)['user_id']}'] = '${t['tier']}';
+          }
+        } catch (e) {
+          debugPrint('Failed to load seller tiers: $e');
+        }
+      }
+
       if (!mounted) return;
       setState(() {
-        _allListings = (rows as List).map((r) {
-          final row = r as Map<String, dynamic>;
+        _allListings = rows.map((row) {
           final priceValue = (row['price'] is num)
               ? (row['price'] as num).toDouble()
               : (double.tryParse('${row['price']}') ?? 0);
@@ -216,6 +244,7 @@ class _BuyerPageState extends State<BuyerPage> {
             id: '${row['id'] ?? ''}',
             sellerId: '${row['seller_id'] ?? ''}',
             createdAt: '${row['created_at'] ?? ''}',
+            sellerTier: tierBySeller['${row['seller_id'] ?? ''}'] ?? 'Free',
           );
         }).toList();
         _recomputeDistances();
@@ -287,24 +316,58 @@ class _BuyerPageState extends State<BuyerPage> {
       return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
     }
 
-    switch (_sortBy) {
-      case 'Price ↑':
-        list = [...list]..sort((a, b) => a.priceValue.compareTo(b.priceValue));
-        break;
-      case 'Price ↓':
-        list = [...list]..sort((a, b) => b.priceValue.compareTo(a.priceValue));
-        break;
-      case 'Nearest':
-        list = [...list]..sort(byDistance);
-        break;
-      default:
-        // "Explore near you": once the buyer has set a location, the default
-        // ordering is by how close each seller lives.
-        if (_myLocation != null) list = [...list]..sort(byDistance);
-        break;
+    // Secondary ordering from the chosen sort.
+    int secondary(_Listing a, _Listing b) {
+      switch (_sortBy) {
+        case 'Price ↑':
+          return a.priceValue.compareTo(b.priceValue);
+        case 'Price ↓':
+          return b.priceValue.compareTo(a.priceValue);
+        case 'Nearest':
+          return byDistance(a, b);
+        default:
+          // "Explore near you": once the buyer has set a location, the
+          // default ordering is by how close each seller lives.
+          return _myLocation != null
+              ? byDistance(a, b)
+              : b.createdAt.compareTo(a.createdAt);
+      }
     }
 
+    // Paid sellers always surface first: Super Premium above Premium above
+    // Free; ties fall back to the chosen sort. Applied on every rebuild, so
+    // newly loaded listings are ranked by subscription immediately.
+    list = [...list]
+      ..sort((a, b) {
+        final r = _tierRank(b) - _tierRank(a);
+        return r != 0 ? r : secondary(a, b);
+      });
+
     return list;
+  }
+
+  static int _tierRank(_Listing l) {
+    switch (l.sellerTier) {
+      case 'Super Premium':
+        return 2;
+      case 'Premium':
+        return 1;
+      default:
+        return 0;
+    }
+  }
+
+  /// Accent color for a listing card: violet for Super Premium sellers,
+  /// amber for Premium, brand green for everyone else.
+  static Color _tierColor(_Listing l) {
+    switch (l.sellerTier) {
+      case 'Super Premium':
+        return const Color(0xFF8E5BE8);
+      case 'Premium':
+        return const Color(0xFFFFB300);
+      default:
+        return const Color(0xFF6DBF99);
+    }
   }
 
   // ── Location picker ────────────────────────────────────────────────────────
@@ -1335,13 +1398,13 @@ class _BuyerPageState extends State<BuyerPage> {
                             final item = items[index];
                             final isFav = _favourites.contains(item.id);
                             final distance = _distanceOf(item);
+                            final tierColor = _tierColor(item);
                             return GestureDetector(
                               onTap: () => _openListing(item),
                               child: Container(
                                 decoration: BoxDecoration(
                                   border: Border.all(
-                                      color: const Color(0xFF6DBF99),
-                                      width: 1.5),
+                                      color: tierColor, width: 1.5),
                                   borderRadius: BorderRadius.circular(12),
                                   color: Colors.white,
                                 ),
@@ -1366,6 +1429,47 @@ class _BuyerPageState extends State<BuyerPage> {
                                                   width: double.infinity),
                                             ),
                                           ),
+                                          // Seller-tier tag (top-left,
+                                          // aligned with the fav button).
+                                          if (item.sellerTier != 'Free')
+                                            Positioned(
+                                              top: 6,
+                                              left: 6,
+                                              child: Container(
+                                                padding: const EdgeInsets
+                                                    .symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 3),
+                                                decoration: BoxDecoration(
+                                                  color: tierColor,
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(
+                                                        Icons
+                                                            .workspace_premium_rounded,
+                                                        size: 10,
+                                                        color: Colors.white),
+                                                    const SizedBox(width: 3),
+                                                    Text(
+                                                      item.sellerTier
+                                                          .toUpperCase(),
+                                                      style: const TextStyle(
+                                                        fontSize: 7.5,
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                        letterSpacing: 0.4,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
                                           // ★ Per-card fav toggle
                                           Positioned(
                                             top: 6,

@@ -130,23 +130,49 @@ class MarketplaceService {
   }
 
   /// All reviews for a seller, newest first, with reviewer names joined in.
+  ///
+  /// Reviewer names are resolved with a second query instead of a PostgREST
+  /// embed: `reviews`' foreign keys reference `auth.users` (not
+  /// `public.users`), so an embed like `users:reviewer_id(name)` fails with
+  /// PGRST200 ("no relationship found") and would silently empty the list.
   static Future<List<Review>> fetchReviews(String sellerId) async {
     if (sellerId.isEmpty) return const [];
     try {
       final rows = await supabase
           .from('reviews')
-          .select('id, reviewer_id, rating, comment, created_at, users:reviewer_id(name)')
+          .select('id, reviewer_id, rating, comment, created_at')
           .eq('seller_id', sellerId)
           .order('created_at', ascending: false);
-      return (rows as List).map((r) {
-        final row = r as Map<String, dynamic>;
-        final reviewer = row['users'] as Map<String, dynamic>?;
+      final list =
+          (rows as List).map((r) => r as Map<String, dynamic>).toList();
+
+      final reviewerIds = list
+          .map((r) => '${r['reviewer_id'] ?? ''}')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList();
+      final namesById = <String, String>{};
+      if (reviewerIds.isNotEmpty) {
+        try {
+          final userRows = await supabase
+              .from('users')
+              .select('id, name')
+              .inFilter('id', reviewerIds);
+          for (final u in (userRows as List)) {
+            final m = u as Map<String, dynamic>;
+            namesById['${m['id']}'] = ((m['name'] as String?) ?? '').trim();
+          }
+        } catch (_) {
+          // Names fall back to the placeholder below.
+        }
+      }
+
+      return list.map((row) {
+        final name = namesById['${row['reviewer_id']}'] ?? '';
         return Review(
           id: '${row['id']}',
           reviewerId: '${row['reviewer_id']}',
-          reviewerName: (reviewer?['name'] as String?)?.trim().isNotEmpty == true
-              ? (reviewer!['name'] as String).trim()
-              : 'AniMart User',
+          reviewerName: name.isNotEmpty ? name : 'AniMart User',
           rating: (row['rating'] as num?)?.toInt() ?? 0,
           comment: (row['comment'] as String?)?.trim() ?? '',
           createdAt:
