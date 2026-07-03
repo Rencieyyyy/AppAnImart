@@ -32,6 +32,19 @@ class AppPlan {
   String get priceLabel => '₱$price / mo';
 }
 
+/// The user's resolved active plan, including how it's billed.
+class ActivePlan {
+  /// 'Free' | 'Premium' | 'Super Premium'.
+  final String label;
+
+  /// 'monthly' | 'yearly' (Free is always 'monthly').
+  final String billingCycle;
+
+  const ActivePlan(this.label, this.billingCycle);
+
+  bool get isYearly => billingCycle == 'yearly';
+}
+
 /// Reads and writes the `subscriptions` table that the admin website manages.
 class SubscriptionService {
   SubscriptionService._();
@@ -94,18 +107,24 @@ class SubscriptionService {
   static const Set<String> _activeStatuses = {'approved', 'active'};
 
   /// The app-facing label of the user's currently *active* plan, or 'Free' if
-  /// they have no live subscription. A row counts only when its status is
-  /// approved/active AND it hasn't passed its `expires_at`.
-  static Future<String> activePlanLabel() async {
+  /// they have no live subscription.
+  static Future<String> activePlanLabel() async =>
+      (await activePlan()).label;
+
+  /// The user's currently *active* plan and its billing cycle; 'Free' /
+  /// 'monthly' when they have no live subscription. A row counts only when
+  /// its status is approved/active AND it hasn't passed its `expires_at`.
+  static Future<ActivePlan> activePlan() async {
+    const free = ActivePlan('Free', 'monthly');
     final user = supabase.auth.currentUser;
-    if (user == null) return 'Free';
+    if (user == null) return free;
     try {
       // Fetch the user's rows and resolve the active one client-side. This is
       // robust to multiple approved rows and avoids depending on the exact
       // status string the admin writes.
       final rows = await supabase
           .from('subscriptions')
-          .select('plan, status, expires_at, started_at')
+          .select('plan, status, expires_at, started_at, billing_cycle')
           .eq('user_id', user.id)
           .order('started_at', ascending: false);
 
@@ -116,11 +135,15 @@ class SubscriptionService {
         if (!_activeStatuses.contains(status)) continue;
         final expires = DateTime.tryParse('${r['expires_at']}')?.toUtc();
         if (expires != null && !expires.isAfter(now)) continue; // expired
-        return labelForDbPlan(r['plan'] as String?);
+        final cycle = (r['billing_cycle'] as String?)?.toLowerCase().trim();
+        return ActivePlan(
+          labelForDbPlan(r['plan'] as String?),
+          cycle == 'yearly' ? 'yearly' : 'monthly',
+        );
       }
-      return 'Free';
+      return free;
     } catch (_) {
-      return 'Free';
+      return free;
     }
   }
 
@@ -153,7 +176,10 @@ class SubscriptionService {
   /// Returns `null` on success, or a user-facing error message. Selecting the
   /// free plan is a no-op (it needs no admin approval). The inserted row lands
   /// in the admin website's pending queue with `status = 'pending'`.
-  static Future<String?> requestPlan(AppPlan plan) async {
+  ///
+  /// With [yearly] the request is for the yearly billing cycle: the stored
+  /// price is 10× the monthly one (2 months free), matching the plans page.
+  static Future<String?> requestPlan(AppPlan plan, {bool yearly = false}) async {
     final user = supabase.auth.currentUser;
     if (user == null) return 'You must be signed in to choose a plan.';
     if (plan.isFree) return null; // free tier needs no approval
@@ -173,7 +199,8 @@ class SubscriptionService {
       await supabase.from('subscriptions').insert({
         'user_id': user.id,
         'plan': plan.label,
-        'price': plan.price,
+        'price': yearly ? plan.price * 10 : plan.price,
+        'billing_cycle': yearly ? 'yearly' : 'monthly',
         'status': 'pending',
         'requested_at': DateTime.now().toUtc().toIso8601String(),
       });

@@ -47,6 +47,9 @@ class _ProfilePageState extends State<ProfilePage> {
   // App-facing name of the user's active subscription plan (from the
   // `subscriptions` table managed by the admin website). 'Free' by default.
   String _planName = 'Free';
+
+  // Whether that plan is billed yearly (drives the plans page's buttons).
+  bool _planIsYearly = false;
   String _memberSince = '';
   String _avatarUrl = '';
   bool _isSeller = false;
@@ -183,9 +186,14 @@ class _ProfilePageState extends State<ProfilePage> {
       });
 
       // Resolve the active subscription plan (Free / Premium / Super Premium)
-      // from the admin-managed `subscriptions` table.
-      final planName = await SubscriptionService.activePlanLabel();
-      if (mounted) setState(() => _planName = planName);
+      // and its billing cycle from the admin-managed `subscriptions` table.
+      final plan = await SubscriptionService.activePlan();
+      if (mounted) {
+        setState(() {
+          _planName = plan.label;
+          _planIsYearly = plan.isYearly;
+        });
+      }
     } catch (e) {
       debugPrint('Failed to load profile from users table: $e');
       if (!mounted) return;
@@ -964,7 +972,9 @@ class _ProfilePageState extends State<ProfilePage> {
   void _openPlansPage() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const _PremiumSubscriptionPage()),
+      MaterialPageRoute(
+          builder: (_) => _PremiumSubscriptionPage(
+              currentPlan: _planName, currentPlanIsYearly: _planIsYearly)),
     );
   }
 
@@ -1977,7 +1987,14 @@ class _ProfilePageState extends State<ProfilePage> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       child: Row(
                         children: [
-                          _statItem(_planName, 'Plan'),
+                          // Paid tiers also show how they're billed.
+                          _statItem(
+                              _planName,
+                              _isPremiumTier
+                                  ? (_planIsYearly
+                                      ? 'Yearly Plan'
+                                      : 'Monthly Plan')
+                                  : 'Plan'),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
                           _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
                           Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
@@ -2395,6 +2412,20 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // ── Premium Subscription button (navigates to the plans page) ─────────────
   Widget _premiumSubscriptionButton() {
+    // The label follows the active plan: Premium members are nudged to
+    // upgrade, Super Premium members just review their subscription.
+    final String title;
+    final String subtitle;
+    if (_isSuperTier) {
+      title = 'View Subscription';
+      subtitle = "You're on Super Premium — view your plan";
+    } else if (_isPremiumTier) {
+      title = 'Upgrade to Super Premium';
+      subtitle = 'Maximum visibility & control — view plans';
+    } else {
+      title = 'Premium Subscription';
+      subtitle = 'Unlock more features — view plans';
+    }
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -2431,18 +2462,19 @@ class _ProfilePageState extends State<ProfilePage> {
                     color: Color(0xFF1D9E75), size: 20),
               ),
               const SizedBox(width: 12),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Premium Subscription',
-                        style: TextStyle(
+                    Text(title,
+                        style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
                             color: Color(0xFF1A2E22))),
-                    SizedBox(height: 2),
-                    Text('Unlock more features — view plans',
-                        style: TextStyle(fontSize: 12.5, color: Color(0xFF3D5247))),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Color(0xFF3D5247))),
                   ],
                 ),
               ),
@@ -2508,7 +2540,17 @@ class _BenefitRow extends StatelessWidget {
 /// Full-screen plan-selection page reached from the profile's
 /// "Premium Subscription" button. Replaces the old plan popup dialog.
 class _PremiumSubscriptionPage extends StatefulWidget {
-  const _PremiumSubscriptionPage();
+  /// App-facing label of the user's active plan ('Free' / 'Premium' /
+  /// 'Super Premium'); decides which plan buttons are shown, disabled or
+  /// relabelled ("Current Plan" / "Upgrade Plan").
+  final String currentPlan;
+
+  /// Whether the active plan is already billed yearly — if so, the Yearly
+  /// toggle no longer offers "Upgrade to Yearly Plan" on that plan's card.
+  final bool currentPlanIsYearly;
+
+  const _PremiumSubscriptionPage(
+      {this.currentPlan = 'Free', this.currentPlanIsYearly = false});
 
   @override
   State<_PremiumSubscriptionPage> createState() =>
@@ -2649,6 +2691,30 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     }
   }
 
+  /// Card id ('free' | 'premium' | 'superpremium') of the user's active plan.
+  String get _currentPlanId {
+    switch (widget.currentPlan) {
+      case 'Super Premium':
+        return 'superpremium';
+      case 'Premium':
+        return 'premium';
+      default:
+        return 'free';
+    }
+  }
+
+  /// Tier order used to hide the buttons of plans below the active one.
+  static int _planRank(String id) {
+    switch (id) {
+      case 'superpremium':
+        return 2;
+      case 'premium':
+        return 1;
+      default:
+        return 0;
+    }
+  }
+
   String _peso(double value) {
     final text = value == value.roundToDouble()
         ? value.toInt().toString()
@@ -2767,11 +2833,23 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _toggleChip('Monthly', !_yearly, () => setState(() => _yearly = false)),
-          _toggleChip('Yearly', _yearly, () => setState(() => _yearly = true)),
+          _toggleChip('Monthly', !_yearly, () => _setYearly(false)),
+          _toggleChip('Yearly', _yearly, () => _setYearly(true)),
         ],
       ),
     );
+  }
+
+  /// Switches the billing cycle. Members on a paid *monthly* plan get a
+  /// heads-up that the plan buttons now upgrade them to yearly billing;
+  /// members already billed yearly don't.
+  void _setYearly(bool yearly) {
+    if (yearly == _yearly) return;
+    setState(() => _yearly = yearly);
+    if (yearly && _currentPlanId != 'free' && !widget.currentPlanIsYearly) {
+      showTopMessage(context, 'You are upgrading to a yearly plan.',
+          isError: false);
+    }
   }
 
   Widget _toggleChip(String label, bool active, VoidCallback onTap) {
@@ -2802,6 +2880,28 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     final selected = _selectedPlan == plan.id;
     final onColor = featured ? Colors.white : _dark;
     final subColor = featured ? Colors.white70 : _muted;
+
+    // Button state relative to the user's active plan: the active paid plan
+    // shows a disabled "Current Plan"; plans below it lose their button
+    // entirely; the next tier up becomes "Upgrade Plan". With the Yearly
+    // billing toggle on, every visible paid-plan button instead offers the
+    // yearly upgrade — except the active plan's own card when it is already
+    // billed yearly (that stays "Current Plan").
+    final isCurrentPaid =
+        plan.id == _currentPlanId && _currentPlanId != 'free';
+    final hideButton = _planRank(plan.id) < _planRank(_currentPlanId);
+    final alreadyYearly = isCurrentPaid && widget.currentPlanIsYearly;
+    final yearlyUpgrade = _yearly && plan.monthly != 0 && !alreadyYearly;
+    final String buttonLabel;
+    if (yearlyUpgrade) {
+      buttonLabel = 'Upgrade to Yearly Plan';
+    } else if (isCurrentPaid) {
+      buttonLabel = 'Current Plan';
+    } else if (plan.id == 'superpremium' && _currentPlanId == 'premium') {
+      buttonLabel = 'Upgrade Plan';
+    } else {
+      buttonLabel = plan.monthly == 0 ? 'Get Started' : 'Choose Plan';
+    }
 
     return GestureDetector(
       onTap: () => setState(() => _selectedPlan = plan.id),
@@ -2990,44 +3090,47 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
               );
             }),
 
-            const SizedBox(height: 6),
-
-            // Purchase button
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: ElevatedButton(
-                onPressed:
-                    _submittingId != null ? null : () => _choosePlan(plan),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: featured ? Colors.white : _green,
-                  foregroundColor: featured ? _green : Colors.white,
-                  disabledBackgroundColor:
-                      (featured ? Colors.white : _green).withOpacity(0.6),
-                  disabledForegroundColor: featured ? _green : Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
+            // Purchase button — hidden for plans below the active tier.
+            if (!hideButton) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: ElevatedButton(
+                  onPressed:
+                      _submittingId != null || (isCurrentPaid && !yearlyUpgrade)
+                          ? null
+                          : () => _choosePlan(plan),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: featured ? Colors.white : _green,
+                    foregroundColor: featured ? _green : Colors.white,
+                    disabledBackgroundColor:
+                        (featured ? Colors.white : _green).withOpacity(0.6),
+                    disabledForegroundColor: featured ? _green : Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
                   ),
+                  child: _submittingId == plan.id
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: featured ? _green : Colors.white,
+                          ),
+                        )
+                      : Text(
+                          buttonLabel,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                 ),
-                child: _submittingId == plan.id
-                    ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.4,
-                          color: featured ? _green : Colors.white,
-                        ),
-                      )
-                    : Text(
-                        plan.monthly == 0 ? 'Get Started' : 'Choose Plan',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
               ),
-            ),
+            ],
           ],
         ),
       ),
@@ -3046,14 +3149,16 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     }
 
     setState(() => _submittingId = plan.id);
-    final error = await SubscriptionService.requestPlan(appPlan);
+    final error =
+        await SubscriptionService.requestPlan(appPlan, yearly: _yearly);
     if (!mounted) return;
     setState(() => _submittingId = null);
 
     if (error == null) {
       showTopMessage(
         context,
-        '${appPlan.label} request submitted — pending admin approval.',
+        '${appPlan.label}${_yearly ? ' (Yearly)' : ''} request submitted — '
+        'pending admin approval.',
         isError: false,
       );
       Navigator.pop(context);

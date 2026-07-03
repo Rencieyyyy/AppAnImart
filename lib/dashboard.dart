@@ -134,9 +134,17 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _favourites = ids);
   }
 
+  /// Whether the signed-in user owns [item] (owners can't favourite their
+  /// own listings).
+  bool _isMine(LivestockItem item) =>
+      item.sellerId.isNotEmpty &&
+      item.sellerId == supabase.auth.currentUser?.id;
+
   /// Persists a favourite toggle and updates local state optimistically.
   Future<void> _toggleFavorite(String listingId) async {
     if (listingId.isEmpty) return;
+    // Sellers can't favourite their own listings.
+    if (_allItems.any((i) => i.id == listingId && _isMine(i))) return;
     final wasFav = _favourites.contains(listingId);
     setState(() {
       wasFav ? _favourites.remove(listingId) : _favourites.add(listingId);
@@ -1565,27 +1573,29 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: GestureDetector(
-                onTap: () => _toggleFavorite(item.id),
-                child: Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.85),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    isFav ? Icons.favorite : Icons.favorite_border,
-                    color:
-                        isFav ? const Color(0xFF6DBF99) : Colors.black45,
-                    size: 16,
+            // Owners don't get a fav button on their own listings.
+            if (!_isMine(item))
+              Positioned(
+                top: 8,
+                right: 8,
+                child: GestureDetector(
+                  onTap: () => _toggleFavorite(item.id),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.85),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      isFav ? Icons.favorite : Icons.favorite_border,
+                      color:
+                          isFav ? const Color(0xFF6DBF99) : Colors.black45,
+                      size: 16,
+                    ),
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),

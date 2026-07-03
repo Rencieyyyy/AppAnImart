@@ -212,6 +212,10 @@ class _BuyerPageState extends State<BuyerPage> {
         }
       }
 
+      // The signed-in user's own listings never appear in Explore — they
+      // remain visible on the Home feed's "All" category instead.
+      final myId = supabase.auth.currentUser?.id;
+
       if (!mounted) return;
       setState(() {
         _allListings = rows.map((row) {
@@ -246,7 +250,7 @@ class _BuyerPageState extends State<BuyerPage> {
             createdAt: '${row['created_at'] ?? ''}',
             sellerTier: tierBySeller['${row['seller_id'] ?? ''}'] ?? 'Free',
           );
-        }).toList();
+        }).where((l) => myId == null || l.sellerId != myId).toList();
         _recomputeDistances();
         _loading = false;
       });
@@ -357,12 +361,11 @@ class _BuyerPageState extends State<BuyerPage> {
     }
   }
 
-  /// Accent color for a listing card: violet for Super Premium sellers,
-  /// amber for Premium, brand green for everyone else.
+  /// Accent color for a listing card: amber for Premium, brand green for
+  /// everyone else. Super Premium deliberately shows no visual indicator —
+  /// that tier only grants priority placement in the feed.
   static Color _tierColor(_Listing l) {
     switch (l.sellerTier) {
-      case 'Super Premium':
-        return const Color(0xFF8E5BE8);
       case 'Premium':
         return const Color(0xFFFFB300);
       default:
@@ -1429,9 +1432,13 @@ class _BuyerPageState extends State<BuyerPage> {
                                                   width: double.infinity),
                                             ),
                                           ),
-                                          // Seller-tier tag (top-left,
-                                          // aligned with the fav button).
-                                          if (item.sellerTier != 'Free')
+                                          // Seller-tier tag (top-left, aligned
+                                          // with the fav button). Super
+                                          // Premium is left unbadged on
+                                          // purpose — that tier keeps its
+                                          // priority placement without any
+                                          // visible indicator.
+                                          if (item.sellerTier == 'Premium')
                                             Positioned(
                                               top: 6,
                                               left: 6,
