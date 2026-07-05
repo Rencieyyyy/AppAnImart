@@ -361,18 +361,6 @@ class _BuyerPageState extends State<BuyerPage> {
     }
   }
 
-  /// Accent color for a listing card: amber for Premium, brand green for
-  /// everyone else. Super Premium deliberately shows no visual indicator —
-  /// that tier only grants priority placement in the feed.
-  static Color _tierColor(_Listing l) {
-    switch (l.sellerTier) {
-      case 'Premium':
-        return const Color(0xFFFFB300);
-      default:
-        return const Color(0xFF6DBF99);
-    }
-  }
-
   // ── Location picker ────────────────────────────────────────────────────────
 
   /// Lets the buyer pick their city/municipality; saved to their `users` row
@@ -1401,13 +1389,13 @@ class _BuyerPageState extends State<BuyerPage> {
                             final item = items[index];
                             final isFav = _favourites.contains(item.id);
                             final distance = _distanceOf(item);
-                            final tierColor = _tierColor(item);
                             return GestureDetector(
                               onTap: () => _openListing(item),
                               child: Container(
                                 decoration: BoxDecoration(
                                   border: Border.all(
-                                      color: tierColor, width: 1.5),
+                                      color: const Color(0xFF6DBF99),
+                                      width: 1.5),
                                   borderRadius: BorderRadius.circular(12),
                                   color: Colors.white,
                                 ),
@@ -1432,51 +1420,11 @@ class _BuyerPageState extends State<BuyerPage> {
                                                   width: double.infinity),
                                             ),
                                           ),
-                                          // Seller-tier tag (top-left, aligned
-                                          // with the fav button). Super
-                                          // Premium is left unbadged on
-                                          // purpose — that tier keeps its
-                                          // priority placement without any
-                                          // visible indicator.
-                                          if (item.sellerTier == 'Premium')
-                                            Positioned(
-                                              top: 6,
-                                              left: 6,
-                                              child: Container(
-                                                padding: const EdgeInsets
-                                                    .symmetric(
-                                                    horizontal: 6,
-                                                    vertical: 3),
-                                                decoration: BoxDecoration(
-                                                  color: tierColor,
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    const Icon(
-                                                        Icons
-                                                            .workspace_premium_rounded,
-                                                        size: 10,
-                                                        color: Colors.white),
-                                                    const SizedBox(width: 3),
-                                                    Text(
-                                                      item.sellerTier
-                                                          .toUpperCase(),
-                                                      style: const TextStyle(
-                                                        fontSize: 7.5,
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                        letterSpacing: 0.4,
-                                                        color: Colors.white,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
+                                          // No seller-tier badge or colored
+                                          // border on cards — paid tiers keep
+                                          // their priority placement in the
+                                          // feed without any visible
+                                          // indicator.
                                           // ★ Per-card fav toggle
                                           Positioned(
                                             top: 6,

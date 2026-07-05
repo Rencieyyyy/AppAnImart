@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login.dart';
 import 'signup.dart'; // ✅ Added missing import
 import 'supabase_config.dart';
+import 'services/push_service.dart';
 
 /// Convenient shorthand for the Supabase client used across the app.
 final supabase = Supabase.instance.client;
@@ -13,6 +14,9 @@ Future<void> main() async {
     url: SupabaseConfig.url,
     anonKey: SupabaseConfig.anonKey,
   );
+  // Best-effort: registers this device for plan-sale push notifications.
+  // No-ops until lib/firebase_options.dart is filled in.
+  await PushService.init();
   runApp(const AniMartApp());
 }
 

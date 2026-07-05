@@ -2,6 +2,8 @@
     package="com.example.ani_mart"> 
 
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13+ requires this to show push notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
         android:label="AnI Mart"

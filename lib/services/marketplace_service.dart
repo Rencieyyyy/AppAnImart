@@ -34,8 +34,30 @@ class Review {
   });
 }
 
+/// A buyer's price offer on a listing, with the buyer's display name joined
+/// in for the seller's "Offers" dashboard section.
+class Offer {
+  final String id;
+  final String listingId;
+  final String buyerId;
+  final String buyerName;
+  final double amount;
+  final String status; // 'pending' | 'accepted' | 'declined'
+  final DateTime createdAt;
+
+  const Offer({
+    required this.id,
+    required this.listingId,
+    required this.buyerId,
+    required this.buyerName,
+    required this.amount,
+    required this.status,
+    required this.createdAt,
+  });
+}
+
 /// Centralised Supabase access for the marketplace trust & safety features:
-/// favorites, seller reviews, abuse reports and user blocks.
+/// favorites, seller reviews, abuse reports, user blocks and buyer offers.
 ///
 /// Every method is best-effort and swallows errors into sensible defaults so a
 /// transient network/RLS failure never crashes a screen — callers can show a
@@ -261,6 +283,118 @@ class MarketplaceService {
       return null;
     } catch (e) {
       return 'Could not submit report: $e';
+    }
+  }
+
+  // ── Offers ────────────────────────────────────────────────────────────────
+
+  /// Submits (or revises) the current user's offer on a listing.
+  /// Returns null on success, or an error message to show the user.
+  static Future<String?> submitOffer({
+    required String listingId,
+    required String sellerId,
+    required double amount,
+  }) async {
+    final uid = _uid;
+    if (uid == null) return 'You must be signed in to make an offer.';
+    if (listingId.isEmpty || sellerId.isEmpty) {
+      return 'Offers are unavailable for this listing.';
+    }
+    if (sellerId == uid) return 'You cannot make an offer on your own listing.';
+    if (amount <= 0) return 'Please enter a valid offer amount.';
+    try {
+      // Re-offering replaces the previous offer and resets it to pending so
+      // the seller sees the latest amount.
+      await supabase.from('offers').upsert({
+        'listing_id': listingId,
+        'seller_id': sellerId,
+        'buyer_id': uid,
+        'amount': amount,
+        'status': 'pending',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'listing_id,buyer_id');
+      return null;
+    } catch (e) {
+      return 'Could not send offer: $e';
+    }
+  }
+
+  /// All offers received by the current user (as a seller), newest first,
+  /// with buyer names joined in via a second `users` query (the offers FKs
+  /// reference auth.users, so a PostgREST embed is not possible — same
+  /// approach as [fetchReviews]).
+  static Future<List<Offer>> fetchReceivedOffers() async {
+    final uid = _uid;
+    if (uid == null) return const [];
+    try {
+      final rows = await supabase
+          .from('offers')
+          .select('id, listing_id, buyer_id, amount, status, created_at')
+          .eq('seller_id', uid)
+          .order('created_at', ascending: false);
+      final list =
+          (rows as List).map((r) => r as Map<String, dynamic>).toList();
+
+      final buyerIds = list
+          .map((r) => '${r['buyer_id'] ?? ''}')
+          .where((id) => id.isNotEmpty)
+          .toSet()
+          .toList();
+      final namesById = <String, String>{};
+      if (buyerIds.isNotEmpty) {
+        try {
+          final userRows = await supabase
+              .from('users')
+              .select('id, name')
+              .inFilter('id', buyerIds);
+          for (final u in (userRows as List)) {
+            final m = u as Map<String, dynamic>;
+            namesById['${m['id']}'] = ((m['name'] as String?) ?? '').trim();
+          }
+        } catch (_) {
+          // Names fall back to the placeholder below.
+        }
+      }
+
+      return list.map((row) {
+        final name = namesById['${row['buyer_id']}'] ?? '';
+        return Offer(
+          id: '${row['id']}',
+          listingId: '${row['listing_id']}',
+          buyerId: '${row['buyer_id']}',
+          buyerName: name.isNotEmpty ? name : 'AniMart User',
+          amount: (row['amount'] as num?)?.toDouble() ?? 0,
+          status: (row['status'] as String?) ?? 'pending',
+          createdAt: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
+              DateTime.now(),
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Seller accepts or declines an offer. Returns null on success, or an
+  /// error message.
+  static Future<String?> respondToOffer(
+    String offerId, {
+    required bool accept,
+  }) async {
+    final uid = _uid;
+    if (uid == null) return 'You must be signed in.';
+    if (offerId.isEmpty) return 'Unknown offer.';
+    try {
+      await supabase
+          .from('offers')
+          .update({
+            'status': accept ? 'accepted' : 'declined',
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', offerId)
+          .eq('seller_id', uid);
+      return null;
+    } catch (e) {
+      return 'Could not update offer: $e';
     }
   }
 

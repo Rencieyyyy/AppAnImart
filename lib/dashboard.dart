@@ -1047,6 +1047,10 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     final items = _filteredItems;
+    // The signed-in user's own listings are pulled out of the main feed and
+    // shown at the bottom under a "My Listings" header.
+    final otherItems = items.where((i) => !_isMine(i)).toList();
+    final myItems = items.where(_isMine).toList();
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -1379,16 +1383,53 @@ class _DashboardPageState extends State<DashboardPage> {
                               ),
                             ),
                           )
-                        : GridView.count(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            crossAxisCount: 2,
-                            crossAxisSpacing: 12,
-                            mainAxisSpacing: 12,
-                            childAspectRatio: 1.1,
-                            children: items
-                                .map((item) => _buildCategoryCard(item))
-                                .toList(),
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (otherItems.isNotEmpty)
+                                GridView.count(
+                                  shrinkWrap: true,
+                                  physics:
+                                      const NeverScrollableScrollPhysics(),
+                                  crossAxisCount: 2,
+                                  crossAxisSpacing: 12,
+                                  mainAxisSpacing: 12,
+                                  childAspectRatio: 1.1,
+                                  children: otherItems
+                                      .map((item) => _buildCategoryCard(item))
+                                      .toList(),
+                                ),
+                              // The user's own posts always sit at the bottom
+                              // of the feed, under their own header.
+                              if (myItems.isNotEmpty) ...[
+                                const SizedBox(height: 24),
+                                const Row(
+                                  children: [
+                                    Icon(Icons.storefront_outlined,
+                                        color: Color(0xFF6DBF99), size: 18),
+                                    SizedBox(width: 6),
+                                    Text('My Listings',
+                                        style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.black87)),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                GridView.count(
+                                  shrinkWrap: true,
+                                  physics:
+                                      const NeverScrollableScrollPhysics(),
+                                  crossAxisCount: 2,
+                                  crossAxisSpacing: 12,
+                                  mainAxisSpacing: 12,
+                                  childAspectRatio: 1.1,
+                                  children: myItems
+                                      .map((item) => _buildCategoryCard(item))
+                                      .toList(),
+                                ),
+                              ],
+                            ],
                           ),
 
                     const SizedBox(height: 80),

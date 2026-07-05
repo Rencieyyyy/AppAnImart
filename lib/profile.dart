@@ -12,6 +12,7 @@ import 'product_detail.dart';
 import 'user_listings.dart';
 import 'seller.dart';
 import 'seller_analytics.dart';
+import 'offers_page.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
 import 'support_chat.dart';
@@ -1445,6 +1446,17 @@ class _ProfilePageState extends State<ProfilePage> {
                         showSellerAnalytics(context, _planName);
                       }),
                     ],
+                    const SizedBox(height: 8),
+                    // Offers from potential buyers, grouped under each of the
+                    // seller's listing posts.
+                    _dashAction(Icons.pan_tool_outlined, 'Offers', 'Buyer offers on your listings', const Color(0xFFE86B5B),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const OffersPage()));
+                    }),
                     const SizedBox(height: 8),
                     _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300),
                         onTap: () {

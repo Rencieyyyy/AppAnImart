@@ -771,56 +771,90 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _showMakeOfferDialog() {
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to make an offer.');
+      return;
+    }
     final TextEditingController offerController = TextEditingController();
+    bool sending = false;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Make an Offer', style: TextStyle(fontWeight: FontWeight.bold)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Listed price: ${widget.price}',
-              style: const TextStyle(color: Colors.black54, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: offerController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                prefixText: '₱ ',
-                hintText: 'Enter your offer',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF6DBF99)),
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Make an Offer', style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Listed price: ${widget.price}',
+                style: const TextStyle(color: Colors.black54, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: offerController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  prefixText: '₱ ',
+                  hintText: 'Enter your offer',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF6DBF99)),
+                  ),
                 ),
               ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: sending ? null : () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6DBF99),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: sending
+                  ? null
+                  : () async {
+                      final amount =
+                          double.tryParse(offerController.text.trim());
+                      if (amount == null || amount <= 0) {
+                        _showSnackBar('Please enter a valid offer amount.');
+                        return;
+                      }
+                      setLocalState(() => sending = true);
+                      // Persist the offer so it shows up in the seller's
+                      // dashboard "Offers" section.
+                      final error = await MarketplaceService.submitOffer(
+                        listingId: widget.listingId?.trim() ?? '',
+                        sellerId: widget.sellerId?.trim() ?? '',
+                        amount: amount,
+                      );
+                      if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                      if (!mounted) return;
+                      if (error == null) {
+                        setState(() => _offerSent = true);
+                        _showSnackBar(
+                            'Offer of ${_formatPeso(amount)} sent to seller!');
+                      } else {
+                        _showSnackBar(error);
+                      }
+                    },
+              child: sending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.2, color: Colors.white),
+                    )
+                  : const Text('Send Offer', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6DBF99),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () {
-              Navigator.pop(context);
-              if (offerController.text.isNotEmpty) {
-                setState(() => _offerSent = true);
-                _showSnackBar('Offer of ₱${offerController.text} sent to seller!');
-              }
-            },
-            child: const Text('Send Offer', style: TextStyle(color: Colors.white)),
-          ),
-        ],
       ),
     );
   }
