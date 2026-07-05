@@ -1269,6 +1269,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               const SizedBox(height: 16),
 
               // ── Seller Info ──────────────────────────────────────
+              // Hidden on the owner's own listing — the "This is your
+              // listing." banner already says whose post it is, and a
+              // "Visit" button to your own profile makes no sense.
+              if (!_isOwner) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
@@ -1348,6 +1352,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               ),
 
               const SizedBox(height: 16),
+              ],
 
               // ── Details ──────────────────────────────────────────
               Padding(
