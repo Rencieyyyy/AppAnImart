@@ -6,7 +6,9 @@ import 'profile.dart';
 import 'main.dart';
 import 'services/location_service.dart';
 import 'services/marketplace_service.dart';
+import 'services/notification_service.dart';
 import 'widgets/city_picker.dart';
+import 'widgets/notification_dot.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -111,7 +113,13 @@ class _BuyerPageState extends State<BuyerPage> {
     _loadFavorites();
     _loadBlocked();
     _loadMyLocation();
+    NotificationService.hasUnseenAnnouncements().then((v) {
+      if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
+    });
   }
+
+  // Red dot on the announcements nav icon while unseen announcements exist.
+  bool _hasUnseenAnnouncements = false;
 
   /// Loads the buyer's saved location so listing distances can be computed.
   /// Users who never picked one default to their profile address.
@@ -1537,20 +1545,24 @@ class _BuyerPageState extends State<BuyerPage> {
         showSelectedLabels: true,
         showUnselectedLabels: true,
         type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined),
               activeIcon: Icon(Icons.home),
               label: 'Home'),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
               icon: Icon(Icons.shopping_cart_outlined),
               activeIcon: Icon(Icons.shopping_cart),
               label: 'Explore'),
           BottomNavigationBarItem(
-              icon: Icon(Icons.notifications_outlined),
-              activeIcon: Icon(Icons.notifications),
+              icon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications_outlined)),
+              activeIcon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications)),
               label: 'Announcements'),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
               icon: Icon(Icons.person_outline),
               activeIcon: Icon(Icons.person),
               label: 'Profile'),

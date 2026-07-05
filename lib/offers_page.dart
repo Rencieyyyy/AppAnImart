@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'main.dart';
 import 'services/marketplace_service.dart';
+import 'services/notification_service.dart';
 import 'widgets/top_message.dart';
 
 /// Seller-side "Offers" screen (opened from the profile page's Seller
@@ -27,6 +28,9 @@ class _OffersPageState extends State<OffersPage> {
   void initState() {
     super.initState();
     _load();
+    // Visiting this page clears the red dot on the Seller Dashboard's
+    // "Offers" action.
+    NotificationService.markOffersSeen();
   }
 
   Future<void> _load() async {

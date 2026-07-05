@@ -8,7 +8,9 @@ import 'product_detail.dart';
 import 'current_user.dart';
 import 'main.dart';
 import 'services/marketplace_service.dart';
+import 'services/notification_service.dart';
 import 'services/subscription_service.dart';
+import 'widgets/notification_dot.dart';
 import 'widgets/top_message.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
@@ -97,6 +99,9 @@ class _DashboardPageState extends State<DashboardPage> {
   List<LivestockItem> _allItems = [];
   bool _loadingItems = true;
 
+  // Red dot on the announcements nav icon while unseen announcements exist.
+  bool _hasUnseenAnnouncements = false;
+
   // ── Show plan popup on first load ─────────────────────────────────────────
 
   @override
@@ -105,6 +110,9 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadUserName();
     _loadItems();
     _loadFavorites();
+    NotificationService.hasUnseenAnnouncements().then((v) {
+      if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
+    });
     if (!_planDialogShown) {
       // Once per app session, after the first frame renders, decide what to
       // show the user: Super Premium members see a compact sales snapshot
@@ -1465,20 +1473,24 @@ class _DashboardPageState extends State<DashboardPage> {
           showUnselectedLabels: true,
           type: BottomNavigationBarType.fixed,
           elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
+          items: [
+            const BottomNavigationBarItem(
                 icon: Icon(Icons.home_outlined),
                 activeIcon: Icon(Icons.home),
                 label: 'Home'),
-            BottomNavigationBarItem(
+            const BottomNavigationBarItem(
                 icon: Icon(Icons.shopping_cart_outlined),
                 activeIcon: Icon(Icons.shopping_cart),
                 label: 'Explore'),
             BottomNavigationBarItem(
-                icon: Icon(Icons.notifications_outlined),
-                activeIcon: Icon(Icons.notifications),
+                icon: NotificationDot(
+                    show: _hasUnseenAnnouncements,
+                    child: const Icon(Icons.notifications_outlined)),
+                activeIcon: NotificationDot(
+                    show: _hasUnseenAnnouncements,
+                    child: const Icon(Icons.notifications)),
                 label: 'Announcements'),
-            BottomNavigationBarItem(
+            const BottomNavigationBarItem(
                 icon: Icon(Icons.person_outline),
                 activeIcon: Icon(Icons.person),
                 label: 'Profile'),

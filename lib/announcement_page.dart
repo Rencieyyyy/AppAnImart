@@ -4,6 +4,7 @@ import 'dashboard.dart';
 import 'buyer.dart';
 import 'profile.dart';
 import 'main.dart';
+import 'services/notification_service.dart';
 import 'widgets/top_message.dart';
 
 class AnnouncementPage extends StatefulWidget {
@@ -17,10 +18,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   int _selectedIndex = 2;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
-  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo'
+  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo', 'Offers'
   String _audienceFilter = 'all'; // 'all', 'buyers', 'sellers'
 
-  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo'];
+  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo', 'Offers'];
 
   // Audience filter options shown in the dropdown beside "Latest Posts".
   static const List<Map<String, dynamic>> _audienceFilters = [
@@ -47,6 +48,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     'Urgent': Icons.warning_amber_rounded,
     'Event': Icons.calendar_today_outlined,
     'Promo': Icons.local_offer_outlined,
+    'Offers': Icons.pan_tool_outlined,
   };
 
   // Icon per tag category (keyed lowercase).
@@ -55,6 +57,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     'urgent': Icons.warning_amber_rounded,
     'event': Icons.calendar_today_outlined,
     'promo': Icons.local_offer_outlined,
+    'offer': Icons.pan_tool_outlined,
   };
 
   // Colors per tag category: [background, border, foreground].
@@ -63,6 +66,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     'urgent': [Color(0xFFFDECEC), Color(0xFFF5C2C2), Color(0xFFE53E3E)],
     'event': [Color(0xFFE7F0FB), Color(0xFFC3DBF5), Color(0xFF2563EB)],
     'promo': [Color(0xFFFEF3E2), Color(0xFFFDE08D), Color(0xFFB45309)],
+    'offer': [Color(0xFFFDEEEB), Color(0xFFF7CCC3), Color(0xFFC94F3D)],
   };
 
   bool _loading = true;
@@ -82,6 +86,8 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   void initState() {
     super.initState();
     _loadAnnouncements();
+    // Visiting this page clears the red dot on the announcements nav icon.
+    NotificationService.markAnnouncementsSeen();
   }
 
   Future<void> _loadAnnouncements() async {
@@ -112,6 +118,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               'announcement_likes(count), '
               'announcement_comments(id, text, created_at, user_id, users(name))')
           .isFilter('deleted_at', null)
+          // Public posts plus ones addressed to this user (offer notices).
+          .or(me == null
+              ? 'recipient_id.is.null'
+              : 'recipient_id.is.null,recipient_id.eq.${me.id}')
           .order('created_at', ascending: false);
 
       // Which announcements the current user has already liked.
@@ -123,7 +133,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               .select('announcement_id')
               .eq('user_id', me.id);
           for (final l in likeRows) {
-            final aid = (l as Map<String, dynamic>)['announcement_id'];
+            final aid = l['announcement_id'];
             if (aid != null) likedIds.add(aid.toString());
           }
         } catch (e) {
@@ -133,7 +143,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
 
       final mapped = <Map<String, dynamic>>[];
       for (var i = 0; i < rows.length; i++) {
-        final r = rows[i] as Map<String, dynamic>;
+        final r = rows[i];
         // Drafts and pending announcements are not shown to mobile users.
         final statusLower = ((r['status'] as String?) ?? '').toLowerCase();
         if (statusLower == 'draft' || statusLower == 'pending') continue;
@@ -248,7 +258,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       // The announcement's category lives in its tags (announcement_tags.tag).
       final tags =
           (item['tags'] as List<String>).map((t) => t.toLowerCase()).toList();
-      final selected = _filterType.toLowerCase();
+      // The 'Offers' tab filters on the 'offer' tag carried by the personal
+      // offer-notification announcements.
+      final selected =
+          _filterType == 'Offers' ? 'offer' : _filterType.toLowerCase();
       final matchesFilter = _filterType == 'All'
           ? true
           : (tags.isEmpty ? selected == 'general' : tags.contains(selected));

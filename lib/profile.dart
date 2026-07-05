@@ -18,9 +18,11 @@ import 'cloudinary_function.dart';
 import 'support_chat.dart';
 import 'services/location_service.dart';
 import 'services/marketplace_service.dart';
+import 'services/notification_service.dart';
 import 'services/subscription_service.dart';
 import 'seller_reviews.dart';
 import 'widgets/city_picker.dart';
+import 'widgets/notification_dot.dart';
 
 class ProfilePage extends StatefulWidget {
   /// When true, the "Become a Seller" sheet opens automatically after the
@@ -48,7 +50,6 @@ class _ProfilePageState extends State<ProfilePage> {
   // "Details" section once `_isSeller` is true.
   String _shopCategory = '';
   String _shopDescription = '';
-  String _paymentNumber = '';
 
   /// Seller's Facebook Messenger link (m.me/...), required to become a
   /// seller — buyers contact sellers through it.
@@ -70,12 +71,36 @@ class _ProfilePageState extends State<ProfilePage> {
   List<Map<String, dynamic>> _myListings = [];
   bool _loadingListings = true;
 
+  // Red dot on the announcements nav icon while unseen announcements exist.
+  bool _hasUnseenAnnouncements = false;
+
+  // Red dot on the Seller Dashboard's "Offers" action while pending offers
+  // newer than the seller's last visit to the Offers page exist. A notifier
+  // so the already-built dashboard bottom sheet updates when the async check
+  // completes.
+  final ValueNotifier<bool> _hasNewOffers = ValueNotifier(false);
+
   @override
   void initState() {
     super.initState();
     _loadProfile();
     _loadMyListings();
     _loadReviewRating();
+    NotificationService.hasUnseenAnnouncements().then((v) {
+      if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
+    });
+    _refreshOffersBadge();
+  }
+
+  @override
+  void dispose() {
+    _hasNewOffers.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshOffersBadge() async {
+    final v = await NotificationService.hasNewOffers();
+    if (mounted) _hasNewOffers.value = v;
   }
 
   /// Loads the rating this user has received as a seller. When they have
@@ -182,9 +207,11 @@ class _ProfilePageState extends State<ProfilePage> {
         _address = (data['address'] as String?) ?? '';
         _houseNumber = (data['house_number'] as String?) ?? '';
         _businessName = (data['business_name'] as String?) ?? '';
-        _shopCategory = (data['shop_category'] as String?) ?? '';
+        // 'Aquatics' was renamed to 'Aquaculture'; normalise any row the DB
+        // migration hasn't touched yet so the picker still shows a match.
+        final rawCategory = (data['shop_category'] as String?) ?? '';
+        _shopCategory = rawCategory == 'Aquatics' ? 'Aquaculture' : rawCategory;
         _shopDescription = (data['shop_description'] as String?) ?? '';
-        _paymentNumber = (data['payment_number'] as String?) ?? '';
         _messengerLink = (data['messenger_link'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
@@ -344,7 +371,6 @@ class _ProfilePageState extends State<ProfilePage> {
           initialBusinessName: _businessName,
           initialShopCategory: _shopCategory,
           initialShopDescription: _shopDescription,
-          initialPaymentNumber: _paymentNumber,
           onSave: _saveProfile,
           onAvatarChanged: (url) {
             if (mounted) setState(() => _avatarUrl = url);
@@ -367,7 +393,6 @@ class _ProfilePageState extends State<ProfilePage> {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
-    required String paymentNumber,
     PhCity? location,
   }) async {
     final user = supabase.auth.currentUser;
@@ -389,7 +414,6 @@ class _ProfilePageState extends State<ProfilePage> {
             'business_name': businessName,
             'shop_category': shopCategory,
             'shop_description': shopDescription,
-            'payment_number': paymentNumber,
             // Coordinates power "Explore near you" distances.
             if (location != null) 'location_name': location.label,
             if (location != null) 'latitude': location.lat,
@@ -427,7 +451,6 @@ class _ProfilePageState extends State<ProfilePage> {
           _businessName = (row['business_name'] as String?) ?? businessName;
           _shopCategory = (row['shop_category'] as String?) ?? shopCategory;
           _shopDescription = (row['shop_description'] as String?) ?? shopDescription;
-          _paymentNumber = (row['payment_number'] as String?) ?? paymentNumber;
         });
       }
       return null;
@@ -448,7 +471,6 @@ class _ProfilePageState extends State<ProfilePage> {
     required String businessName,
     required String shopDescription,
     required String shopCategory,
-    required String paymentNumber,
     String? messengerLink,
   }) async {
     final user = supabase.auth.currentUser;
@@ -463,7 +485,6 @@ class _ProfilePageState extends State<ProfilePage> {
             'business_name': businessName,
             'shop_description': shopDescription,
             'shop_category': shopCategory,
-            'payment_number': paymentNumber,
             if (messengerLink != null) 'messenger_link': messengerLink,
           })
           .eq('id', user.id)
@@ -1112,7 +1133,14 @@ class _ProfilePageState extends State<ProfilePage> {
     final shopDescCtrl = TextEditingController();
     final messengerCtrl = TextEditingController();
     String? selectedCategory;
-    const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
+    const categories = [
+      'Poultry',
+      'Livestock',
+      'Aquaculture',
+      'Ornamental Fish',
+      'Hatching & Breeding Products',
+      'Mixed / All',
+    ];
 
     showModalBottomSheet(
       context: context,
@@ -1302,7 +1330,6 @@ class _ProfilePageState extends State<ProfilePage> {
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
-                          paymentNumber: _paymentNumber,
                           messengerLink: messengerLink,
                         );
                         if (!mounted) return;
@@ -1338,6 +1365,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // ── Seller Dashboard (after becoming seller) ───────────────────────────────
   void _showSellerDashboard() {
+    // Re-check for new offers so the "Offers" action's red dot is current.
+    _refreshOffersBadge();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1415,15 +1444,24 @@ class _ProfilePageState extends State<ProfilePage> {
                     ],
                     const SizedBox(height: 8),
                     // Offers from potential buyers, grouped under each of the
-                    // seller's listing posts.
-                    _dashAction(Icons.pan_tool_outlined, 'Offers', 'Buyer offers on your listings', const Color(0xFFE86B5B),
-                        onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const OffersPage()));
-                    }),
+                    // seller's listing posts. The red dot flags offers that
+                    // arrived since the seller last opened the page.
+                    ValueListenableBuilder<bool>(
+                      valueListenable: _hasNewOffers,
+                      builder: (_, hasNewOffers, __) => _dashAction(
+                          Icons.pan_tool_outlined, 'Offers', 'Buyer offers on your listings', const Color(0xFFE86B5B),
+                          showDot: hasNewOffers,
+                          onTap: () {
+                        Navigator.pop(ctx);
+                        // Opening the page stamps the watermark, so clear the
+                        // dot right away.
+                        _hasNewOffers.value = false;
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const OffersPage()));
+                      }),
+                    ),
                     const SizedBox(height: 8),
                     _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300),
                         onTap: () {
@@ -1460,10 +1498,16 @@ class _ProfilePageState extends State<ProfilePage> {
   void _showShopSettings() {
     final shopNameCtrl = TextEditingController(text: _businessName);
     final shopDescCtrl = TextEditingController(text: _shopDescription);
-    final bankCtrl = TextEditingController(text: _paymentNumber);
     final messengerCtrl = TextEditingController(text: _messengerLink);
     String? selectedCategory = _shopCategory.isNotEmpty ? _shopCategory : null;
-    const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
+    const categories = [
+      'Poultry',
+      'Livestock',
+      'Aquaculture',
+      'Ornamental Fish',
+      'Hatching & Breeding Products',
+      'Mixed / All',
+    ];
 
     showModalBottomSheet(
       context: context,
@@ -1583,8 +1627,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  _editField(bankCtrl, 'GCash / Bank Number for Payments', Icons.account_balance_outlined),
-                  const SizedBox(height: 10),
                   _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
                       Icons.link_outlined),
                   const SizedBox(height: 20),
@@ -1609,21 +1651,18 @@ class _ProfilePageState extends State<ProfilePage> {
                         final businessName = shopNameCtrl.text.trim();
                         final shopDescription = shopDescCtrl.text.trim();
                         final shopCategory = selectedCategory ?? '';
-                        final paymentNumber = bankCtrl.text.trim();
 
                         Navigator.pop(ctx);
                         setState(() {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
-                          _paymentNumber = paymentNumber;
                           _messengerLink = messengerLink;
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
-                          paymentNumber: paymentNumber,
                           messengerLink: messengerLink,
                         );
                         if (!mounted) return;
@@ -1677,7 +1716,7 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Widget _dashAction(IconData icon, String title, String subtitle, Color color,
-      {required VoidCallback onTap}) {
+      {required VoidCallback onTap, bool showDot = false}) {
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(12),
@@ -1693,10 +1732,13 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
           child: Row(
             children: [
-              Container(
-                width: 38, height: 38,
-                decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-                child: Icon(icon, color: color, size: 20),
+              NotificationDot(
+                show: showDot,
+                child: Container(
+                  width: 38, height: 38,
+                  decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                  child: Icon(icon, color: color, size: 20),
+                ),
               ),
               const SizedBox(width: 12),
               Column(
@@ -2062,12 +2104,8 @@ class _ProfilePageState extends State<ProfilePage> {
                         _infoRow(Icons.category_outlined, _shopCategory),
                         const SizedBox(height: 8),
                       ],
-                      if (_shopDescription.isNotEmpty) ...[
+                      if (_shopDescription.isNotEmpty)
                         _infoRow(Icons.description_outlined, _shopDescription),
-                        const SizedBox(height: 8),
-                      ],
-                      if (_paymentNumber.isNotEmpty)
-                        _infoRow(Icons.account_balance_outlined, _paymentNumber),
                     ],
                   ],
                 ),
@@ -2198,14 +2236,20 @@ class _ProfilePageState extends State<ProfilePage> {
         showSelectedLabels: true,
         showUnselectedLabels: true,
         type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
               icon: Icon(Icons.shopping_cart_outlined), activeIcon: Icon(Icons.shopping_cart), label: 'Explore'),
           BottomNavigationBarItem(
-              icon: Icon(Icons.notifications_outlined), activeIcon: Icon(Icons.notifications), label: 'Announcements'),
-          BottomNavigationBarItem(
+              icon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications_outlined)),
+              activeIcon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications)),
+              label: 'Announcements'),
+          const BottomNavigationBarItem(
               icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profile'),
         ],
       ),
@@ -3222,7 +3266,6 @@ class _EditProfilePage extends StatefulWidget {
   final String initialBusinessName;
   final String initialShopCategory;
   final String initialShopDescription;
-  final String initialPaymentNumber;
   final Future<String?> Function({
     required String name,
     required String phone,
@@ -3231,7 +3274,6 @@ class _EditProfilePage extends StatefulWidget {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
-    required String paymentNumber,
     PhCity? location,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
@@ -3248,7 +3290,6 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialBusinessName,
     required this.initialShopCategory,
     required this.initialShopDescription,
-    required this.initialPaymentNumber,
     required this.onSave,
     required this.onAvatarChanged,
   });
@@ -3267,7 +3308,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _houseCtrl;
   late final TextEditingController _businessCtrl;
   late final TextEditingController _shopDescCtrl;
-  late final TextEditingController _paymentCtrl;
   late String _shopCategory;
   late String _avatarUrl;
   // Address is picked from the PH city/municipality gazetteer, not typed.
@@ -3277,7 +3317,12 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   bool _uploadingAvatar = false;
 
   static const List<String> _categories = [
-    'Poultry', 'Livestock', 'Aquatics', 'Mixed / All'
+    'Poultry',
+    'Livestock',
+    'Aquaculture',
+    'Ornamental Fish',
+    'Hatching & Breeding Products',
+    'Mixed / All',
   ];
 
   @override
@@ -3289,7 +3334,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl = TextEditingController(text: widget.initialHouse);
     _businessCtrl = TextEditingController(text: widget.initialBusinessName);
     _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
-    _paymentCtrl = TextEditingController(text: widget.initialPaymentNumber);
     _shopCategory = widget.initialShopCategory;
     _avatarUrl = widget.initialAvatarUrl;
   }
@@ -3301,7 +3345,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl.dispose();
     _businessCtrl.dispose();
     _shopDescCtrl.dispose();
-    _paymentCtrl.dispose();
     super.dispose();
   }
 
@@ -3317,7 +3360,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       businessName: _businessCtrl.text.trim(),
       shopCategory: _shopCategory,
       shopDescription: _shopDescCtrl.text.trim(),
-      paymentNumber: _paymentCtrl.text.trim(),
     );
     if (!mounted) return;
     if (error == null) {
@@ -3595,8 +3637,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             _row('Shop Name', _businessCtrl, 'Shop / Farm name'),
             _categoryRow(),
             _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
-            _row('Payment', _paymentCtrl, 'GCash / Bank number',
-                type: TextInputType.text),
           ],
           const SizedBox(height: 24),
         ],
