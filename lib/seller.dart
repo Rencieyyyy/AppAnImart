@@ -42,7 +42,7 @@ class _SellerPageState extends State<SellerPage> {
   String? _selectedCategory;
   String? _selectedSubcategory;
   String? _selectedCondition;
-  String _weightUnit = 'kg'; // 'kg' or 'lbs'
+  String _weightUnit = 'kg'; // 'g', 'kg' or 'lbs'
 
   /// Location for the listing being created. Defaults to the user's profile
   /// location; the Edit button lets them pick a different one per post.
@@ -929,6 +929,7 @@ class _SellerPageState extends State<SellerPage> {
                 icon: const Icon(Icons.keyboard_arrow_down, color: Colors.black38, size: 18),
                 style: const TextStyle(color: Colors.black87, fontSize: 14),
                 items: const [
+                  DropdownMenuItem(value: 'g', child: Text('g')),
                   DropdownMenuItem(value: 'kg', child: Text('kg')),
                   DropdownMenuItem(value: 'lbs', child: Text('lbs')),
                 ],
