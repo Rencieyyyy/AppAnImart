@@ -7,8 +7,9 @@ plugins {
 
 android {
     namespace = "com.example.ani_mart"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"     
+    // image_cropper requires compiling against SDK 36 (backward compatible).
+    compileSdk = 36
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -22,9 +23,9 @@ android {
     defaultConfig {
         applicationId = "com.example.ani_mart"
         
-        // Bumped to 23: passkeys_android requires minSdk >= 23
-        // (ua_client_hints needs >= 22), so 23 satisfies all plugins.
-        minSdk = 23
+        // Android 10 (API 29) and above only. Also satisfies every plugin's
+        // floor (passkeys_android needs >= 23, ua_client_hints >= 22).
+        minSdk = 29
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

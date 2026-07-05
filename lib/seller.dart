@@ -6,7 +6,9 @@ import 'package:ani_mart/product_detail.dart';
 import 'cloudinary_function.dart';
 import 'current_user.dart';
 import 'main.dart';
+import 'profile.dart';
 import 'services/location_service.dart';
+import 'widgets/city_picker.dart';
 import 'widgets/top_message.dart';
 
 /// A photo chosen by the user, kept as in-memory bytes so it works on every
@@ -38,8 +40,13 @@ class _SellerPageState extends State<SellerPage> {
   final _weightController = TextEditingController();
   final _stockController = TextEditingController();
   String? _selectedCategory;
+  String? _selectedSubcategory;
   String? _selectedCondition;
   String _weightUnit = 'kg'; // 'kg' or 'lbs'
+
+  /// Location for the listing being created. Defaults to the user's profile
+  /// location; the Edit button lets them pick a different one per post.
+  String? _listingLocation;
 
   final List<_PickedImage> _pickedImages = [];
   final ImagePicker _imagePicker = ImagePicker();
@@ -49,7 +56,45 @@ class _SellerPageState extends State<SellerPage> {
   String _userName = '';
   String _avatarUrl = '';
 
-  final List<String> _categories  = ['Poultry', 'Small Livestock', 'Large Livestock', 'Aquatics'];
+  final List<String> _categories = [
+    'Poultry',
+    'Small Livestock',
+    'Large Livestock',
+    'Aquaculture',
+    'Ornamental Fish',
+    'Hatching & Breeding Products',
+  ];
+
+  /// Type options shown in the second dropdown once a category is picked.
+  static const Map<String, List<String>> _subcategories = {
+    'Poultry': [
+      'Chicken', 'Gamefowl', 'Duck', 'Turkey', 'Peacock', 'Pigeon', 'Quail',
+      'Guinea Fowl', 'Ostrich', 'Dove', 'Goose',
+    ],
+    'Large Livestock': [
+      'Pig', 'Goat', 'Cattle', 'Water Buffalo', 'Sheep', 'Horse',
+    ],
+    'Small Livestock': [
+      'Rabbit', 'Guinea Pig', 'Hamster', 'Hedgehog',
+    ],
+    'Aquaculture': [
+      'Tilapia', 'Milkfish (Bangus)', 'Catfish (Hito)', 'Carp', 'Gourami',
+      'Eel', 'Mudfish', 'Mud Crab (Alimango)', 'Oyster', 'Mussel', 'Clam',
+      'Sea Cucumber', 'Seaweed Seedlings', 'Lobster', 'Prawn', 'Shrimp',
+    ],
+    'Ornamental Fish': [
+      'Koi', 'Goldfish', 'Betta', 'Guppy', 'Molly', 'Platy', 'Swordtail',
+      'Flowerhorn', 'Arowana', 'Discus', 'Angelfish', 'Oscar', 'Cichlids',
+      'Tetra', 'Stingray', 'Pleco', 'Dragon Fish', 'Aquarium Shrimp',
+      'Aquarium snails',
+    ],
+    'Hatching & Breeding Products': [
+      'Fertile chicken eggs', 'Fertile duck eggs', 'Fertile turkey eggs',
+      'Fertile quail eggs', 'Fertile goose eggs', 'Chicks', 'Ducklings',
+      'Turkey poults', 'Quail chicks',
+    ],
+  };
+
   final List<String> _conditions  = ['Good', 'Excellent', 'Fair'];
 
   // Listings owned by the signed-in user, loaded from the `listings` table.
@@ -61,8 +106,59 @@ class _SellerPageState extends State<SellerPage> {
   @override
   void initState() {
     super.initState();
+    _checkSellerStatus();
     _loadUserName();
     _loadMyListings();
+    _loadDefaultLocation();
+  }
+
+  /// The listing's location defaults to the user's profile location; the
+  /// form's Edit button can override it for this post only.
+  Future<void> _loadDefaultLocation() async {
+    final loc = await LocationService.fetchUserLocation() ??
+        await LocationService.adoptLocationFromAddress();
+    if (mounted && _listingLocation == null && loc != null) {
+      setState(() => _listingLocation = loc.name);
+    }
+  }
+
+  /// Lets the seller pick a different city/municipality for this listing.
+  /// Does not change their profile location.
+  Future<void> _pickListingLocation() async {
+    final city = await showCityPicker(
+      context,
+      selectedLabel: _listingLocation,
+      subtitle: 'Pick the location for this listing.',
+    );
+    if (city == null || !mounted) return;
+    setState(() => _listingLocation = city.label);
+  }
+
+  /// Listing anything requires a completed "Become a Seller" registration.
+  /// Non-sellers are sent to the profile page with that form opened.
+  Future<void> _checkSellerStatus() async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      final row = await supabase
+          .from('users')
+          .select('is_seller')
+          .eq('id', userId)
+          .maybeSingle();
+      final isSeller = (row?['is_seller'] as bool?) ?? false;
+      if (isSeller || !mounted) return;
+      showTopMessage(
+        context,
+        'Please fill out "Become a Seller" first to post listings.',
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+            builder: (_) => const ProfilePage(openBecomeSeller: true)),
+      );
+    } catch (e) {
+      debugPrint('Failed to check seller status: $e');
+    }
   }
 
   Future<void> _loadUserName() async {
@@ -256,6 +352,7 @@ class _SellerPageState extends State<SellerPage> {
     if (title.isEmpty ||
         price.isEmpty ||
         _selectedCategory == null ||
+        _selectedSubcategory == null ||
         _selectedCondition == null ||
         breed.isEmpty ||
         age.isEmpty ||
@@ -300,8 +397,8 @@ class _SellerPageState extends State<SellerPage> {
         });
       }
 
-      // Tag the listing with the seller's saved location (set from the
-      // Explore page's location picker); fall back to the default.
+      // The form's location (defaults to the profile location); fall back to
+      // the saved profile location, then the default constant.
       final savedLocation = await LocationService.fetchUserLocation();
 
       // Persist the listing itself.
@@ -309,13 +406,14 @@ class _SellerPageState extends State<SellerPage> {
         'title': title,
         'price': priceValue,
         'category': _selectedCategory,
+        'subcategory': _selectedSubcategory,
         'condition': _selectedCondition,
         'description': description,
         'breed': breed,
         'age': age,
         'weight': weight,
         'stock': stockValue,
-        'location': savedLocation?.name ?? _location,
+        'location': _listingLocation ?? savedLocation?.name ?? _location,
         'status': 'active',
         'seller_id': userId,
         'image_url': imageUrls.isNotEmpty ? imageUrls.first : null,
@@ -342,6 +440,7 @@ class _SellerPageState extends State<SellerPage> {
       _stockController.clear();
       _weightUnit = 'kg';
       _selectedCategory  = null;
+      _selectedSubcategory = null;
       _selectedCondition = null;
       _pickedImages.clear();
       _uploading = false;
@@ -787,8 +886,23 @@ class _SellerPageState extends State<SellerPage> {
             hint: 'Category',
             value: _selectedCategory,
             items: _categories,
-            onChanged: (val) => setState(() => _selectedCategory = val),
+            onChanged: (val) => setState(() {
+              _selectedCategory = val;
+              // The type list depends on the category, so reset it.
+              _selectedSubcategory = null;
+            }),
           ),
+          // Type within the chosen category (e.g. Poultry → Chicken).
+          if (_selectedCategory != null &&
+              _subcategories.containsKey(_selectedCategory)) ...[
+            const SizedBox(height: 12),
+            _buildDropdown(
+              hint: 'Type of ${_selectedCategory!}',
+              value: _selectedSubcategory,
+              items: _subcategories[_selectedCategory]!,
+              onChanged: (val) => setState(() => _selectedSubcategory = val),
+            ),
+          ],
           const SizedBox(height: 12),
           _buildDropdown(
             hint: 'Condition',
@@ -859,7 +973,7 @@ class _SellerPageState extends State<SellerPage> {
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF6DBF99)),
                 ),
                 GestureDetector(
-                  onTap: () {},
+                  onTap: _pickListingLocation,
                   child: const Text('Edit',
                     style: TextStyle(fontSize: 13, color: Color(0xFF6DBF99)),
                   ),
@@ -868,10 +982,12 @@ class _SellerPageState extends State<SellerPage> {
             ),
           ),
           const SizedBox(height: 6),
-          const Align(
+          Align(
             alignment: Alignment.centerLeft,
-            child: Text('Tanauan, Batangas Philippines -4232',
-              style: TextStyle(fontSize: 13, color: Colors.black54),
+            child: Text(
+              // Defaults to the profile location until edited for this post.
+              _listingLocation ?? _location,
+              style: const TextStyle(fontSize: 13, color: Colors.black54),
             ),
           ),
           const SizedBox(height: 30),

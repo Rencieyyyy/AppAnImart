@@ -23,7 +23,11 @@ import 'seller_reviews.dart';
 import 'widgets/city_picker.dart';
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
+  /// When true, the "Become a Seller" sheet opens automatically after the
+  /// profile loads (used when a non-seller tries to create a listing).
+  const ProfilePage({super.key, this.openBecomeSeller = false});
+
+  final bool openBecomeSeller;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -185,6 +189,14 @@ class _ProfilePageState extends State<ProfilePage> {
             (data['member_since'] as String?) ?? user.createdAt);
         _loadingProfile = false;
       });
+
+      // A non-seller was sent here to register before they can post a
+      // listing — open the Become a Seller form for them right away.
+      if (widget.openBecomeSeller && !_isSeller && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showBecomeSeller();
+        });
+      }
 
       // Resolve the active subscription plan (Free / Premium / Super Premium)
       // and its billing cycle from the admin-managed `subscriptions` table.
@@ -490,84 +502,6 @@ class _ProfilePageState extends State<ProfilePage> {
           borderSide: const BorderSide(color: Color(0xFFDCEFE6)),
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      ),
-    );
-  }
-
-  // ── Send Message ──────────────────────────────────────────────────────────
-  void _showSendMessage() {
-    final msgCtrl = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
-              ),
-              const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Send a Message',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-              ),
-              const SizedBox(height: 6),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Send a message to admin or support.',
-                    style: TextStyle(fontSize: 13, color: Colors.black38)),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: msgCtrl,
-                maxLines: 4,
-                style: const TextStyle(fontSize: 14),
-                decoration: InputDecoration(
-                  hintText: 'Type your message here...',
-                  hintStyle: const TextStyle(color: Colors.black38, fontSize: 13),
-                  filled: true,
-                  fillColor: const Color(0xFFF4FAF7),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.all(16),
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    if (msgCtrl.text.trim().isEmpty) return;
-                    Navigator.pop(ctx);
-                    _showMessage('Message sent!', const Color(0xFF2196F3));
-                  },
-                  icon: const Icon(Icons.send_rounded, size: 16),
-                  label: const Text('Send Message', style: TextStyle(fontWeight: FontWeight.w700)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2196F3),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 0,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -1152,7 +1086,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final shopNameCtrl = TextEditingController();
     final shopDescCtrl = TextEditingController();
-    final bankCtrl = TextEditingController();
     String? selectedCategory;
     const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
 
@@ -1223,8 +1156,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         _BenefitRow(icon: Icons.storefront_outlined, text: 'List your animals & products'),
                         SizedBox(height: 4),
                         _BenefitRow(icon: Icons.people_outline, text: 'Reach thousands of buyers'),
-                        SizedBox(height: 4),
-                        _BenefitRow(icon: Icons.payments_outlined, text: 'Secure & easy payments'),
                         SizedBox(height: 4),
                         _BenefitRow(icon: Icons.analytics_outlined, text: 'Track your sales & listings'),
                       ],
@@ -1304,8 +1235,6 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  _editField(bankCtrl, 'GCash / Bank Number for Payments', Icons.account_balance_outlined),
                   const SizedBox(height: 20),
 
                   SizedBox(
@@ -1320,7 +1249,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         final businessName = shopNameCtrl.text.trim();
                         final shopDescription = shopDescCtrl.text.trim();
                         final shopCategory = selectedCategory ?? '';
-                        final paymentNumber = bankCtrl.text.trim();
 
                         Navigator.pop(ctx);
                         // Optimistically reflect the new seller state, then
@@ -1330,13 +1258,12 @@ class _ProfilePageState extends State<ProfilePage> {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
-                          _paymentNumber = paymentNumber;
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
-                          paymentNumber: paymentNumber,
+                          paymentNumber: _paymentNumber,
                         );
                         if (!mounted) return;
                         if (error != null) {
@@ -1847,16 +1774,16 @@ class _ProfilePageState extends State<ProfilePage> {
                                 ],
                               ),
                             ),
-                            if (_isPremiumTier) ...[
+                            if (_isSeller && _isPremiumTier) ...[
                               const SizedBox(height: 5),
                               Wrap(
                                 spacing: 6,
                                 runSpacing: 4,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  // "Verified Seller" is reserved for paid tiers
-                                  // (Premium / Super Premium).
-                                  if (_isPremiumTier)
+                                  // "Verified Seller" is only for sellers on a
+                                  // paid tier (Premium / Super Premium).
+                                  if (_isSeller && _isPremiumTier)
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                       decoration: BoxDecoration(
@@ -1870,31 +1797,6 @@ class _ProfilePageState extends State<ProfilePage> {
                               ),
                             ],
                           ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // Sized to match the avatar's height (70), a touch wider.
-                      GestureDetector(
-                        onTap: _showSendMessage,
-                        child: Container(
-                          width: 92,
-                          height: 70,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2196F3),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.messenger_outline, color: Colors.white, size: 18),
-                              SizedBox(height: 4),
-                              Text('Send me a\nMessage',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                      color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
-                            ],
-                          ),
                         ),
                       ),
                     ],

@@ -263,8 +263,13 @@ class _OffersPageState extends State<OffersPage> {
             height: 36,
             decoration: const BoxDecoration(
                 color: Color(0xFFD6F0E4), shape: BoxShape.circle),
-            child:
-                const Icon(Icons.person, color: Color(0xFF6DBF99), size: 20),
+            clipBehavior: Clip.antiAlias,
+            child: offer.buyerAvatar.isNotEmpty
+                ? Image.network(offer.buyerAvatar,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, e, s) => const Icon(Icons.person,
+                        color: Color(0xFF6DBF99), size: 20))
+                : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 20),
           ),
           const SizedBox(width: 10),
           Expanded(

@@ -77,7 +77,9 @@ class _DashboardPageState extends State<DashboardPage> {
     'Poultry',
     'Small Livestock',
     'Large Livestock',
-    'Aquatics',
+    'Aquaculture',
+    'Ornamental Fish',
+    'Hatching & Breeding Products',
   ];
 
   // Search & filter

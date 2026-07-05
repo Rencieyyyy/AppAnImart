@@ -63,7 +63,9 @@ const List<String> _categories = [
   'Poultry',
   'Small Livestock',
   'Large Livestock',
-  'Aquatics',
+  'Aquaculture',
+  'Ornamental Fish',
+  'Hatching & Breeding Products',
 ];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -732,15 +734,21 @@ class _BuyerPageState extends State<BuyerPage> {
   void _showCategoriesSheet() {
     showModalBottomSheet(
       context: context,
+      // The category list is taller than the default sheet, so cap it and
+      // let it scroll instead of overflowing.
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      builder: (ctx) => ConstrainedBox(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.8),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             Center(
               child: Container(
                 width: 36,
@@ -789,9 +797,14 @@ class _BuyerPageState extends State<BuyerPage> {
                             ? Icons.grid_view
                             : cat == 'Poultry'
                                 ? Icons.egg_alt
-                                : cat == 'Aquatics'
+                                : cat == 'Aquaculture'
                                     ? Icons.water
-                                    : Icons.pets,
+                                    : cat == 'Ornamental Fish'
+                                        ? Icons.water_drop_outlined
+                                        : cat ==
+                                                'Hatching & Breeding Products'
+                                            ? Icons.egg_outlined
+                                            : Icons.pets,
                         color: isSelected
                             ? const Color(0xFF6DBF99)
                             : Colors.black45,
@@ -831,7 +844,8 @@ class _BuyerPageState extends State<BuyerPage> {
                 ),
               );
             }),
-          ],
+            ],
+          ),
         ),
       ),
     );

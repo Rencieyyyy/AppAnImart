@@ -1,3 +1,6 @@
+import 'package:supabase_flutter/supabase_flutter.dart'
+    show PostgrestFilterBuilder;
+
 import '../main.dart';
 
 /// Aggregate rating for a seller (average stars + number of reviews).
@@ -41,6 +44,9 @@ class Offer {
   final String listingId;
   final String buyerId;
   final String buyerName;
+
+  /// Buyer's profile picture URL ('' when they have none).
+  final String buyerAvatar;
   final double amount;
   final String status; // 'pending' | 'accepted' | 'declined'
   final DateTime createdAt;
@@ -50,6 +56,7 @@ class Offer {
     required this.listingId,
     required this.buyerId,
     required this.buyerName,
+    this.buyerAvatar = '',
     required this.amount,
     required this.status,
     required this.createdAt,
@@ -319,21 +326,35 @@ class MarketplaceService {
     }
   }
 
-  /// All offers received by the current user (as a seller), newest first,
-  /// with buyer names joined in via a second `users` query (the offers FKs
-  /// reference auth.users, so a PostgREST embed is not possible — same
-  /// approach as [fetchReviews]).
+  /// All offers received by the current user (as a seller), newest first.
   static Future<List<Offer>> fetchReceivedOffers() async {
     final uid = _uid;
     if (uid == null) return const [];
+    return _fetchOffers((q) => q.eq('seller_id', uid));
+  }
+
+  /// All offers on one listing. RLS already limits the rows to ones the
+  /// caller is involved in, so on the owner's own listing this is every
+  /// offer made on that post.
+  static Future<List<Offer>> fetchListingOffers(String listingId) async {
+    if (_uid == null || listingId.isEmpty) return const [];
+    return _fetchOffers((q) => q.eq('listing_id', listingId));
+  }
+
+  /// Shared offers query with buyer names/avatars joined in via a second
+  /// `users` query (the offers FKs reference auth.users, so a PostgREST
+  /// embed is not possible — same approach as [fetchReviews]).
+  static Future<List<Offer>> _fetchOffers(
+    PostgrestFilterBuilder<List<Map<String, dynamic>>> Function(
+            PostgrestFilterBuilder<List<Map<String, dynamic>>>)
+        filter,
+  ) async {
     try {
-      final rows = await supabase
-          .from('offers')
-          .select('id, listing_id, buyer_id, amount, status, created_at')
-          .eq('seller_id', uid)
+      final rows = await filter(supabase
+              .from('offers')
+              .select('id, listing_id, buyer_id, amount, status, created_at'))
           .order('created_at', ascending: false);
-      final list =
-          (rows as List).map((r) => r as Map<String, dynamic>).toList();
+      final list = rows.map((r) => Map<String, dynamic>.from(r)).toList();
 
       final buyerIds = list
           .map((r) => '${r['buyer_id'] ?? ''}')
@@ -341,15 +362,18 @@ class MarketplaceService {
           .toSet()
           .toList();
       final namesById = <String, String>{};
+      final avatarsById = <String, String>{};
       if (buyerIds.isNotEmpty) {
         try {
           final userRows = await supabase
               .from('users')
-              .select('id, name')
+              .select('id, name, avatar_url')
               .inFilter('id', buyerIds);
           for (final u in (userRows as List)) {
             final m = u as Map<String, dynamic>;
             namesById['${m['id']}'] = ((m['name'] as String?) ?? '').trim();
+            avatarsById['${m['id']}'] =
+                ((m['avatar_url'] as String?) ?? '').trim();
           }
         } catch (_) {
           // Names fall back to the placeholder below.
@@ -363,6 +387,7 @@ class MarketplaceService {
           listingId: '${row['listing_id']}',
           buyerId: '${row['buyer_id']}',
           buyerName: name.isNotEmpty ? name : 'AniMart User',
+          buyerAvatar: avatarsById['${row['buyer_id']}'] ?? '',
           amount: (row['amount'] as num?)?.toDouble() ?? 0,
           status: (row['status'] as String?) ?? 'pending',
           createdAt: DateTime.tryParse('${row['created_at']}')?.toLocal() ??

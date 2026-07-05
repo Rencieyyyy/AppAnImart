@@ -71,6 +71,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   bool _isFavorited = false;
   bool _isBlocked = false;
   SellerRating _sellerRating = SellerRating.empty;
+
+  /// Offers buyers have made on this listing — only loaded for the owner.
+  List<Offer> _listingOffers = const [];
   bool _isDescriptionExpanded = false;
   final TextEditingController _messageController = TextEditingController();
   String _messageText = 'Good afternoon,\nis this still available?';
@@ -219,6 +222,27 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       _isBlocked = results[2] as bool;
     });
     _loadStock(listingId);
+    _loadListingOffers(listingId);
+  }
+
+  /// Owner-only: loads the offers buyers have made on this post.
+  Future<void> _loadListingOffers(String listingId) async {
+    if (!_isOwner || listingId.isEmpty) return;
+    final offers = await MarketplaceService.fetchListingOffers(listingId);
+    if (mounted) setState(() => _listingOffers = offers);
+  }
+
+  /// Owner accepts or declines one of this post's offers.
+  Future<void> _respondToOffer(Offer offer, {required bool accept}) async {
+    final error =
+        await MarketplaceService.respondToOffer(offer.id, accept: accept);
+    if (!mounted) return;
+    if (error != null) {
+      _showSnackBar(error);
+      return;
+    }
+    _showSnackBar(accept ? 'Offer accepted.' : 'Offer declined.');
+    _loadListingOffers(widget.listingId?.trim() ?? '');
   }
 
   /// Fetches the stock quantity from the listing row; callers don't pass it.
@@ -1109,6 +1133,15 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   ),
                 ),
 
+              // ── Offers on this post (owner only) ─────────────────
+              if (_isOwner && _listingOffers.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _buildOffersSection(),
+                ),
+              ],
+
               // ── Message Seller Box ───────────────────────────────
               if (!_isOwner)
               Padding(
@@ -1411,6 +1444,139 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     );
   }
 
+  /// Owner-only card listing every buyer offer on this post, with the
+  /// buyer's profile picture, name and Accept/Decline actions.
+  Widget _buildOffersSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F7F7),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.pan_tool_outlined,
+                  color: Color(0xFF1D9E75), size: 18),
+              const SizedBox(width: 8),
+              Text(
+                'Offers (${_listingOffers.length})',
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black87),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ..._listingOffers.map(_buildOfferRow),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOfferRow(Offer offer) {
+    final isPending = offer.status == 'pending';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          // Buyer's profile picture (falls back to a person icon).
+          Container(
+            width: 36,
+            height: 36,
+            decoration: const BoxDecoration(
+                color: Color(0xFFD6F0E4), shape: BoxShape.circle),
+            clipBehavior: Clip.antiAlias,
+            child: offer.buyerAvatar.isNotEmpty
+                ? Image.network(offer.buyerAvatar,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, e, s) => const Icon(Icons.person,
+                        color: Color(0xFF6DBF99), size: 20))
+                : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(offer.buyerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87)),
+                Text('Offered ${_formatPeso(offer.amount)}',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1D9E75))),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (isPending) ...[
+            GestureDetector(
+              onTap: () => _respondToOffer(offer, accept: true),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6DBF99),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('Accept',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => _respondToOffer(offer, accept: false),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.red.shade300),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('Decline',
+                    style: TextStyle(
+                        color: Colors.red.shade400,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ] else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: offer.status == 'accepted'
+                    ? const Color(0xFFE8F7F1)
+                    : const Color(0xFFFDECEC),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                offer.status == 'accepted' ? 'Accepted' : 'Declined',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: offer.status == 'accepted'
+                        ? const Color(0xFF1D9E75)
+                        : Colors.red.shade400),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _imageFallback() => Container(
         color: const Color(0xFFD6F0E4),
         child: const Icon(Icons.image_not_supported_outlined,
@@ -1666,11 +1832,34 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   List<Map<String, dynamic>> _sellerListings = [];
   bool _loadingListings = true;
 
+  /// "Verified Seller" is only for sellers on a paid tier
+  /// (Premium / Super Premium), resolved via the seller_tiers RPC.
+  bool _isVerifiedSeller = false;
+
   @override
   void initState() {
     super.initState();
     _loadSellerDetails();
     _loadSellerListings();
+    _loadSellerTier();
+  }
+
+  Future<void> _loadSellerTier() async {
+    if (sellerId.isEmpty) return;
+    try {
+      final tiers = await supabase.rpc('seller_tiers', params: {
+        'seller_ids': [sellerId]
+      });
+      final tier = (tiers is List && tiers.isNotEmpty)
+          ? '${(tiers.first as Map)['tier']}'
+          : 'Free';
+      if (mounted) {
+        setState(() =>
+            _isVerifiedSeller = tier == 'Premium' || tier == 'Super Premium');
+      }
+    } catch (e) {
+      debugPrint('Failed to load seller tier: $e');
+    }
   }
 
   Future<void> _loadSellerDetails() async {
@@ -1802,8 +1991,10 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
               children: [
                 Text(sellerName,
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87)),
-                const SizedBox(width: 4),
-                const Icon(Icons.verified, color: Colors.blue, size: 20),
+                if (_isVerifiedSeller) ...[
+                  const SizedBox(width: 4),
+                  const Icon(Icons.verified, color: Colors.blue, size: 20),
+                ],
               ],
             ),
             const SizedBox(height: 6),
@@ -1875,22 +2066,24 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
               ),
             ),
-            const SizedBox(height: 24),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF7F7F7),
-                borderRadius: BorderRadius.circular(12),
+            if (_isVerifiedSeller) ...[
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7F7F7),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.verified_outlined, color: Color(0xFF6DBF99), size: 18),
+                    SizedBox(width: 8),
+                    Text('Verified Seller',
+                      style: TextStyle(fontSize: 13, color: Colors.black87, fontWeight: FontWeight.w500)),
+                  ],
+                ),
               ),
-              child: const Row(
-                children: [
-                  Icon(Icons.verified_outlined, color: Color(0xFF6DBF99), size: 18),
-                  SizedBox(width: 8),
-                  Text('Verified Seller',
-                    style: TextStyle(fontSize: 13, color: Colors.black87, fontWeight: FontWeight.w500)),
-                ],
-              ),
-            ),
+            ],
             const SizedBox(height: 24),
 
             // ── Seller's posted listings ─────────────────────────────────
