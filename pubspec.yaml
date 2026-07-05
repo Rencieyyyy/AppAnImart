@@ -17,6 +17,8 @@ dependencies:
   # Push notifications (plan-sale alerts even when the app is closed).
   firebase_core: ^3.8.0
   firebase_messaging: ^15.1.5
+  # Opens the seller's Messenger link from a listing.
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

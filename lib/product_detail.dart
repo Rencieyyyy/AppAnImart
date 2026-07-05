@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'widgets/top_message.dart';
 import 'main.dart';
 import 'cloudinary_function.dart';
@@ -75,9 +76,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   /// Offers buyers have made on this listing — only loaded for the owner.
   List<Offer> _listingOffers = const [];
   bool _isDescriptionExpanded = false;
-  final TextEditingController _messageController = TextEditingController();
-  String _messageText = 'Good afternoon,\nis this still available?';
   bool _offerSent = false;
+
+  /// Seller's Facebook Messenger link — the "Message Seller on Messenger"
+  /// button opens it; '' when the seller hasn't set one.
+  String _sellerMessengerLink = '';
 
   final PageController _imageController = PageController();
   int _currentImage = 0;
@@ -223,6 +226,25 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     });
     _loadStock(listingId);
     _loadListingOffers(listingId);
+    _loadSellerMessengerLink(sellerId);
+  }
+
+  /// Loads the seller's Messenger link for the contact button.
+  Future<void> _loadSellerMessengerLink(String sellerId) async {
+    if (sellerId.isEmpty) return;
+    try {
+      final row = await supabase
+          .from('users')
+          .select('messenger_link')
+          .eq('id', sellerId)
+          .maybeSingle();
+      final link = (row?['messenger_link'] as String?)?.trim() ?? '';
+      if (mounted && link.isNotEmpty) {
+        setState(() => _sellerMessengerLink = link);
+      }
+    } catch (e) {
+      debugPrint('Failed to load messenger link: $e');
+    }
   }
 
   /// Owner-only: loads the offers buyers have made on this post.
@@ -264,7 +286,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   @override
   void dispose() {
-    _messageController.dispose();
     _imageController.dispose();
     super.dispose();
   }
@@ -779,19 +800,20 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         : 'Seller unblocked.');
   }
 
-  void _sendMessage() {
-    if (_messageText.trim().isEmpty) return;
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => _ChatPage(
-          sellerName: _sellerName,
-          productName: widget.name,
-          initialMessage: _messageText,
-        ),
-      ),
-    );
+  /// Opens the seller's Messenger link in the Messenger app / browser.
+  Future<void> _openMessenger() async {
+    final link = _sellerMessengerLink;
+    if (link.isEmpty) {
+      _showSnackBar("This seller hasn't added a Messenger link yet.");
+      return;
+    }
+    final uri = Uri.tryParse(link);
+    if (uri == null) {
+      _showSnackBar('Could not open Messenger.');
+      return;
+    }
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) _showSnackBar('Could not open Messenger.');
   }
 
   void _showMakeOfferDialog() {
@@ -1142,110 +1164,31 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 ),
               ],
 
-              // ── Message Seller Box ───────────────────────────────
+              // ── Message Seller on Messenger ──────────────────────
+              // Chat happens on Facebook Messenger via the seller's link
+              // (saved when they became a seller).
               if (!_isOwner)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF7F7F7),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 28, height: 28,
-                            decoration: const BoxDecoration(color: Color(0xFF6DBF99), shape: BoxShape.circle),
-                            child: const Icon(Icons.chat_bubble_outline, color: Colors.white, size: 16),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text('Message Seller',
-                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87),
-                          ),
-                        ],
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: _openMessenger,
+                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                      label: const Text('Message Seller on Messenger',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0084FF),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
                       ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: GestureDetector(
-                              onTap: () {
-                                // Show editable message dialog
-                                _messageController.text = _messageText;
-                                showDialog(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                    title: const Text('Edit Message'),
-                                    content: TextField(
-                                      controller: _messageController,
-                                      maxLines: 3,
-                                      decoration: InputDecoration(
-                                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                                        focusedBorder: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(10),
-                                          borderSide: const BorderSide(color: Color(0xFF6DBF99)),
-                                        ),
-                                      ),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(context),
-                                        child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
-                                      ),
-                                      ElevatedButton(
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: const Color(0xFF6DBF99),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                        ),
-                                        onPressed: () {
-                                          setState(() => _messageText = _messageController.text);
-                                          Navigator.pop(context);
-                                        },
-                                        child: const Text('Save', style: TextStyle(color: Colors.white)),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: Colors.grey.shade200),
-                                ),
-                                child: Text(
-                                  _messageText,
-                                  style: const TextStyle(fontSize: 13, color: Colors.black54),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          GestureDetector(
-                            onTap: _sendMessage,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF6DBF99),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: const Text('Send',
-                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
 
               const SizedBox(height: 16),
 
@@ -1636,167 +1579,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 }
 
-// ── Chat Page ──────────────────────────────────────────────────────────────
-class _ChatPage extends StatefulWidget {
-  final String sellerName;
-  final String productName;
-  final String initialMessage;
-
-  const _ChatPage({
-    required this.sellerName,
-    required this.productName,
-    required this.initialMessage,
-  });
-
-  @override
-  State<_ChatPage> createState() => _ChatPageState();
-}
-
-class _ChatPageState extends State<_ChatPage> {
-  final TextEditingController _controller = TextEditingController();
-  final List<Map<String, dynamic>> _messages = [];
-  bool _sellerReplied = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // Add the initial message automatically
-    _messages.add({'text': widget.initialMessage, 'isMine': true});
-    // Simulate seller reply after delay
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
-        setState(() {
-          _messages.add({
-            'text': 'Hi! Yes, it\'s still available. Are you interested?',
-            'isMine': false,
-          });
-          _sellerReplied = true;
-        });
-      }
-    });
-  }
-
-  void _sendMessage() {
-    if (_controller.text.trim().isEmpty) return;
-    setState(() {
-      _messages.add({'text': _controller.text, 'isMine': true});
-      _controller.clear();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black87),
-          onPressed: () => Navigator.of(context).maybePop(),
-        ),
-        title: Row(
-          children: [
-            Container(
-              width: 34, height: 34,
-              decoration: const BoxDecoration(color: Color(0xFFD6F0E4), shape: BoxShape.circle),
-              child: const Icon(Icons.person, color: Color(0xFF6DBF99), size: 18),
-            ),
-            const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(widget.sellerName,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
-                Text(widget.productName,
-                  style: const TextStyle(fontSize: 11, color: Colors.black45)),
-              ],
-            ),
-          ],
-        ),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final msg = _messages[index];
-                final isMine = msg['isMine'] as bool;
-                return Align(
-                  alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
-                    decoration: BoxDecoration(
-                      color: isMine ? const Color(0xFF6DBF99) : const Color(0xFFF0F0F0),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Text(
-                      msg['text'] as String,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: isMine ? Colors.white : Colors.black87,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border(top: BorderSide(color: Colors.grey.shade200)),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    decoration: InputDecoration(
-                      hintText: 'Type a message...',
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide(color: Colors.grey.shade200),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide(color: Colors.grey.shade200),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: const BorderSide(color: Color(0xFF6DBF99)),
-                      ),
-                    ),
-                    onSubmitted: (_) => _sendMessage(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: _sendMessage,
-                  child: Container(
-                    width: 44, height: 44,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF6DBF99),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Seller Profile Page ────────────────────────────────────────────────────
 class _SellerProfilePage extends StatefulWidget {
   final String sellerName;
@@ -1829,6 +1611,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
 
   // The seller's avatar and their active listings, loaded from Supabase.
   String _avatarUrl = '';
+  String _messengerLink = '';
   List<Map<String, dynamic>> _sellerListings = [];
   bool _loadingListings = true;
 
@@ -1867,13 +1650,33 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     try {
       final row = await supabase
           .from('users')
-          .select('avatar_url')
+          .select('avatar_url, messenger_link')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
-      if (mounted && url.isNotEmpty) setState(() => _avatarUrl = url);
+      final link = (row?['messenger_link'] as String?)?.trim() ?? '';
+      if (!mounted) return;
+      setState(() {
+        if (url.isNotEmpty) _avatarUrl = url;
+        _messengerLink = link;
+      });
     } catch (_) {
       // Fall back to the default person icon.
+    }
+  }
+
+  /// Opens the seller's Messenger link.
+  Future<void> _openMessenger() async {
+    if (_messengerLink.isEmpty) {
+      showTopMessage(context, "This seller hasn't added a Messenger link yet.",
+          isError: false,
+          backgroundColor: const Color(0xFF3A3A3A),
+          icon: Icons.info_outline);
+      return;
+    }
+    final uri = Uri.tryParse(_messengerLink);
+    if (uri != null) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
 
@@ -2222,8 +2025,8 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Message Seller',
+                onPressed: _openMessenger,
+                child: const Text('Message Seller on Messenger',
                   style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
               ),
             ),

@@ -49,6 +49,10 @@ class _ProfilePageState extends State<ProfilePage> {
   String _shopCategory = '';
   String _shopDescription = '';
   String _paymentNumber = '';
+
+  /// Seller's Facebook Messenger link (m.me/...), required to become a
+  /// seller — buyers contact sellers through it.
+  String _messengerLink = '';
   // App-facing name of the user's active subscription plan (from the
   // `subscriptions` table managed by the admin website). 'Free' by default.
   String _planName = 'Free';
@@ -181,6 +185,7 @@ class _ProfilePageState extends State<ProfilePage> {
         _shopCategory = (data['shop_category'] as String?) ?? '';
         _shopDescription = (data['shop_description'] as String?) ?? '';
         _paymentNumber = (data['payment_number'] as String?) ?? '';
+        _messengerLink = (data['messenger_link'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
@@ -444,6 +449,7 @@ class _ProfilePageState extends State<ProfilePage> {
     required String shopDescription,
     required String shopCategory,
     required String paymentNumber,
+    String? messengerLink,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
@@ -458,6 +464,7 @@ class _ProfilePageState extends State<ProfilePage> {
             'shop_description': shopDescription,
             'shop_category': shopCategory,
             'payment_number': paymentNumber,
+            if (messengerLink != null) 'messenger_link': messengerLink,
           })
           .eq('id', user.id)
           .select()
@@ -1078,6 +1085,23 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── Become a Seller ────────────────────────────────────────────────────────
+  /// Validates and normalises a Facebook Messenger link. Accepts
+  /// m.me/<name> or messenger.com/t/<name>, with or without https:// and
+  /// www. — returns the canonical https:// URL, or null when invalid.
+  static String? _normalizeMessengerLink(String input) {
+    var v = input.trim();
+    if (v.isEmpty) return null;
+    v = v
+        .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'^www\.', caseSensitive: false), '');
+    final lower = v.toLowerCase();
+    final valid = (lower.startsWith('m.me/') && v.length > 'm.me/'.length) ||
+        (lower.startsWith('messenger.com/t/') &&
+            v.length > 'messenger.com/t/'.length);
+    if (!valid) return null;
+    return 'https://$v';
+  }
+
   void _showBecomeSeller() {
     if (_isSeller) {
       _showSellerDashboard();
@@ -1086,6 +1110,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final shopNameCtrl = TextEditingController();
     final shopDescCtrl = TextEditingController();
+    final messengerCtrl = TextEditingController();
     String? selectedCategory;
     const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
 
@@ -1235,6 +1260,11 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  // Buyers contact sellers through Messenger, so a valid
+                  // link is required before becoming a seller.
+                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
+                      Icons.link_outlined),
                   const SizedBox(height: 20),
 
                   SizedBox(
@@ -1244,6 +1274,14 @@ class _ProfilePageState extends State<ProfilePage> {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
                           _showMessage(
                               'Please fill in all required fields.', Colors.redAccent);
+                          return;
+                        }
+                        final messengerLink =
+                            _normalizeMessengerLink(messengerCtrl.text);
+                        if (messengerLink == null) {
+                          _showMessage(
+                              'Please put your Messenger link (e.g. m.me/yourname) before becoming a seller.',
+                              Colors.redAccent);
                           return;
                         }
                         final businessName = shopNameCtrl.text.trim();
@@ -1258,12 +1296,14 @@ class _ProfilePageState extends State<ProfilePage> {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
+                          _messengerLink = messengerLink;
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
                           paymentNumber: _paymentNumber,
+                          messengerLink: messengerLink,
                         );
                         if (!mounted) return;
                         if (error != null) {
@@ -1421,6 +1461,7 @@ class _ProfilePageState extends State<ProfilePage> {
     final shopNameCtrl = TextEditingController(text: _businessName);
     final shopDescCtrl = TextEditingController(text: _shopDescription);
     final bankCtrl = TextEditingController(text: _paymentNumber);
+    final messengerCtrl = TextEditingController(text: _messengerLink);
     String? selectedCategory = _shopCategory.isNotEmpty ? _shopCategory : null;
     const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
 
@@ -1543,6 +1584,9 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                   const SizedBox(height: 10),
                   _editField(bankCtrl, 'GCash / Bank Number for Payments', Icons.account_balance_outlined),
+                  const SizedBox(height: 10),
+                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
+                      Icons.link_outlined),
                   const SizedBox(height: 20),
 
                   SizedBox(
@@ -1552,6 +1596,14 @@ class _ProfilePageState extends State<ProfilePage> {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
                           _showMessage(
                               'Please fill in all required fields.', Colors.redAccent);
+                          return;
+                        }
+                        final messengerLink =
+                            _normalizeMessengerLink(messengerCtrl.text);
+                        if (messengerLink == null) {
+                          _showMessage(
+                              'Please put a valid Messenger link (e.g. m.me/yourname).',
+                              Colors.redAccent);
                           return;
                         }
                         final businessName = shopNameCtrl.text.trim();
@@ -1565,12 +1617,14 @@ class _ProfilePageState extends State<ProfilePage> {
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
                           _paymentNumber = paymentNumber;
+                          _messengerLink = messengerLink;
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
                           paymentNumber: paymentNumber,
+                          messengerLink: messengerLink,
                         );
                         if (!mounted) return;
                         if (error != null) {
