@@ -371,6 +371,7 @@ class _ProfilePageState extends State<ProfilePage> {
           initialBusinessName: _businessName,
           initialShopCategory: _shopCategory,
           initialShopDescription: _shopDescription,
+          initialMessengerLink: _messengerLink,
           onSave: _saveProfile,
           onAvatarChanged: (url) {
             if (mounted) setState(() => _avatarUrl = url);
@@ -393,11 +394,22 @@ class _ProfilePageState extends State<ProfilePage> {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
+    required String messengerLink,
     PhCity? location,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
       return 'You are not signed in. Please log in again.';
+    }
+
+    // Sellers must keep a valid Messenger contact (same rule as the
+    // Become a Seller and Shop Settings forms).
+    String? normalizedMessenger;
+    if (_isSeller) {
+      normalizedMessenger = _normalizeMessengerLink(messengerLink);
+      if (normalizedMessenger == null) {
+        return 'Please put a valid Messenger link (e.g. m.me/yourname).';
+      }
     }
 
     try {
@@ -414,6 +426,7 @@ class _ProfilePageState extends State<ProfilePage> {
             'business_name': businessName,
             'shop_category': shopCategory,
             'shop_description': shopDescription,
+            if (normalizedMessenger != null) 'messenger_link': normalizedMessenger,
             // Coordinates power "Explore near you" distances.
             if (location != null) 'location_name': location.label,
             if (location != null) 'latitude': location.lat,
@@ -451,6 +464,10 @@ class _ProfilePageState extends State<ProfilePage> {
           _businessName = (row['business_name'] as String?) ?? businessName;
           _shopCategory = (row['shop_category'] as String?) ?? shopCategory;
           _shopDescription = (row['shop_description'] as String?) ?? shopDescription;
+          if (normalizedMessenger != null) {
+            _messengerLink =
+                (row['messenger_link'] as String?) ?? normalizedMessenger;
+          }
         });
       }
       return null;
@@ -2591,7 +2608,6 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
         const _Benefit('Standard analytics dashboard', included: false),
         const _Benefit('Priority listing placement', included: false),
         const _Benefit('Featured on homepage', included: false),
-        const _Benefit('Buyer direct messaging', included: false),
       ];
 
   // Fallbacks (shown until the `prices` rows load, or if loading fails).
@@ -2615,10 +2631,9 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
       benefits: [
         _Benefit('Unlimited active listings'),
         _Benefit('Verified seller badge'),
-        _Benefit('Advanced analytics + reports'),
+        _Benefit('Basic analytics report'),
         _Benefit('Priority listing placement'),
-        _Benefit('Buyer direct messaging'),
-        _Benefit('Priority email & chat support'),
+        _Benefit('Chat support'),
       ],
     ),
     const _PlanData(
@@ -2633,8 +2648,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
         _Benefit('Full analytics suite'),
         _Benefit('Top listing placement'),
         _Benefit('Featured on homepage banner'),
-        _Benefit('Dedicated account manager'),
-        _Benefit('Custom seller profile page'),
+        _Benefit('Chat support'),
       ],
     ),
   ];
@@ -3043,13 +3057,12 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                           color: _green,
                         ),
                       ),
-                      Text(
-                        plan.monthly == 0
-                            ? '/ forever'
-                            : (_yearly ? '/ year' : '/ month'),
-                        style: const TextStyle(
-                            fontSize: 10, color: Color(0xFF7C8B83)),
-                      ),
+                      if (plan.monthly != 0)
+                        Text(
+                          _yearly ? '/ year' : '/ month',
+                          style: const TextStyle(
+                              fontSize: 10, color: Color(0xFF7C8B83)),
+                        ),
                     ],
                   ),
                 ),
@@ -3266,6 +3279,7 @@ class _EditProfilePage extends StatefulWidget {
   final String initialBusinessName;
   final String initialShopCategory;
   final String initialShopDescription;
+  final String initialMessengerLink;
   final Future<String?> Function({
     required String name,
     required String phone,
@@ -3274,6 +3288,7 @@ class _EditProfilePage extends StatefulWidget {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
+    required String messengerLink,
     PhCity? location,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
@@ -3290,6 +3305,7 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialBusinessName,
     required this.initialShopCategory,
     required this.initialShopDescription,
+    required this.initialMessengerLink,
     required this.onSave,
     required this.onAvatarChanged,
   });
@@ -3308,6 +3324,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _houseCtrl;
   late final TextEditingController _businessCtrl;
   late final TextEditingController _shopDescCtrl;
+  late final TextEditingController _messengerCtrl;
   late String _shopCategory;
   late String _avatarUrl;
   // Address is picked from the PH city/municipality gazetteer, not typed.
@@ -3334,6 +3351,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl = TextEditingController(text: widget.initialHouse);
     _businessCtrl = TextEditingController(text: widget.initialBusinessName);
     _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
+    _messengerCtrl = TextEditingController(text: widget.initialMessengerLink);
     _shopCategory = widget.initialShopCategory;
     _avatarUrl = widget.initialAvatarUrl;
   }
@@ -3345,6 +3363,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl.dispose();
     _businessCtrl.dispose();
     _shopDescCtrl.dispose();
+    _messengerCtrl.dispose();
     super.dispose();
   }
 
@@ -3360,6 +3379,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       businessName: _businessCtrl.text.trim(),
       shopCategory: _shopCategory,
       shopDescription: _shopDescCtrl.text.trim(),
+      messengerLink: _messengerCtrl.text.trim(),
     );
     if (!mounted) return;
     if (error == null) {
@@ -3637,6 +3657,8 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             _row('Shop Name', _businessCtrl, 'Shop / Farm name'),
             _categoryRow(),
             _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
+            _row('Messenger', _messengerCtrl, 'm.me/yourname',
+                type: TextInputType.url),
           ],
           const SizedBox(height: 24),
         ],
