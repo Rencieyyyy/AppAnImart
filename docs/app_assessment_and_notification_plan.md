@@ -1,7 +1,36 @@
 # AniMart — Honest Assessment, Buying Flow & Notification Plan
 
-*Compiled 2026-07-06. Status markers reflect the app as of this date
-(push pipeline live for plan sales; offer notices in-app only).*
+*Compiled 2026-07-06. Updated 2026-07-07: **Part 1 is fully implemented**
+(commit b488f9f — transactions/reserve flow incl. reserved-buyer UX,
+My Offers, verified-purchase reviews, paged feeds + server search,
+coordinates lockdown; migrations 20260707000000 + 20260707010000 applied).*
+
+## ⏭ Remaining work — pick up here
+
+**From Part 2 (deal lifecycle polish):**
+1. Buyer confirmation step — "Did you receive it?" prompt after the seller
+   completes, auto-confirm after ~7 days (pg_cron); until then a deal is
+   only seller-confirmed.
+2. "Buy at asking price" button — one-tap offer at the listed price.
+3. Cancellation trust metric — repeated cancellations affect standing.
+4. "Report a problem" on a transaction — reports carrying deal context.
+
+**From Part 3 (notifications), in priority order:**
+1. Phone push for existing in-app notices — offers (both directions),
+   transaction completed/cancelled, admin announcements. One migration:
+   `plan_sale_pushes.recipient_id` + trigger on `announcements` insert +
+   drop the duplicate queue insert in `announce_plan_sale()`; edge function
+   gains targeted sends. (Prompt already drafted in chat 2026-07-06.)
+2. Subscription approved/rejected → notify the requesting user (biggest
+   silent gap left in the app).
+3. New review received → notify the seller (pairs with the new
+   "Rate seller" flow).
+4. Price drop on a favorited listing → notify favoriters (cap repeats).
+5. ~~Sold to someone else~~ ✅ done 2026-07-07 (auto-decline + notices).
+
+**Also still open from Part 1's "smaller but real" list:** listing expiry
+nudges, real listing links (Copy Link points at a fake domain), account
+deletion, in-app payment instructions for premium requests, rate limiting.
 
 ---
 
