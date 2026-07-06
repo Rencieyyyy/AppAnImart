@@ -75,6 +75,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   /// Offers buyers have made on this listing — only loaded for the owner.
   List<Offer> _listingOffers = const [];
+
+  /// Owner-side: this listing's deals keyed by offer id.
+  Map<String, TransactionInfo> _txByOffer = {};
+
+  /// Buyer-side: set when this listing is reserved for the viewer.
+  TransactionInfo? _myReservation;
   bool _isDescriptionExpanded = false;
   bool _offerSent = false;
 
@@ -227,6 +233,87 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     _loadStock(listingId);
     _loadListingOffers(listingId);
     _loadSellerMessengerLink(sellerId);
+    _loadTransactions(listingId);
+  }
+
+  /// Loads this listing's deal state for the viewer: as the owner, deals
+  /// keyed by offer (for Complete/Cancel on the offer rows); as a buyer,
+  /// whether the listing is reserved for THEM (drives the banner).
+  Future<void> _loadTransactions(String listingId) async {
+    if (listingId.isEmpty || supabase.auth.currentUser == null) return;
+    final txs =
+        await MarketplaceService.fetchTransactions(asSeller: _isOwner);
+    if (!mounted) return;
+    setState(() {
+      if (_isOwner) {
+        _txByOffer = {
+          for (final t in txs)
+            if (t.listingId == listingId && t.offerId.isNotEmpty)
+              t.offerId: t,
+        };
+      } else {
+        for (final t in txs) {
+          if (t.listingId == listingId && t.isReserved) {
+            _myReservation = t;
+            return;
+          }
+        }
+        _myReservation = null;
+      }
+    });
+  }
+
+  /// Re-reads status + stock after a deal completes/cancels, so the page
+  /// reflects the relist/sold outcome without reopening it.
+  Future<void> _refreshListingState() async {
+    final id = widget.listingId?.trim() ?? '';
+    if (id.isEmpty) return;
+    try {
+      final row = await supabase
+          .from('listings')
+          .select('status, stock')
+          .eq('id', id)
+          .maybeSingle();
+      if (!mounted || row == null) return;
+      final raw = row['stock'];
+      setState(() {
+        _status = (row['status'] as String?) ?? _status;
+        _stock = raw is num ? raw.toInt() : int.tryParse('$raw') ?? _stock;
+        _edited = true; // list pages refresh on pop
+      });
+    } catch (e) {
+      debugPrint('Failed to refresh listing state: $e');
+    }
+  }
+
+  /// Owner completes the reserved deal from the offers section.
+  Future<void> _completeTx(TransactionInfo tx) async {
+    final error = await MarketplaceService.completeTransaction(tx.id);
+    if (!mounted) return;
+    if (error != null) {
+      _showSnackBar(error);
+      return;
+    }
+    _showSnackBar('Sale completed. The buyer can now rate you.');
+    _loadListingOffers(widget.listingId?.trim() ?? '');
+    _loadTransactions(widget.listingId?.trim() ?? '');
+    _refreshListingState();
+  }
+
+  /// Cancels the reserved deal (owner from the offers section, or the
+  /// winning buyer from their reservation banner).
+  Future<void> _cancelTx(TransactionInfo tx) async {
+    final error = await MarketplaceService.cancelTransaction(tx.id);
+    if (!mounted) return;
+    if (error != null) {
+      _showSnackBar(error);
+      return;
+    }
+    _showSnackBar('Deal cancelled. The listing is available again.');
+    setState(() => _myReservation = null);
+    _loadListingOffers(widget.listingId?.trim() ?? '');
+    _loadTransactions(widget.listingId?.trim() ?? '');
+    _refreshListingState();
   }
 
   /// Loads the seller's Messenger link for the contact button.
@@ -851,7 +938,25 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       return;
     }
     final TextEditingController offerController = TextEditingController();
+    final TextEditingController qtyController =
+        TextEditingController(text: '1');
+    final TextEditingController noteController = TextEditingController();
     bool sending = false;
+
+    InputDecoration fieldDecoration(String hint, {String? prefix}) =>
+        InputDecoration(
+          prefixText: prefix,
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 13, color: Colors.black38),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFF6DBF99)),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        );
+
     showDialog(
       context: context,
       builder: (dialogCtx) => StatefulBuilder(
@@ -863,22 +968,30 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Listed price: ${widget.price}',
+                'Listed price: ${widget.price}'
+                '${_stock != null ? ' · $_stock in stock' : ''}',
                 style: const TextStyle(color: Colors.black54, fontSize: 13),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: offerController,
                 keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  prefixText: '₱ ',
-                  hintText: 'Enter your offer',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF6DBF99)),
-                  ),
-                ),
+                decoration:
+                    fieldDecoration('Your total offer', prefix: '₱ '),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: qtyController,
+                keyboardType: TextInputType.number,
+                decoration: fieldDecoration('Quantity'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: noteController,
+                maxLines: 2,
+                maxLength: 200,
+                decoration:
+                    fieldDecoration('Message to the seller (optional)'),
               ),
             ],
           ),
@@ -901,6 +1014,14 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                         _showSnackBar('Please enter a valid offer amount.');
                         return;
                       }
+                      final qty =
+                          int.tryParse(qtyController.text.trim()) ?? 1;
+                      if (qty < 1 ||
+                          (_stock != null && _stock! > 0 && qty > _stock!)) {
+                        _showSnackBar(
+                            'Please enter a quantity between 1 and ${_stock ?? qty}.');
+                        return;
+                      }
                       setLocalState(() => sending = true);
                       // Persist the offer so it shows up in the seller's
                       // dashboard "Offers" section.
@@ -908,6 +1029,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                         listingId: widget.listingId?.trim() ?? '',
                         sellerId: widget.sellerId?.trim() ?? '',
                         amount: amount,
+                        quantity: qty,
+                        note: noteController.text,
                       );
                       if (dialogCtx.mounted) Navigator.pop(dialogCtx);
                       if (!mounted) return;
@@ -1127,7 +1250,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                               color: Colors.orange.shade50,
                               borderRadius: BorderRadius.circular(4),
                             ),
-                            child: Text(_status == 'sold' ? 'Sold' : 'Disabled',
+                            child: Text(
+                              _status == 'sold'
+                                  ? 'Sold'
+                                  : _status == 'reserved'
+                                      ? 'Reserved'
+                                      : 'Disabled',
                               style: const TextStyle(fontSize: 10, color: Colors.orange, fontWeight: FontWeight.w600),
                             ),
                           ),
@@ -1184,6 +1312,73 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   ),
                 ),
 
+              // ── Reserved-for-you banner (the winning buyer) ───────
+              if (!_isOwner && _myReservation != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFFFE0B2)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.handshake_outlined,
+                                color: Color(0xFFE65100), size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Reserved for you — '
+                                '${_formatPeso(_myReservation!.agreedPrice)}'
+                                '${_myReservation!.quantity > 1 ? ' for ${_myReservation!.quantity} pcs' : ''}',
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFE65100)),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Arrange payment and pickup/delivery with the '
+                          'seller on Messenger. The seller marks the sale '
+                          'completed once you\'ve received it.',
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: GestureDetector(
+                            onTap: () => _cancelTx(_myReservation!),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 7),
+                              decoration: BoxDecoration(
+                                border:
+                                    Border.all(color: Colors.red.shade300),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text('Cancel deal',
+                                  style: TextStyle(
+                                      color: Colors.red.shade400,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
               // ── Offers on this post (owner only) ─────────────────
               if (_isOwner && _listingOffers.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -1229,7 +1424,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    if (!_isOwner)
+                    // No offers on your own post, on a listing already
+                    // reserved for you, or while it isn't active.
+                    if (!_isOwner &&
+                        _myReservation == null &&
+                        _status == 'active')
                       _buildActionButton(
                         icon: _offerSent ? Icons.pan_tool : Icons.pan_tool_outlined,
                         color: _offerSent ? const Color(0xFF6DBF99) : null,
@@ -1457,6 +1656,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   Widget _buildOfferRow(Offer offer) {
     final isPending = offer.status == 'pending';
+    final tx = _txByOffer[offer.id];
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
@@ -1487,16 +1687,61 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         color: Colors.black87)),
-                Text('Offered ${_formatPeso(offer.amount)}',
+                Text(
+                    'Offered ${_formatPeso(offer.amount)}'
+                    '${offer.quantity > 1 ? ' for ${offer.quantity} pcs' : ''}',
                     style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: Color(0xFF1D9E75))),
+                if (offer.note.isNotEmpty)
+                  Text('“${offer.note}”',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.black38)),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          if (isPending) ...[
+          if (tx != null && tx.isReserved) ...[
+            // Live deal: finish it or free the listing back up.
+            GestureDetector(
+              onTap: () => _completeTx(tx),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6DBF99),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('Complete',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => _cancelTx(tx),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.red.shade300),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('Cancel',
+                    style: TextStyle(
+                        color: Colors.red.shade400,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ] else if (isPending) ...[
             GestureDetector(
               onTap: () => _respondToOffer(offer, accept: true),
               child: Container(
@@ -1531,24 +1776,42 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               ),
             ),
           ] else
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: offer.status == 'accepted'
-                    ? const Color(0xFFE8F7F1)
-                    : const Color(0xFFFDECEC),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                offer.status == 'accepted' ? 'Accepted' : 'Declined',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: offer.status == 'accepted'
-                        ? const Color(0xFF1D9E75)
-                        : Colors.red.shade400),
-              ),
-            ),
+            Builder(builder: (_) {
+              // Deal state wins over the raw offer state.
+              final String label;
+              final Color bg;
+              final Color fg;
+              if (tx != null && tx.status == 'completed') {
+                label = 'Completed';
+                bg = const Color(0xFFE8F7F1);
+                fg = const Color(0xFF1D9E75);
+              } else if (tx != null && tx.status == 'cancelled') {
+                label = 'Cancelled';
+                bg = const Color(0xFFF2F2F2);
+                fg = Colors.black45;
+              } else if (offer.status == 'accepted') {
+                label = 'Accepted';
+                bg = const Color(0xFFE8F7F1);
+                fg = const Color(0xFF1D9E75);
+              } else {
+                label = 'Declined';
+                bg = const Color(0xFFFDECEC);
+                fg = Colors.red.shade400;
+              }
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                      fontSize: 11, fontWeight: FontWeight.bold, color: fg),
+                ),
+              );
+            }),
         ],
       ),
     );

@@ -8,6 +8,7 @@ import 'buyer.dart';
 import 'announcement_page.dart';
 import 'blocked_sellers_page.dart';
 import 'login.dart';
+import 'my_offers_page.dart';
 import 'main.dart';
 import 'product_detail.dart';
 import 'user_listings.dart';
@@ -191,9 +192,14 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     }
     try {
+      // Columns are named explicitly: users has column-level SELECT grants
+      // (lat/lng are revoked for privacy), and `select *` fails under
+      // column grants. New fields read here must also be granted in the DB.
       final row = await supabase
           .from('users')
-          .select()
+          .select('email, name, phone, address, house_number, business_name, '
+              'shop_category, shop_description, messenger_link, avatar_url, '
+              'is_seller, sales_count, trust_score, member_since')
           .eq('id', user.id)
           .maybeSingle();
 
@@ -217,6 +223,11 @@ class _ProfilePageState extends State<ProfilePage> {
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
+        // Completed deals are the real sales record; the users column is a
+        // legacy/admin-set fallback shown until this resolves.
+        MarketplaceService.completedSalesCount().then((c) {
+          if (mounted && c > 0) setState(() => _salesCount = c);
+        });
         _trustScore = (data['trust_score'] as int?) ?? 0;
         _memberSince = _formatMemberSince(
             (data['member_since'] as String?) ?? user.createdAt);
@@ -434,7 +445,9 @@ class _ProfilePageState extends State<ProfilePage> {
             if (location != null) 'longitude': location.lng,
           })
           .eq('id', user.id)
-          .select()
+          // Explicit columns: `select *` fails under users' column grants.
+          .select('name, phone, address, house_number, business_name, '
+              'shop_category, shop_description, messenger_link')
           .maybeSingle();
 
       if (row == null) {
@@ -506,7 +519,8 @@ class _ProfilePageState extends State<ProfilePage> {
             if (messengerLink != null) 'messenger_link': messengerLink,
           })
           .eq('id', user.id)
-          .select()
+          // Only checked for null; `select *` fails under column grants.
+          .select('id')
           .maybeSingle();
 
       if (row == null) {
@@ -2059,6 +2073,42 @@ class _ProfilePageState extends State<ProfilePage> {
                                     color: Color(0xFF3AA876),
                                     fontWeight: FontWeight.w600)),
                             const Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF3AA876)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1, thickness: 0.5),
+                    // ── My Offers (offers made as a buyer + deal states) ─
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const MyOffersPage()),
+                      ),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Icon(Icons.pan_tool_outlined,
+                                color: Color(0xFF6DBF99), size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Offers you\'ve made on listings',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A2E22)),
+                              ),
+                            ),
+                            Text('My Offers',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                            Icon(Icons.chevron_right,
                                 size: 18, color: Color(0xFF3AA876)),
                           ],
                         ),

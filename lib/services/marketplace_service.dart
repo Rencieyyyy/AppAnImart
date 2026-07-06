@@ -42,25 +42,65 @@ class Review {
 class Offer {
   final String id;
   final String listingId;
+  final String sellerId;
   final String buyerId;
   final String buyerName;
 
   /// Buyer's profile picture URL ('' when they have none).
   final String buyerAvatar;
   final double amount;
+
+  /// How many units the offer is for (the amount is the total price).
+  final int quantity;
+
+  /// Optional message from the buyer to the seller.
+  final String note;
   final String status; // 'pending' | 'accepted' | 'declined'
   final DateTime createdAt;
 
   const Offer({
     required this.id,
     required this.listingId,
+    this.sellerId = '',
     required this.buyerId,
     required this.buyerName,
     this.buyerAvatar = '',
     required this.amount,
+    this.quantity = 1,
+    this.note = '',
     required this.status,
     required this.createdAt,
   });
+}
+
+/// One deal record: created automatically when a seller accepts an offer
+/// (status 'reserved'), then completed or cancelled via the RPCs.
+class TransactionInfo {
+  final String id;
+  final String listingId;
+  final String offerId;
+  final String sellerId;
+  final String buyerId;
+  final int quantity;
+
+  /// Total agreed price for [quantity] units.
+  final double agreedPrice;
+  final String status; // 'reserved' | 'completed' | 'cancelled'
+  final DateTime createdAt;
+
+  const TransactionInfo({
+    required this.id,
+    required this.listingId,
+    required this.offerId,
+    required this.sellerId,
+    required this.buyerId,
+    required this.quantity,
+    required this.agreedPrice,
+    required this.status,
+    required this.createdAt,
+  });
+
+  bool get isReserved => status == 'reserved';
 }
 
 /// A user the current user has blocked, for the "Blocked Sellers" list.
@@ -316,6 +356,8 @@ class MarketplaceService {
     required String listingId,
     required String sellerId,
     required double amount,
+    int quantity = 1,
+    String note = '',
   }) async {
     final uid = _uid;
     if (uid == null) return 'You must be signed in to make an offer.';
@@ -324,6 +366,7 @@ class MarketplaceService {
     }
     if (sellerId == uid) return 'You cannot make an offer on your own listing.';
     if (amount <= 0) return 'Please enter a valid offer amount.';
+    if (quantity < 1) return 'Please enter a valid quantity.';
     try {
       // Re-offering replaces the previous offer and resets it to pending so
       // the seller sees the latest amount.
@@ -332,12 +375,39 @@ class MarketplaceService {
         'seller_id': sellerId,
         'buyer_id': uid,
         'amount': amount,
+        'quantity': quantity,
+        'note': note.trim().isEmpty ? null : note.trim(),
         'status': 'pending',
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }, onConflict: 'listing_id,buyer_id');
       return null;
     } catch (e) {
       return 'Could not send offer: $e';
+    }
+  }
+
+  /// All offers the current user has made (as a buyer), newest first.
+  static Future<List<Offer>> fetchSentOffers() async {
+    final uid = _uid;
+    if (uid == null) return const [];
+    return _fetchOffers((q) => q.eq('buyer_id', uid));
+  }
+
+  /// Buyer withdraws their own pending offer. Returns null on success.
+  static Future<String?> withdrawOffer(String offerId) async {
+    final uid = _uid;
+    if (uid == null) return 'You must be signed in.';
+    if (offerId.isEmpty) return 'Unknown offer.';
+    try {
+      await supabase
+          .from('offers')
+          .delete()
+          .eq('id', offerId)
+          .eq('buyer_id', uid)
+          .eq('status', 'pending');
+      return null;
+    } catch (e) {
+      return 'Could not withdraw offer: $e';
     }
   }
 
@@ -365,9 +435,8 @@ class MarketplaceService {
         filter,
   ) async {
     try {
-      final rows = await filter(supabase
-              .from('offers')
-              .select('id, listing_id, buyer_id, amount, status, created_at'))
+      final rows = await filter(supabase.from('offers').select(
+              'id, listing_id, seller_id, buyer_id, amount, quantity, note, status, created_at'))
           .order('created_at', ascending: false);
       final list = rows.map((r) => Map<String, dynamic>.from(r)).toList();
 
@@ -400,10 +469,13 @@ class MarketplaceService {
         return Offer(
           id: '${row['id']}',
           listingId: '${row['listing_id']}',
+          sellerId: '${row['seller_id'] ?? ''}',
           buyerId: '${row['buyer_id']}',
           buyerName: name.isNotEmpty ? name : 'AniMart User',
           buyerAvatar: avatarsById['${row['buyer_id']}'] ?? '',
           amount: (row['amount'] as num?)?.toDouble() ?? 0,
+          quantity: (row['quantity'] as num?)?.toInt() ?? 1,
+          note: (row['note'] as String?)?.trim() ?? '',
           status: (row['status'] as String?) ?? 'pending',
           createdAt: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
               DateTime.now(),
@@ -411,6 +483,102 @@ class MarketplaceService {
       }).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  // ── Transactions ──────────────────────────────────────────────────────────
+
+  /// The current user's deals — as the seller when [asSeller], else as the
+  /// buyer. Newest first.
+  static Future<List<TransactionInfo>> fetchTransactions(
+      {required bool asSeller}) async {
+    final uid = _uid;
+    if (uid == null) return const [];
+    try {
+      final rows = await supabase
+          .from('transactions')
+          .select()
+          .eq(asSeller ? 'seller_id' : 'buyer_id', uid)
+          .order('created_at', ascending: false);
+      return (rows as List).map((r) {
+        final row = r as Map<String, dynamic>;
+        return TransactionInfo(
+          id: '${row['id']}',
+          listingId: '${row['listing_id']}',
+          offerId: '${row['offer_id'] ?? ''}',
+          sellerId: '${row['seller_id']}',
+          buyerId: '${row['buyer_id']}',
+          quantity: (row['quantity'] as num?)?.toInt() ?? 1,
+          agreedPrice: (row['agreed_price'] as num?)?.toDouble() ?? 0,
+          status: (row['status'] as String?) ?? 'reserved',
+          createdAt: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
+              DateTime.now(),
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Seller marks a reserved deal as done (decrements stock; the listing
+  /// auto-relists or goes to 'sold'). Returns null on success.
+  static Future<String?> completeTransaction(String txId) async {
+    try {
+      final result = await supabase
+          .rpc('complete_transaction', params: {'p_tx': txId});
+      return result as String?;
+    } catch (e) {
+      return 'Could not complete transaction: $e';
+    }
+  }
+
+  /// Either party cancels a reserved deal (the listing goes back online).
+  /// Returns null on success.
+  static Future<String?> cancelTransaction(String txId,
+      {String reason = ''}) async {
+    try {
+      final result = await supabase.rpc('cancel_transaction', params: {
+        'p_tx': txId,
+        'p_reason': reason.trim().isEmpty ? null : reason.trim(),
+      });
+      return result as String?;
+    } catch (e) {
+      return 'Could not cancel transaction: $e';
+    }
+  }
+
+  /// Whether the current user may review [sellerId] — true only after a
+  /// completed purchase from them (mirrors the reviews RLS policy).
+  static Future<bool> canReviewSeller(String sellerId) async {
+    final uid = _uid;
+    if (uid == null || sellerId.isEmpty || sellerId == uid) return false;
+    try {
+      final rows = await supabase
+          .from('transactions')
+          .select('id')
+          .eq('buyer_id', uid)
+          .eq('seller_id', sellerId)
+          .eq('status', 'completed')
+          .limit(1);
+      return (rows as List).isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Number of completed sales the current user has made as a seller.
+  static Future<int> completedSalesCount() async {
+    final uid = _uid;
+    if (uid == null) return 0;
+    try {
+      final rows = await supabase
+          .from('transactions')
+          .select('id')
+          .eq('seller_id', uid)
+          .eq('status', 'completed');
+      return (rows as List).length;
+    } catch (_) {
+      return 0;
     }
   }
 

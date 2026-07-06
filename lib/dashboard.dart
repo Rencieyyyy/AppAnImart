@@ -95,12 +95,24 @@ class _DashboardPageState extends State<DashboardPage> {
   // Sellers the user has blocked; their listings are hidden from the feed.
   Set<String> _blockedSellers = {};
 
+  // Listings currently reserved FOR this user (as the winning buyer), by
+  // listing id — they stay open/tappable for them while locked for others.
+  Set<String> _reservedForMe = {};
+
   // Signed-in user's name (loaded from the `users` table).
   String _userName = '';
 
   // Listings from all users, loaded from the `listings` table.
   List<LivestockItem> _allItems = [];
   bool _loadingItems = true;
+
+  // Feed pagination (other users' listings load a page at a time).
+  int _feedPage = 0;
+  bool _hasMoreItems = true;
+  bool _loadingMore = false;
+
+  // Server-side search results (all listings, not just loaded pages).
+  List<LivestockItem> _searchResults = [];
 
   // Red dot on the announcements nav icon while unseen announcements exist.
   bool _hasUnseenAnnouncements = false;
@@ -114,6 +126,7 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadItems();
     _loadFavorites();
     _loadBlocked();
+    _loadReservedForMe();
     NotificationService.hasUnseenAnnouncements().then((v) {
       if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
     });
@@ -155,6 +168,17 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _blockedSellers = ids);
   }
 
+  /// Loads which listings are reserved for this user as the winning buyer,
+  /// so those cards stay tappable and show "RESERVED FOR YOU".
+  Future<void> _loadReservedForMe() async {
+    final txs = await MarketplaceService.fetchTransactions(asSeller: false);
+    if (!mounted) return;
+    setState(() => _reservedForMe = {
+          for (final t in txs)
+            if (t.isReserved) t.listingId,
+        });
+  }
+
   /// Whether the signed-in user owns [item] (owners can't favourite their
   /// own listings).
   bool _isMine(LivestockItem item) =>
@@ -183,78 +207,164 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  /// Loads all active listings published by any user.
+  /// One page of feed rows. The feed is paged so the query cost stays flat
+  /// no matter how many listings exist.
+  static const int _pageSize = 30;
+
+  /// Loads the first page of the feed plus all of the user's own listings
+  /// (shown in the "My Listings" section regardless of paging).
   Future<void> _loadItems() async {
+    final uid = supabase.auth.currentUser?.id;
     try {
-      // Sold listings stay in the feed greyed out (they can't be opened by
-      // other users); disabled ones stay hidden.
-      final rows = (await supabase
+      // Sold/reserved listings stay in the feed greyed out (they can't be
+      // opened by other users); disabled ones stay hidden.
+      var othersQuery = supabase
           .from('listings')
           .select('*, users(name)')
-          .inFilter('status', ['active', 'sold'])
-          .order('created_at', ascending: false)) as List;
+          .inFilter('status', ['active', 'sold', 'reserved']);
+      if (uid != null) othersQuery = othersQuery.neq('seller_id', uid);
+      final results = await Future.wait([
+        othersQuery
+            .order('created_at', ascending: false)
+            .range(0, _pageSize - 1),
+        if (uid != null)
+          supabase
+              .from('listings')
+              .select('*, users(name)')
+              .eq('seller_id', uid)
+              .inFilter('status', ['active', 'sold', 'reserved'])
+              .order('created_at', ascending: false),
+      ]);
 
-      // Resolve each seller's current tier so Super Premium sellers can be
-      // given priority placement in the feed. Buyers can't read others'
-      // subscriptions directly (RLS), so we go through the seller_tiers RPC.
-      final sellerIds = <String>{
-        for (final r in rows)
-          if ('${(r as Map)['seller_id'] ?? ''}'.isNotEmpty) '${r['seller_id']}'
-      }.toList();
-      final tierBySeller = <String, String>{};
-      if (sellerIds.isNotEmpty) {
-        try {
-          final tiers = await supabase
-              .rpc('seller_tiers', params: {'seller_ids': sellerIds});
-          for (final t in (tiers as List)) {
-            tierBySeller['${(t as Map)['user_id']}'] = '${t['tier']}';
-          }
-        } catch (e) {
-          debugPrint('Failed to load seller tiers: $e');
-        }
-      }
+      final otherRows = results[0] as List;
+      final myRows = results.length > 1 ? results[1] as List : const [];
+      final others = await _mapRows(otherRows);
+      final mine = await _mapRows(myRows);
 
       if (!mounted) return;
       setState(() {
-        _allItems = rows.map((r) {
-          final row = r as Map<String, dynamic>;
-          final priceValue = (row['price'] is num)
-              ? (row['price'] as num).toDouble()
-              : (double.tryParse('${row['price']}') ?? 0);
-          final img = (row['image_url'] as String?)?.trim() ?? '';
-          final imgs = (row['image_urls'] as List?)
-                  ?.map((e) => '$e')
-                  .where((e) => e.trim().isNotEmpty)
-                  .toList() ??
-              <String>[];
-          final seller = row['users'] as Map<String, dynamic>?;
-          final sellerId = '${row['seller_id'] ?? ''}';
-          return LivestockItem(
-            label: (row['title'] as String?) ?? 'Untitled',
-            imagePath: img.isNotEmpty ? img : 'images/chicken.png',
-            category: (row['category'] as String?) ?? 'Uncategorized',
-            priceText: _formatPrice(priceValue),
-            images: imgs,
-            description: (row['description'] as String?) ?? '',
-            condition: (row['condition'] as String?) ?? '',
-            location: (row['location'] as String?) ?? '',
-            sellerName: (seller?['name'] as String?) ?? '',
-            breed: (row['breed'] as String?) ?? '',
-            age: (row['age'] as String?) ?? '',
-            weight: (row['weight'] as String?) ?? '',
-            id: '${row['id'] ?? ''}',
-            sellerId: sellerId,
-            createdAt: '${row['created_at'] ?? ''}',
-            status: (row['status'] as String?) ?? 'active',
-            sellerTier: tierBySeller[sellerId] ?? 'Free',
-          );
-        }).toList();
+        _allItems = [...others, ...mine];
+        _feedPage = 0;
+        _hasMoreItems = otherRows.length == _pageSize;
         _loadingItems = false;
       });
     } catch (e) {
       debugPrint('Failed to load listings: $e');
       if (mounted) setState(() => _loadingItems = false);
     }
+  }
+
+  /// Appends the next page of other users' listings to the feed.
+  Future<void> _loadMoreItems() async {
+    if (_loadingMore || !_hasMoreItems) return;
+    setState(() => _loadingMore = true);
+    final uid = supabase.auth.currentUser?.id;
+    final nextPage = _feedPage + 1;
+    try {
+      var query = supabase
+          .from('listings')
+          .select('*, users(name)')
+          .inFilter('status', ['active', 'sold', 'reserved']);
+      if (uid != null) query = query.neq('seller_id', uid);
+      final rows = await query.order('created_at', ascending: false).range(
+          nextPage * _pageSize, nextPage * _pageSize + _pageSize - 1);
+      final items = await _mapRows(rows as List);
+      if (!mounted) return;
+      setState(() {
+        // Own listings live at the end of _allItems; new pages slot before
+        // them, but order within sections is preserved by _filteredItems.
+        _allItems = [..._allItems, ...items];
+        _feedPage = nextPage;
+        _hasMoreItems = rows.length == _pageSize;
+        _loadingMore = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load more listings: $e');
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  /// Server-side search across every listing (not just loaded pages).
+  /// Runs debounced from the search box; results replace the "others"
+  /// section while a query is active.
+  Future<void> _runServerSearch(String query) async {
+    final q = query.trim();
+    if (q.length < 2) return;
+    try {
+      final uid = supabase.auth.currentUser?.id;
+      var search = supabase
+          .from('listings')
+          .select('*, users(name)')
+          .inFilter('status', ['active', 'sold', 'reserved']).or(
+              'title.ilike.%$q%,category.ilike.%$q%,breed.ilike.%$q%');
+      if (uid != null) search = search.neq('seller_id', uid);
+      final rows =
+          await search.order('created_at', ascending: false).limit(50);
+      final items = await _mapRows(rows as List);
+      // Stale responses (query changed while in flight) are dropped.
+      if (!mounted || _searchQuery.trim() != q) return;
+      setState(() => _searchResults = items);
+    } catch (e) {
+      debugPrint('Server search failed: $e');
+    }
+  }
+
+  /// Shared row → item mapping, including the seller-tier lookup.
+  Future<List<LivestockItem>> _mapRows(List rows) async {
+    if (rows.isEmpty) return const [];
+    // Resolve each seller's current tier so Super Premium sellers can be
+    // given priority placement in the feed. Buyers can't read others'
+    // subscriptions directly (RLS), so we go through the seller_tiers RPC.
+    final sellerIds = <String>{
+      for (final r in rows)
+        if ('${(r as Map)['seller_id'] ?? ''}'.isNotEmpty) '${r['seller_id']}'
+    }.toList();
+    final tierBySeller = <String, String>{};
+    if (sellerIds.isNotEmpty) {
+      try {
+        final tiers = await supabase
+            .rpc('seller_tiers', params: {'seller_ids': sellerIds});
+        for (final t in (tiers as List)) {
+          tierBySeller['${(t as Map)['user_id']}'] = '${t['tier']}';
+        }
+      } catch (e) {
+        debugPrint('Failed to load seller tiers: $e');
+      }
+    }
+
+    return rows.map((r) {
+      final row = r as Map<String, dynamic>;
+      final priceValue = (row['price'] is num)
+          ? (row['price'] as num).toDouble()
+          : (double.tryParse('${row['price']}') ?? 0);
+      final img = (row['image_url'] as String?)?.trim() ?? '';
+      final imgs = (row['image_urls'] as List?)
+              ?.map((e) => '$e')
+              .where((e) => e.trim().isNotEmpty)
+              .toList() ??
+          <String>[];
+      final seller = row['users'] as Map<String, dynamic>?;
+      final sellerId = '${row['seller_id'] ?? ''}';
+      return LivestockItem(
+        label: (row['title'] as String?) ?? 'Untitled',
+        imagePath: img.isNotEmpty ? img : 'images/chicken.png',
+        category: (row['category'] as String?) ?? 'Uncategorized',
+        priceText: _formatPrice(priceValue),
+        images: imgs,
+        description: (row['description'] as String?) ?? '',
+        condition: (row['condition'] as String?) ?? '',
+        location: (row['location'] as String?) ?? '',
+        sellerName: (seller?['name'] as String?) ?? '',
+        breed: (row['breed'] as String?) ?? '',
+        age: (row['age'] as String?) ?? '',
+        weight: (row['weight'] as String?) ?? '',
+        id: '${row['id'] ?? ''}',
+        sellerId: sellerId,
+        createdAt: '${row['created_at'] ?? ''}',
+        status: (row['status'] as String?) ?? 'active',
+        sellerTier: tierBySeller[sellerId] ?? 'Free',
+      );
+    }).toList();
   }
 
   String _formatPrice(double value) {
@@ -588,23 +698,25 @@ class _DashboardPageState extends State<DashboardPage> {
   // ── Derived list ──────────────────────────────────────────────────────────
 
   List<LivestockItem> get _filteredItems {
+    // While searching, other users' listings come from the server-side
+    // search (which covers ALL listings, not just loaded pages); the user's
+    // own listings are always fully loaded, so they filter client-side.
+    final base = _searchQuery.isEmpty
+        ? _allItems
+        : [
+            ..._searchResults,
+            ..._allItems.where(_isMine).where((i) =>
+                i.label.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+                i.category.toLowerCase().contains(_searchQuery.toLowerCase())),
+          ];
+
     // Hide listings from sellers the user has blocked (same as Explore).
     final visible = _blockedSellers.isEmpty
-        ? _allItems
-        : _allItems
-            .where((i) => !_blockedSellers.contains(i.sellerId))
-            .toList();
+        ? base
+        : base.where((i) => !_blockedSellers.contains(i.sellerId)).toList();
     List<LivestockItem> items = _showAllCategories
         ? visible
         : visible.where((i) => i.category == _selectedCategory).toList();
-
-    if (_searchQuery.isNotEmpty) {
-      items = items
-          .where((i) =>
-              i.label.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-              i.category.toLowerCase().contains(_searchQuery.toLowerCase()))
-          .toList();
-    }
 
     // Secondary ordering from the chosen sort (default = newest first).
     int secondary(LivestockItem a, LivestockItem b) {
@@ -766,10 +878,17 @@ class _DashboardPageState extends State<DashboardPage> {
                           return GestureDetector(
                             onTap: () {
                               Navigator.pop(ctx);
-                              // Sold listings can't be opened by non-owners.
-                              if (item.status == 'sold' && !_isMine(item)) {
+                              // Sold/reserved listings can't be opened by
+                              // non-owners — unless reserved for this user.
+                              if ((item.status == 'sold' ||
+                                      item.status == 'reserved') &&
+                                  !_isMine(item) &&
+                                  !_reservedForMe.contains(item.id)) {
                                 showTopMessage(
-                                    context, 'This listing has been sold.');
+                                    context,
+                                    item.status == 'reserved'
+                                        ? 'This listing is reserved for another buyer.'
+                                        : 'This listing has been sold.');
                                 return;
                               }
                               _openListing(item);
@@ -1013,8 +1132,10 @@ class _DashboardPageState extends State<DashboardPage> {
                   height: 48,
                   child: ElevatedButton(
                     onPressed: () {
+                      _runServerSearch(tempController.text.trim());
                       setState(() {
                         _searchQuery = tempController.text.trim();
+                        _searchResults = [];
                         _filterSortBy = tempSort;
                         if (tempCategory == 'All') {
                           _showAllCategories = true;
@@ -1512,6 +1633,40 @@ class _DashboardPageState extends State<DashboardPage> {
                                       .map((item) => _buildCategoryCard(item))
                                       .toList(),
                                 ),
+                              // Next page of the feed (hidden while a search
+                              // is active — search already covers everything).
+                              if (_hasMoreItems && _searchQuery.isEmpty) ...[
+                                const SizedBox(height: 16),
+                                Center(
+                                  child: OutlinedButton.icon(
+                                    onPressed: _loadingMore
+                                        ? null
+                                        : _loadMoreItems,
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor:
+                                          const Color(0xFF1D9E75),
+                                      side: const BorderSide(
+                                          color: Color(0xFF6DBF99)),
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(24)),
+                                    ),
+                                    icon: _loadingMore
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: Color(0xFF6DBF99)),
+                                          )
+                                        : const Icon(
+                                            Icons.expand_more, size: 18),
+                                    label: Text(_loadingMore
+                                        ? 'Loading…'
+                                        : 'Load more listings'),
+                                  ),
+                                ),
+                              ],
                               // The user's own posts always sit at the bottom
                               // of the feed, under their own header.
                               if (myItems.isNotEmpty) ...[
@@ -1675,21 +1830,32 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
     );
     if (result == 'deleted' || result == 'updated') _loadItems();
-    // The detail page can also toggle this listing's favourite or block
-    // its seller.
+    // The detail page can also toggle this listing's favourite, block its
+    // seller, or change a reservation (cancel deal / accept an offer).
     _loadFavorites();
     _loadBlocked();
+    _loadReservedForMe();
   }
 
   Widget _buildCategoryCard(LivestockItem item) {
     final isFav = _favourites.contains(item.id);
-    final isSold = item.status == 'sold';
-    // A sold listing can only be opened by its owner (to restock/relist it).
-    final canOpen = !isSold || _isMine(item);
+    final isUnavailable =
+        item.status == 'sold' || item.status == 'reserved';
+    // The winning buyer keeps full access to the listing reserved for them.
+    final reservedForMe =
+        item.status == 'reserved' && _reservedForMe.contains(item.id);
+    // Locked for everyone else except the owner.
+    final locked = isUnavailable && !reservedForMe && !_isMine(item);
+    // Grey-out only for people the listing is no longer "for".
+    final greyed = isUnavailable && !reservedForMe;
     return GestureDetector(
-      onTap: canOpen
-          ? () => _openListing(item)
-          : () => showTopMessage(context, 'This listing has been sold.'),
+      onTap: locked
+          ? () => showTopMessage(
+              context,
+              item.status == 'reserved'
+                  ? 'This listing is reserved for another buyer.'
+                  : 'This listing has been sold.')
+          : () => _openListing(item),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
@@ -1699,8 +1865,9 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Sold posts render desaturated so they read as unavailable.
-            if (isSold)
+            // Sold/reserved posts render desaturated so they read as
+            // unavailable — except to the buyer they're reserved for.
+            if (greyed)
               ColorFiltered(
                 colorFilter: const ColorFilter.mode(
                     Colors.grey, BlendMode.saturation),
@@ -1708,9 +1875,9 @@ class _DashboardPageState extends State<DashboardPage> {
               )
             else
               _cardImage(item.imagePath),
-            if (isSold)
+            if (greyed)
               Container(color: Colors.white.withOpacity(0.45)),
-            if (isSold)
+            if (isUnavailable)
               Positioned(
                 top: 8,
                 left: 8,
@@ -1718,11 +1885,20 @@ class _DashboardPageState extends State<DashboardPage> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.65),
+                    color: reservedForMe
+                        ? const Color(0xE61D9E75)
+                        : item.status == 'reserved'
+                            ? const Color(0xCCE65100)
+                            : Colors.black.withOpacity(0.65),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Text('SOLD',
-                      style: TextStyle(
+                  child: Text(
+                      reservedForMe
+                          ? 'RESERVED FOR YOU'
+                          : item.status == 'reserved'
+                              ? 'RESERVED'
+                              : 'SOLD',
+                      style: const TextStyle(
                           color: Colors.white,
                           fontSize: 10,
                           fontWeight: FontWeight.w800,
@@ -1767,9 +1943,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
-            // Owners don't get a fav button on their own listings; sold
-            // listings can't be favourited either.
-            if (!_isMine(item) && !isSold)
+            // Owners don't get a fav button on their own listings;
+            // sold/reserved listings can't be favourited either.
+            if (!_isMine(item) && !isUnavailable)
               Positioned(
                 top: 8,
                 right: 8,

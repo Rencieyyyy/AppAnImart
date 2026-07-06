@@ -30,6 +30,10 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
   bool _loading = true;
   bool _submitting = false;
 
+  /// Reviews are verified-purchase only: true once the signed-in user has a
+  /// completed transaction with this seller (mirrors the reviews RLS).
+  bool _canReview = false;
+
   bool get _isOwnProfile =>
       supabase.auth.currentUser?.id == widget.sellerId;
 
@@ -44,17 +48,27 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
       MarketplaceService.fetchSellerRating(widget.sellerId),
       MarketplaceService.fetchReviews(widget.sellerId),
       MarketplaceService.fetchMyReview(widget.sellerId),
+      MarketplaceService.canReviewSeller(widget.sellerId),
     ]);
     if (!mounted) return;
     setState(() {
       _rating = results[0] as SellerRating;
       _reviews = results[1] as List<Review>;
       _myReview = results[2] as Review?;
+      _canReview = results[3] as bool;
       _loading = false;
     });
   }
 
   Future<void> _openReviewForm() async {
+    if (!_canReview && _myReview == null) {
+      showTopMessage(
+        context,
+        'Reviews are for verified buyers — you can rate '
+        '${widget.sellerName} after a completed purchase from them.',
+      );
+      return;
+    }
     int stars = _myReview?.rating ?? 0;
     final commentCtrl =
         TextEditingController(text: _myReview?.comment ?? '');

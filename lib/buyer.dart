@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:ani_mart/product_detail.dart';
 import 'dashboard.dart';
@@ -20,9 +22,9 @@ class _Listing {
   final List<String> images;
   final String category;
   final String location;
-  // Where the seller lives (from their `users` row); null when not set.
-  final double? sellerLat;
-  final double? sellerLng;
+  // Distance from the signed-in buyer to the seller, computed server-side
+  // by the explore_listings RPC; null when either side has no location.
+  final double? distanceKm;
   final String description;
   final String condition;
   final String sellerName;
@@ -45,8 +47,7 @@ class _Listing {
     this.images = const [],
     required this.category,
     required this.location,
-    this.sellerLat,
-    this.sellerLng,
+    this.distanceKm,
     this.description = '',
     this.condition = '',
     this.sellerName = '',
@@ -94,17 +95,22 @@ class _BuyerPageState extends State<BuyerPage> {
   Set<String> _favourites = {};
   Set<String> _blockedSellers = {};
 
-  // Listings loaded from the `listings` table.
+  // Listings loaded via the explore_listings RPC (paged).
   List<_Listing> _allListings = [];
   bool _loading = true;
 
+  // Feed pagination.
+  static const int _pageSize = 30;
+  int _explorePage = 0;
+  bool _hasMoreListings = true;
+  bool _loadingMore = false;
+
+  // Server-side search results (cover ALL listings, not just loaded pages).
+  List<_Listing> _searchResults = [];
+  Timer? _searchDebounce;
+
   // The signed-in buyer's saved location — drives "Explore near you".
   UserLocation? _myLocation;
-
-  // Seller distances keyed by listing id, precomputed whenever the listings
-  // or the buyer's location change so sorting/filtering never re-runs the
-  // Haversine math on every rebuild.
-  Map<String, double> _distances = {};
 
   @override
   void initState() {
@@ -121,38 +127,30 @@ class _BuyerPageState extends State<BuyerPage> {
   // Red dot on the announcements nav icon while unseen announcements exist.
   bool _hasUnseenAnnouncements = false;
 
-  /// Loads the buyer's saved location so listing distances can be computed.
-  /// Users who never picked one default to their profile address.
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  /// Loads the buyer's saved location so the "near you" UI can gate the
+  /// radius filter. Users who never picked one default to their profile
+  /// address. Distances themselves come from the explore_listings RPC, so
+  /// listings load again once the location resolves (first save).
   Future<void> _loadMyLocation() async {
+    final hadLocation = _myLocation != null;
     final loc = await LocationService.fetchUserLocation() ??
         await LocationService.adoptLocationFromAddress();
     if (!mounted) return;
-    setState(() {
-      _myLocation = loc;
-      _recomputeDistances();
-    });
-  }
-
-  /// Rebuilds the listing-id → distance map. Call inside setState whenever
-  /// `_allListings` or `_myLocation` changes.
-  void _recomputeDistances() {
-    final me = _myLocation;
-    final next = <String, double>{};
-    if (me != null) {
-      for (final l in _allListings) {
-        if (l.id.isEmpty || l.sellerLat == null || l.sellerLng == null) {
-          continue;
-        }
-        next[l.id] = LocationService.distanceKm(
-            me.lat, me.lng, l.sellerLat!, l.sellerLng!);
-      }
-    }
-    _distances = next;
+    setState(() => _myLocation = loc);
+    // A location appearing for the first time means the already-loaded rows
+    // have null distances — refresh so the RPC recomputes them.
+    if (!hadLocation && loc != null && !_loading) _loadListings();
   }
 
   /// Distance in km between the buyer and the listing's seller, or null when
-  /// either side has no saved location.
-  double? _distanceOf(_Listing l) => _distances[l.id];
+  /// either side has no saved location (computed by the RPC).
+  double? _distanceOf(_Listing l) => l.distanceKm;
 
   /// Formats a distance as e.g. "3.2 km" or "24 km".
   String _formatDistance(double km) =>
@@ -192,43 +190,107 @@ class _BuyerPageState extends State<BuyerPage> {
     }
   }
 
-  /// Loads all active listings from Supabase, newest first.
+  /// Loads the first page of active listings via the `explore_listings`
+  /// RPC (which also computes each seller's distance server-side, so no
+  /// coordinates are ever sent to the client).
   Future<void> _loadListings() async {
     try {
-      final rows = await supabase
-          .from('listings')
-          .select('*, users(name, latitude, longitude)')
-          .eq('status', 'active')
-          .order('created_at', ascending: false);
-
-      // Resolve each seller's current subscription tier so paid sellers get
-      // priority placement + colored borders. Buyers can't read others'
-      // subscriptions directly (RLS), so we go through the seller_tiers RPC.
-      final sellerIds = <String>{
-        for (final r in (rows as List))
-          if ('${(r as Map)['seller_id'] ?? ''}'.isNotEmpty)
-            '${r['seller_id']}'
-      }.toList();
-      final tierBySeller = <String, String>{};
-      if (sellerIds.isNotEmpty) {
-        try {
-          final tiers = await supabase
-              .rpc('seller_tiers', params: {'seller_ids': sellerIds});
-          for (final t in (tiers as List)) {
-            tierBySeller['${(t as Map)['user_id']}'] = '${t['tier']}';
-          }
-        } catch (e) {
-          debugPrint('Failed to load seller tiers: $e');
-        }
-      }
-
-      // The signed-in user's own listings never appear in Explore — they
-      // remain visible on the Home feed's "All" category instead.
-      final myId = supabase.auth.currentUser?.id;
-
+      final rows = await supabase.rpc('explore_listings', params: {
+        'p_search': null,
+        'p_limit': _pageSize,
+        'p_offset': 0,
+      });
+      final items = await _mapExploreRows(rows as List);
       if (!mounted) return;
       setState(() {
-        _allListings = rows.map((row) {
+        _allListings = items;
+        _explorePage = 0;
+        _hasMoreListings = rows.length == _pageSize;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Appends the next page of listings.
+  Future<void> _loadMoreListings() async {
+    if (_loadingMore || !_hasMoreListings) return;
+    setState(() => _loadingMore = true);
+    final nextPage = _explorePage + 1;
+    try {
+      final rows = await supabase.rpc('explore_listings', params: {
+        'p_search': null,
+        'p_limit': _pageSize,
+        'p_offset': nextPage * _pageSize,
+      });
+      final items = await _mapExploreRows(rows as List);
+      if (!mounted) return;
+      setState(() {
+        _allListings = [..._allListings, ...items];
+        _explorePage = nextPage;
+        _hasMoreListings = rows.length == _pageSize;
+        _loadingMore = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load more listings: $e');
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  /// Debounced server-side search over ALL listings (title, category,
+  /// breed, location) — not just the loaded pages.
+  void _onSearchChanged(String query) {
+    setState(() => _searchQuery = query);
+    _searchDebounce?.cancel();
+    final q = query.trim();
+    if (q.length < 2) return;
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () async {
+      try {
+        final rows = await supabase.rpc('explore_listings', params: {
+          'p_search': q,
+          'p_limit': 50,
+          'p_offset': 0,
+        });
+        final items = await _mapExploreRows(rows as List);
+        // Drop stale responses (the query changed while in flight).
+        if (!mounted || _searchQuery.trim() != q) return;
+        setState(() => _searchResults = items);
+      } catch (e) {
+        debugPrint('Server search failed: $e');
+      }
+    });
+  }
+
+  /// Maps explore_listings RPC rows to [_Listing]s, resolving seller tiers
+  /// (paid sellers get priority placement + colored borders).
+  Future<List<_Listing>> _mapExploreRows(List rows) async {
+    if (rows.isEmpty) return const [];
+    final sellerIds = <String>{
+      for (final r in rows)
+        if ('${(r as Map)['seller_id'] ?? ''}'.isNotEmpty) '${r['seller_id']}'
+    }.toList();
+    final tierBySeller = <String, String>{};
+    if (sellerIds.isNotEmpty) {
+      try {
+        final tiers = await supabase
+            .rpc('seller_tiers', params: {'seller_ids': sellerIds});
+        for (final t in (tiers as List)) {
+          tierBySeller['${(t as Map)['user_id']}'] = '${t['tier']}';
+        }
+      } catch (e) {
+        debugPrint('Failed to load seller tiers: $e');
+      }
+    }
+
+    // The signed-in user's own listings never appear in Explore — they
+    // remain visible on the Home feed's "All" category instead.
+    final myId = supabase.auth.currentUser?.id;
+
+    return rows
+        .map((r) {
+          final row = r as Map<String, dynamic>;
           final priceValue = (row['price'] is num)
               ? (row['price'] as num).toDouble()
               : (double.tryParse('${row['price']}') ?? 0);
@@ -238,7 +300,6 @@ class _BuyerPageState extends State<BuyerPage> {
                   .where((e) => e.trim().isNotEmpty)
                   .toList() ??
               <String>[];
-          final seller = row['users'] as Map<String, dynamic>?;
           return _Listing(
             name: (row['title'] as String?) ?? 'Untitled',
             price: _formatPrice(priceValue),
@@ -247,11 +308,10 @@ class _BuyerPageState extends State<BuyerPage> {
             images: imgs,
             category: (row['category'] as String?) ?? 'Uncategorized',
             location: (row['location'] as String?) ?? '',
-            sellerLat: (seller?['latitude'] as num?)?.toDouble(),
-            sellerLng: (seller?['longitude'] as num?)?.toDouble(),
+            distanceKm: (row['distance_km'] as num?)?.toDouble(),
             description: (row['description'] as String?) ?? '',
             condition: (row['condition'] as String?) ?? '',
-            sellerName: (seller?['name'] as String?) ?? '',
+            sellerName: (row['seller_name'] as String?) ?? '',
             breed: (row['breed'] as String?) ?? '',
             age: (row['age'] as String?) ?? '',
             weight: (row['weight'] as String?) ?? '',
@@ -260,14 +320,9 @@ class _BuyerPageState extends State<BuyerPage> {
             createdAt: '${row['created_at'] ?? ''}',
             sellerTier: tierBySeller['${row['seller_id'] ?? ''}'] ?? 'Free',
           );
-        }).where((l) => myId == null || l.sellerId != myId).toList();
-        _recomputeDistances();
-        _loading = false;
-      });
-    } catch (e) {
-      debugPrint('Failed to load listings: $e');
-      if (mounted) setState(() => _loading = false);
-    }
+        })
+        .where((l) => myId == null || l.sellerId != myId)
+        .toList();
   }
 
   /// Formats a numeric price as e.g. "₱350" (no trailing ".0").
@@ -281,10 +336,14 @@ class _BuyerPageState extends State<BuyerPage> {
   // ── Derived list ───────────────────────────────────────────────────────────
 
   List<_Listing> get _filtered {
+    // While searching, rows come from the server-side search (covers every
+    // listing, not just the loaded pages).
+    final source = _searchQuery.isEmpty ? _allListings : _searchResults;
+
     // Hide listings from sellers the user has blocked.
     List<_Listing> list = _blockedSellers.isEmpty
-        ? _allListings
-        : _allListings
+        ? source
+        : source
             .where((l) => !_blockedSellers.contains(l.sellerId))
             .toList();
 
@@ -383,19 +442,20 @@ class _BuyerPageState extends State<BuyerPage> {
           'Philippines — to see how far each seller is.',
     );
     if (city == null || !mounted) return;
-    // Optimistic update so distances appear immediately.
+    // Optimistic update; distances come from the RPC, so reload after the
+    // location is saved server-side.
     final previous = _myLocation;
     setState(() {
       _myLocation =
           UserLocation(name: city.label, lat: city.lat, lng: city.lng);
-      _recomputeDistances();
     });
     final ok = await LocationService.saveUserLocation(city);
-    if (!mounted || ok) return;
-    setState(() {
-      _myLocation = previous;
-      _recomputeDistances();
-    });
+    if (!mounted) return;
+    if (ok) {
+      _loadListings();
+      return;
+    }
+    setState(() => _myLocation = previous);
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Could not save your location. Please try again.')));
   }
@@ -483,7 +543,8 @@ class _BuyerPageState extends State<BuyerPage> {
               height: 48,
               child: ElevatedButton(
                 onPressed: () {
-                  setState(() => _searchQuery = ctrl.text.trim());
+                  setState(() => _searchResults = []);
+                  _onSearchChanged(ctrl.text.trim());
                   Navigator.pop(ctx);
                 },
                 style: ElevatedButton.styleFrom(
@@ -1360,7 +1421,10 @@ class _BuyerPageState extends State<BuyerPage> {
                                     })),
                           if (_searchQuery.isNotEmpty)
                             _filterChip('"$_searchQuery"',
-                                () => setState(() => _searchQuery = '')),
+                                () => setState(() {
+                                      _searchQuery = '';
+                                      _searchResults = [];
+                                    })),
                         ],
                       ),
                     ),
@@ -1528,6 +1592,36 @@ class _BuyerPageState extends State<BuyerPage> {
                             );
                           },
                         ),
+
+                  // Next page (hidden while searching — the server search
+                  // already covers every listing).
+                  if (!_loading &&
+                      _hasMoreListings &&
+                      _searchQuery.isEmpty) ...[
+                    const SizedBox(height: 16),
+                    Center(
+                      child: OutlinedButton.icon(
+                        onPressed: _loadingMore ? null : _loadMoreListings,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF1D9E75),
+                          side: const BorderSide(color: Color(0xFF6DBF99)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(24)),
+                        ),
+                        icon: _loadingMore
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFF6DBF99)),
+                              )
+                            : const Icon(Icons.expand_more, size: 18),
+                        label: Text(
+                            _loadingMore ? 'Loading…' : 'Load more listings'),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 80),
                 ],
               ),

@@ -25,6 +25,10 @@ class _OffersPageState extends State<OffersPage> {
   /// The seller's listing rows keyed by id, for the post header cards.
   Map<String, Map<String, dynamic>> _listingsById = {};
 
+  /// The seller's deals keyed by the offer that created them, so accepted
+  /// offers show their transaction state (reserved/completed/cancelled).
+  Map<String, TransactionInfo> _txByOffer = {};
+
   @override
   void initState() {
     super.initState();
@@ -48,6 +52,9 @@ class _OffersPageState extends State<OffersPage> {
       final listingRows =
           await supabase.from('listings').select().eq('seller_id', uid);
 
+      final transactions =
+          await MarketplaceService.fetchTransactions(asSeller: true);
+
       final byListing = <String, List<Offer>>{};
       for (final o in offers) {
         byListing.putIfAbsent(o.listingId, () => []).add(o);
@@ -56,11 +63,16 @@ class _OffersPageState extends State<OffersPage> {
         for (final r in (listingRows as List))
           '${(r as Map)['id']}': r as Map<String, dynamic>,
       };
+      final txByOffer = <String, TransactionInfo>{
+        for (final t in transactions)
+          if (t.offerId.isNotEmpty) t.offerId: t,
+      };
 
       if (!mounted) return;
       setState(() {
         _offersByListing = byListing;
         _listingsById = listings;
+        _txByOffer = txByOffer;
         _loading = false;
       });
     } catch (e) {
@@ -80,11 +92,114 @@ class _OffersPageState extends State<OffersPage> {
     showTopMessage(
       context,
       accept
-          ? 'Offer accepted. You can now message the buyer to arrange the sale.'
+          ? 'Offer accepted — the listing is now reserved for this buyer. '
+              'Message them on Messenger to arrange the sale.'
           : 'Offer declined.',
       isError: false,
       backgroundColor: const Color(0xFF6DBF99),
     );
+    _load();
+  }
+
+  /// Seller confirms the deal happened: stock is reduced by the deal
+  /// quantity and the listing relists or goes to Sold automatically.
+  Future<void> _completeTx(TransactionInfo tx) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Complete this sale?',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: Text(
+          'This confirms the buyer received the item(s). Stock will be '
+          'reduced by ${tx.quantity} and the listing will go back online '
+          '(or be marked Sold if stock runs out).',
+          style: const TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not yet', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6DBF99)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Complete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await MarketplaceService.completeTransaction(tx.id);
+    if (!mounted) return;
+    if (error != null) {
+      showTopMessage(context, error);
+      return;
+    }
+    showTopMessage(context, 'Sale completed. The buyer can now rate you.',
+        isError: false, backgroundColor: const Color(0xFF6DBF99));
+    _load();
+  }
+
+  /// Either side backed out — the listing goes back online.
+  Future<void> _cancelTx(TransactionInfo tx) async {
+    final reasonCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Cancel this deal?',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'The buyer will be notified and the listing becomes available '
+              'to everyone again.',
+              style: TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonCtrl,
+              decoration: InputDecoration(
+                hintText: 'Reason (optional)',
+                hintStyle:
+                    const TextStyle(fontSize: 13, color: Colors.black38),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep deal',
+                style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Cancel deal',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final error = await MarketplaceService.cancelTransaction(tx.id,
+        reason: reasonCtrl.text);
+    if (!mounted) return;
+    if (error != null) {
+      showTopMessage(context, error);
+      return;
+    }
+    showTopMessage(context, 'Deal cancelled. The listing is active again.',
+        isError: false, backgroundColor: const Color(0xFF6DBF99));
     _load();
   }
 
@@ -304,6 +419,7 @@ class _OffersPageState extends State<OffersPage> {
 
   Widget _buildOfferRow(Offer offer) {
     final isPending = offer.status == 'pending';
+    final tx = _txByOffer[offer.id];
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
       child: Row(
@@ -334,9 +450,19 @@ class _OffersPageState extends State<OffersPage> {
                         fontWeight: FontWeight.w600,
                         color: Colors.black87)),
                 Text(
-                  'Offered ${_formatPeso(offer.amount)} · ${_timeAgo(offer.createdAt)}',
+                  'Offered ${_formatPeso(offer.amount)}'
+                  '${offer.quantity > 1 ? ' for ${offer.quantity} pcs' : ''}'
+                  ' · ${_timeAgo(offer.createdAt)}',
                   style: const TextStyle(fontSize: 12, color: Colors.black45),
                 ),
+                if (offer.note.isNotEmpty)
+                  Text('“${offer.note}”',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.black38)),
               ],
             ),
           ),
@@ -377,26 +503,80 @@ class _OffersPageState extends State<OffersPage> {
                         fontWeight: FontWeight.w600)),
               ),
             ),
-          ] else
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: offer.status == 'accepted'
-                    ? const Color(0xFFE8F7F1)
-                    : const Color(0xFFFDECEC),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                offer.status == 'accepted' ? 'Accepted' : 'Declined',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: offer.status == 'accepted'
-                        ? const Color(0xFF1D9E75)
-                        : Colors.red.shade400),
+          ] else if (tx != null && tx.isReserved) ...[
+            // The deal is live: seller finishes or backs out.
+            GestureDetector(
+              onTap: () => _completeTx(tx),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6DBF99),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('Complete',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
               ),
             ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => _cancelTx(tx),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.red.shade300),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('Cancel',
+                    style: TextStyle(
+                        color: Colors.red.shade400,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ] else
+            _statusPill(offer, tx),
         ],
+      ),
+    );
+  }
+
+  /// Resolved-state pill: prefers the deal status over the raw offer status.
+  Widget _statusPill(Offer offer, TransactionInfo? tx) {
+    String label;
+    Color bg;
+    Color fg;
+    if (tx != null && tx.status == 'completed') {
+      label = 'Completed';
+      bg = const Color(0xFFE8F7F1);
+      fg = const Color(0xFF1D9E75);
+    } else if (tx != null && tx.status == 'cancelled') {
+      label = 'Cancelled';
+      bg = const Color(0xFFF2F2F2);
+      fg = Colors.black45;
+    } else if (offer.status == 'accepted') {
+      label = 'Accepted';
+      bg = const Color(0xFFE8F7F1);
+      fg = const Color(0xFF1D9E75);
+    } else {
+      label = 'Declined';
+      bg = const Color(0xFFFDECEC);
+      fg = Colors.red.shade400;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style:
+            TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: fg),
       ),
     );
   }

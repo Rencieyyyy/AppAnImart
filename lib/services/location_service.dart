@@ -32,22 +32,24 @@ class LocationService {
   static double _rad(double deg) => deg * math.pi / 180;
 
   /// Loads the signed-in user's saved location, or `null` if none is set yet.
+  ///
+  /// Goes through the `my_location()` RPC: lat/lng column reads on `users`
+  /// are revoked for client roles (privacy — nobody can scrape other users'
+  /// coordinates), so even the caller's own coords come via the function.
   static Future<UserLocation?> fetchUserLocation() async {
-    final userId = supabase.auth.currentUser?.id;
-    if (userId == null) return null;
+    if (supabase.auth.currentUser == null) return null;
     try {
-      final row = await supabase
-          .from('users')
-          .select('location_name, latitude, longitude')
-          .eq('id', userId)
-          .maybeSingle();
+      final rows = await supabase.rpc('my_location');
+      final row = (rows as List).isNotEmpty
+          ? rows.first as Map<String, dynamic>
+          : null;
       final name = (row?['location_name'] as String?)?.trim() ?? '';
       final lat = row?['latitude'] as num?;
       final lng = row?['longitude'] as num?;
       if (name.isEmpty || lat == null || lng == null) return null;
       return UserLocation(name: name, lat: lat.toDouble(), lng: lng.toDouble());
     } catch (_) {
-      return null; // Columns may not exist yet — treat as "no location".
+      return null; // RPC may not exist yet — treat as "no location".
     }
   }
 
