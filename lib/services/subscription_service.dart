@@ -32,6 +32,24 @@ class AppPlan {
   String get priceLabel => '₱$price / mo';
 }
 
+/// Live pricing for one plan from the admin-managed `prices` table: the
+/// current base price plus any promo discount still within its deadline.
+class PlanPricing {
+  /// Monthly base price in ₱ before any discount.
+  final double price;
+
+  /// Live admin-set discount percent (0 = none).
+  final double discountPercent;
+
+  const PlanPricing({required this.price, this.discountPercent = 0});
+
+  bool get discounted => discountPercent > 0 && price > 0;
+
+  /// Monthly price with the discount applied.
+  double get effectivePrice =>
+      discounted ? price * (1 - discountPercent / 100) : price;
+}
+
 /// The user's resolved active plan, including how it's billed.
 class ActivePlan {
   /// 'Free' | 'Premium' | 'Super Premium'.
@@ -75,6 +93,39 @@ class SubscriptionService {
   /// Looks up an [AppPlan] by its app-facing [id], defaulting to Free.
   static AppPlan planById(String id) =>
       plans.firstWhere((p) => p.id == id, orElse: () => plans.first);
+
+  /// Live prices and promo discounts keyed by app-facing plan id, from the
+  /// `prices` rows the admin website manages. A discount only counts while
+  /// its `promo_deadline` hasn't passed (same rule as the plans page).
+  /// Returns an empty map on failure so callers fall back to static prices.
+  static Future<Map<String, PlanPricing>> fetchPricing() async {
+    const idByPlan = {
+      'Free': 'free',
+      'Premium': 'premium',
+      'Super Premium': 'superpremium',
+    };
+    try {
+      final rows = await supabase
+          .from('prices')
+          .select('plan, price, discount_percent, promo_deadline');
+      final pricing = <String, PlanPricing>{};
+      for (final row in (rows as List)) {
+        final r = row as Map<String, dynamic>;
+        final id = idByPlan[(r['plan'] as String?)?.trim()];
+        if (id == null) continue;
+        final deadline = DateTime.tryParse('${r['promo_deadline'] ?? ''}');
+        final promoLive = deadline == null || deadline.isAfter(DateTime.now());
+        pricing[id] = PlanPricing(
+          price: (r['price'] as num?)?.toDouble() ?? planById(id).price.toDouble(),
+          discountPercent:
+              promoLive ? (r['discount_percent'] as num?)?.toDouble() ?? 0 : 0,
+        );
+      }
+      return pricing;
+    } catch (_) {
+      return const {};
+    }
+  }
 
   /// Normalises a `subscriptions.plan` value to the app-facing label.
   ///

@@ -63,6 +63,21 @@ class Offer {
   });
 }
 
+/// A user the current user has blocked, for the "Blocked Sellers" list.
+class BlockedUser {
+  final String id;
+  final String name;
+
+  /// Profile picture URL ('' when they have none).
+  final String avatarUrl;
+
+  const BlockedUser({
+    required this.id,
+    required this.name,
+    this.avatarUrl = '',
+  });
+}
+
 /// Centralised Supabase access for the marketplace trust & safety features:
 /// favorites, seller reviews, abuse reports, user blocks and buyer offers.
 ///
@@ -440,6 +455,37 @@ class MarketplaceService {
           .toSet();
     } catch (_) {
       return <String>{};
+    }
+  }
+
+  /// The users the current user has blocked, with their display name and
+  /// avatar, for the profile page's "Blocked Sellers" list.
+  static Future<List<BlockedUser>> fetchBlockedUsers() async {
+    final uid = _uid;
+    if (uid == null) return const [];
+    try {
+      final ids = (await fetchBlockedIds()).toList();
+      if (ids.isEmpty) return const [];
+      // auth.users FKs can't embed, so resolve the profiles separately.
+      final rows = await supabase
+          .from('users')
+          .select('id, name, avatar_url')
+          .inFilter('id', ids);
+      final byId = <String, Map<String, dynamic>>{
+        for (final r in (rows as List))
+          '${(r as Map)['id']}': r as Map<String, dynamic>,
+      };
+      return ids.map((id) {
+        final row = byId[id];
+        final name = (row?['name'] as String?)?.trim() ?? '';
+        return BlockedUser(
+          id: id,
+          name: name.isNotEmpty ? name : 'AniMart User',
+          avatarUrl: (row?['avatar_url'] as String?)?.trim() ?? '',
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
     }
   }
 

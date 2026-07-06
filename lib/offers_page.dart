@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'main.dart';
+import 'product_detail.dart';
 import 'services/marketplace_service.dart';
 import 'services/notification_service.dart';
 import 'widgets/top_message.dart';
@@ -42,11 +43,10 @@ class _OffersPageState extends State<OffersPage> {
     try {
       final offers = await MarketplaceService.fetchReceivedOffers();
 
-      // Fetch this seller's listing rows so each group can show the post.
-      final listingRows = await supabase
-          .from('listings')
-          .select('id, title, price, image_url, category, status')
-          .eq('seller_id', uid);
+      // Fetch this seller's listing rows so each group can show the post
+      // (full rows, so tapping a group can open the listing page).
+      final listingRows =
+          await supabase.from('listings').select().eq('seller_id', uid);
 
       final byListing = <String, List<Offer>>{};
       for (final o in offers) {
@@ -86,6 +86,47 @@ class _OffersPageState extends State<OffersPage> {
       backgroundColor: const Color(0xFF6DBF99),
     );
     _load();
+  }
+
+  /// Opens the listing this offer group belongs to (it's the seller's own
+  /// post) and reloads on return in case it was edited or deleted.
+  Future<void> _openListing(Map<String, dynamic>? listing) async {
+    if (listing == null) {
+      showTopMessage(context, 'This listing is no longer available.');
+      return;
+    }
+    final priceRaw = listing['price'];
+    final price = priceRaw is num
+        ? priceRaw.toDouble()
+        : (double.tryParse('$priceRaw') ?? 0);
+    final img = (listing['image_url'] as String?)?.trim() ?? '';
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailPage(
+          name: (listing['title'] as String?) ?? 'Untitled',
+          price: _formatPeso(price),
+          image: img.isNotEmpty ? img : 'images/chicken.png',
+          images: (listing['image_urls'] as List?)
+                  ?.map((e) => '$e')
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList() ??
+              const [],
+          description: (listing['description'] as String?) ?? '',
+          condition: (listing['condition'] as String?) ?? '',
+          location: (listing['location'] as String?) ?? '',
+          breed: (listing['breed'] as String?) ?? '',
+          age: (listing['age'] as String?) ?? '',
+          weight: (listing['weight'] as String?) ?? '',
+          createdAt: '${listing['created_at'] ?? ''}',
+          listingId: '${listing['id'] ?? ''}',
+          sellerId: '${listing['seller_id'] ?? ''}',
+          status: (listing['status'] as String?) ?? 'active',
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (result == 'deleted' || result == 'updated') _load();
   }
 
   String _formatPeso(double value) {
@@ -190,8 +231,12 @@ class _OffersPageState extends State<OffersPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── The seller's listing post ─────────────────────────────────
-          Padding(
+          // ── The seller's listing post (tap to open it) ────────────────
+          InkWell(
+            onTap: () => _openListing(listing),
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
@@ -245,6 +290,7 @@ class _OffersPageState extends State<OffersPage> {
                   ),
                 ),
               ],
+            ),
             ),
           ),
           const Divider(height: 1, color: Color(0xFFF0F0F0)),

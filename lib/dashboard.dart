@@ -92,6 +92,9 @@ class _DashboardPageState extends State<DashboardPage> {
   // Favourites — persisted in Supabase by listing id (same as Explore).
   Set<String> _favourites = {};
 
+  // Sellers the user has blocked; their listings are hidden from the feed.
+  Set<String> _blockedSellers = {};
+
   // Signed-in user's name (loaded from the `users` table).
   String _userName = '';
 
@@ -110,6 +113,7 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadUserName();
     _loadItems();
     _loadFavorites();
+    _loadBlocked();
     NotificationService.hasUnseenAnnouncements().then((v) {
       if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
     });
@@ -144,6 +148,13 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _favourites = ids);
   }
 
+  /// Loads the user's blocked sellers so their listings can be hidden.
+  Future<void> _loadBlocked() async {
+    final ids = await MarketplaceService.fetchBlockedIds();
+    if (!mounted) return;
+    setState(() => _blockedSellers = ids);
+  }
+
   /// Whether the signed-in user owns [item] (owners can't favourite their
   /// own listings).
   bool _isMine(LivestockItem item) =>
@@ -175,10 +186,12 @@ class _DashboardPageState extends State<DashboardPage> {
   /// Loads all active listings published by any user.
   Future<void> _loadItems() async {
     try {
+      // Sold listings stay in the feed greyed out (they can't be opened by
+      // other users); disabled ones stay hidden.
       final rows = (await supabase
           .from('listings')
           .select('*, users(name)')
-          .eq('status', 'active')
+          .inFilter('status', ['active', 'sold'])
           .order('created_at', ascending: false)) as List;
 
       // Resolve each seller's current tier so Super Premium sellers can be
@@ -263,6 +276,18 @@ class _DashboardPageState extends State<DashboardPage> {
 
     final List<AppPlan> plans = SubscriptionService.plans;
 
+    // Live prices + promo discounts from the `prices` table; the static
+    // plan prices show until (or if) this loads.
+    Map<String, PlanPricing> pricing = const {};
+    bool pricingRequested = false;
+
+    String peso(double value) {
+      final text = value == value.roundToDouble()
+          ? value.toInt().toString()
+          : value.toStringAsFixed(2);
+      return '₱$text';
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false, // must tap X or Continue to dismiss
@@ -296,6 +321,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
         return StatefulBuilder(
           builder: (ctx, setDialog) {
+            if (!pricingRequested) {
+              pricingRequested = true;
+              SubscriptionService.fetchPricing().then((p) {
+                if (p.isNotEmpty && ctx.mounted) setDialog(() => pricing = p);
+              });
+            }
             return Dialog(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(20),
@@ -367,6 +398,9 @@ class _DashboardPageState extends State<DashboardPage> {
                     // ── Plan Cards ──────────────────────────────────
                     ...plans.map((plan) {
                       final isSelected = selectedPlan == plan.id;
+                      final planPricing = pricing[plan.id];
+                      final discounted = planPricing?.discounted ?? false;
+                      final pct = planPricing?.discountPercent ?? 0;
                       return GestureDetector(
                         onTap: submitting
                             ? null
@@ -405,13 +439,41 @@ class _DashboardPageState extends State<DashboardPage> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      plan.label,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.black87,
-                                      ),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          plan.label,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.black87,
+                                          ),
+                                        ),
+                                        // Promo chip, e.g. "-19% OFF".
+                                        if (discounted) ...[
+                                          const SizedBox(width: 6),
+                                          Container(
+                                            padding:
+                                                const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFF43F5E),
+                                              borderRadius:
+                                                  BorderRadius.circular(20),
+                                            ),
+                                            child: Text(
+                                              '-${pct == pct.roundToDouble() ? pct.toInt() : pct}% OFF',
+                                              style: const TextStyle(
+                                                fontSize: 8,
+                                                fontWeight: FontWeight.w800,
+                                                letterSpacing: 0.5,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
@@ -424,14 +486,43 @@ class _DashboardPageState extends State<DashboardPage> {
                                   ],
                                 ),
                               ),
-                              Text(
-                                plan.priceLabel,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF1D9E75),
+                              if (discounted)
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.end,
+                                  children: [
+                                    // Pre-discount price, struck through.
+                                    Text(
+                                      peso(planPricing!.price),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.black38,
+                                        decoration:
+                                            TextDecoration.lineThrough,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${peso(planPricing.effectivePrice)} / mo',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF1D9E75),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              else
+                                Text(
+                                  planPricing != null
+                                      ? '${peso(planPricing.price)} / mo'
+                                      : plan.priceLabel,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1D9E75),
+                                  ),
                                 ),
-                              ),
                             ],
                           ),
                         ),
@@ -497,9 +588,15 @@ class _DashboardPageState extends State<DashboardPage> {
   // ── Derived list ──────────────────────────────────────────────────────────
 
   List<LivestockItem> get _filteredItems {
-    List<LivestockItem> items = _showAllCategories
+    // Hide listings from sellers the user has blocked (same as Explore).
+    final visible = _blockedSellers.isEmpty
         ? _allItems
-        : _allItems.where((i) => i.category == _selectedCategory).toList();
+        : _allItems
+            .where((i) => !_blockedSellers.contains(i.sellerId))
+            .toList();
+    List<LivestockItem> items = _showAllCategories
+        ? visible
+        : visible.where((i) => i.category == _selectedCategory).toList();
 
     if (_searchQuery.isNotEmpty) {
       items = items
@@ -669,6 +766,12 @@ class _DashboardPageState extends State<DashboardPage> {
                           return GestureDetector(
                             onTap: () {
                               Navigator.pop(ctx);
+                              // Sold listings can't be opened by non-owners.
+                              if (item.status == 'sold' && !_isMine(item)) {
+                                showTopMessage(
+                                    context, 'This listing has been sold.');
+                                return;
+                              }
                               _openListing(item);
                             },
                             child: Container(
@@ -1572,14 +1675,21 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
     );
     if (result == 'deleted' || result == 'updated') _loadItems();
-    // The detail page can also toggle this listing's favourite.
+    // The detail page can also toggle this listing's favourite or block
+    // its seller.
     _loadFavorites();
+    _loadBlocked();
   }
 
   Widget _buildCategoryCard(LivestockItem item) {
     final isFav = _favourites.contains(item.id);
+    final isSold = item.status == 'sold';
+    // A sold listing can only be opened by its owner (to restock/relist it).
+    final canOpen = !isSold || _isMine(item);
     return GestureDetector(
-      onTap: () => _openListing(item),
+      onTap: canOpen
+          ? () => _openListing(item)
+          : () => showTopMessage(context, 'This listing has been sold.'),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
@@ -1589,7 +1699,36 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            _cardImage(item.imagePath),
+            // Sold posts render desaturated so they read as unavailable.
+            if (isSold)
+              ColorFiltered(
+                colorFilter: const ColorFilter.mode(
+                    Colors.grey, BlendMode.saturation),
+                child: _cardImage(item.imagePath),
+              )
+            else
+              _cardImage(item.imagePath),
+            if (isSold)
+              Container(color: Colors.white.withOpacity(0.45)),
+            if (isSold)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.65),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text('SOLD',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1)),
+                ),
+              ),
             Positioned(
               bottom: 0,
               left: 0,
@@ -1628,8 +1767,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
-            // Owners don't get a fav button on their own listings.
-            if (!_isMine(item))
+            // Owners don't get a fav button on their own listings; sold
+            // listings can't be favourited either.
+            if (!_isMine(item) && !isSold)
               Positioned(
                 top: 8,
                 right: 8,

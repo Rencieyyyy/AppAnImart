@@ -21,11 +21,11 @@ class DefaultFirebaseOptions {
   static const String _placeholder = 'REPLACE_ME';
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: _placeholder, // Firebase console → General → Web API Key
-    appId: _placeholder, // e.g. 1:1234567890:android:abc123
-    messagingSenderId: _placeholder, // Cloud Messaging → Sender ID
-    projectId: _placeholder, // e.g. animart-12345
-    storageBucket: _placeholder, // e.g. animart-12345.appspot.com
+    apiKey: 'AIzaSyCiI2SlWyhPxC0I0JADsVtZu0mwg6T6-6o',
+    appId: '1:209594080342:android:55392c63388f1af3dbaff7',
+    messagingSenderId: '209594080342',
+    projectId: 'animart-5eb9b',
+    storageBucket: 'animart-5eb9b.firebasestorage.app',
   );
 
   /// Whether real Firebase values have been filled in.

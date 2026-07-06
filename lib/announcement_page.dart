@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard.dart';
@@ -6,6 +7,18 @@ import 'profile.dart';
 import 'main.dart';
 import 'services/notification_service.dart';
 import 'widgets/top_message.dart';
+
+/// Lets horizontal lists be swiped with any pointer (mouse/trackpad included),
+/// so the filter chips scroll on desktop and web too.
+class _DragScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
+}
 
 class AnnouncementPage extends StatefulWidget {
   const AnnouncementPage({super.key});
@@ -1251,10 +1264,12 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
 
           const SizedBox(height: 10),
 
-          // ── Type filter chips (scrollable) ────────────────────────
+          // ── Type filter chips (swipeable with touch or mouse) ─────
           SizedBox(
             height: 32,
-            child: ListView(
+            child: ScrollConfiguration(
+              behavior: _DragScrollBehavior(),
+              child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               children: _typeFilters.map((f) {
@@ -1301,6 +1316,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                   ),
                 );
               }).toList(),
+              ),
             ),
           ),
 

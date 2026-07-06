@@ -6,6 +6,7 @@ import 'package:image_cropper/image_cropper.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
+import 'blocked_sellers_page.dart';
 import 'login.dart';
 import 'main.dart';
 import 'product_detail.dart';
@@ -2058,6 +2059,42 @@ class _ProfilePageState extends State<ProfilePage> {
                                     color: Color(0xFF3AA876),
                                     fontWeight: FontWeight.w600)),
                             const Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF3AA876)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1, thickness: 0.5),
+                    // ── Blocked Sellers (view + unblock) ─────────────────
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const BlockedSellersPage()),
+                      ),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Icon(Icons.block_outlined,
+                                color: Color(0xFFE57373), size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Sellers you\'ve blocked',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A2E22)),
+                              ),
+                            ),
+                            Text('Blocked Sellers',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                            Icon(Icons.chevron_right,
                                 size: 18, color: Color(0xFF3AA876)),
                           ],
                         ),

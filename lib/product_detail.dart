@@ -373,7 +373,20 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 _confirmDeleteListing();
               }),
               const Divider(height: 8),
+              _buildSheetOption(Icons.copy_outlined, 'Copy Link', Colors.black87, () {
+                Navigator.pop(context);
+                Clipboard.setData(ClipboardData(
+                  text: 'https://farm.app/listing/${widget.name.toLowerCase().replaceAll(' ', '-')}',
+                ));
+                _showSnackBar('Link copied to clipboard!');
+              }),
+              if (_status != 'sold')
+                _buildSheetOption(Icons.flag_outlined, 'Mark as Sold', Colors.orange, () {
+                  Navigator.pop(context);
+                  _markAsSold();
+                }),
             ],
+            // Visitors only get the trust & safety actions.
             if (!_isOwner) ...[
               _buildSheetOption(Icons.report_outlined, 'Report Listing', Colors.red, () {
                 Navigator.pop(context);
@@ -393,17 +406,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 },
               ),
             ],
-            _buildSheetOption(Icons.copy_outlined, 'Copy Link', Colors.black87, () {
-              Navigator.pop(context);
-              Clipboard.setData(ClipboardData(
-                text: 'https://farm.app/listing/${widget.name.toLowerCase().replaceAll(' ', '-')}',
-              ));
-              _showSnackBar('Link copied to clipboard!');
-            }),
-            _buildSheetOption(Icons.flag_outlined, 'Mark as Sold', Colors.orange, () {
-              Navigator.pop(context);
-              _showSnackBar('Listing marked as sold.');
-            }),
           ],
         ),
       ),
@@ -416,6 +418,26 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       title: Text(label, style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w500)),
       onTap: onTap,
     );
+  }
+
+  /// Marks the listing as sold: it stays visible but greyed out in the feed
+  /// and other users can no longer open it. Saving an edit with stock > 0
+  /// puts it back online.
+  Future<void> _markAsSold() async {
+    final id = widget.listingId;
+    if (id == null) return;
+    try {
+      await supabase.from('listings').update({'status': 'sold'}).eq('id', id);
+      if (!mounted) return;
+      setState(() {
+        _status = 'sold';
+        _edited = true; // so list pages refresh on pop
+      });
+      _showSnackBar(
+          'Listing marked as sold. Edit its stock to put it back online.');
+    } catch (e) {
+      if (mounted) _showSnackBar('Could not update listing. Please try again.');
+    }
   }
 
   /// Toggles the listing between 'active' and 'disabled'. A disabled listing
@@ -548,6 +570,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                               return;
                             }
                             setSheet(() => saving = true);
+                            // Restocking a sold listing puts it back online.
+                            final relist =
+                                _status == 'sold' && stockValue > 0;
                             try {
                               await supabase.from('listings').update({
                                 'title': title,
@@ -558,6 +583,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                                 'stock': stockValue,
                                 'condition': condition,
                                 'description': descCtrl.text.trim(),
+                                if (relist) 'status': 'active',
                               }).eq('id', id);
                             } catch (e) {
                               if (sheetCtx.mounted) {
@@ -577,10 +603,13 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                               _stock = stockValue;
                               _editCondition = condition;
                               _editDesc = descCtrl.text.trim();
+                              if (relist) _status = 'active';
                               _edited = true;
                             });
                             if (sheetCtx.mounted) Navigator.pop(sheetCtx);
-                            _showSnackBar('Listing updated.');
+                            _showSnackBar(relist
+                                ? 'Listing updated — it\'s back online for buyers.'
+                                : 'Listing updated.');
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF6DBF99),
@@ -1098,8 +1127,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                               color: Colors.orange.shade50,
                               borderRadius: BorderRadius.circular(4),
                             ),
-                            child: const Text('Disabled',
-                              style: TextStyle(fontSize: 10, color: Colors.orange, fontWeight: FontWeight.w600),
+                            child: Text(_status == 'sold' ? 'Sold' : 'Disabled',
+                              style: const TextStyle(fontSize: 10, color: Colors.orange, fontWeight: FontWeight.w600),
                             ),
                           ),
                         ],
