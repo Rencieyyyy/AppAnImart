@@ -5,32 +5,36 @@
 My Offers, verified-purchase reviews, paged feeds + server search,
 coordinates lockdown; migrations 20260707000000 + 20260707010000 applied).*
 
+*Updated 2026-07-08: **Parts 2 and 3 are fully implemented** (migrations
+20260708000000–20260708040000 applied; send-plan-sale-push redeployed with
+targeted, claim-first sends).*
+
+- **Part 2:** buyer "Did you receive it?" confirmation +
+  `confirm_transaction_received()` + daily pg_cron auto-confirm after 7 days
+  (`auto-confirm-transactions`); "Buy at asking price" one-tap offer on the
+  listing page; `cancellation_stats()` trust metric (trust score −5 pts per
+  deal cancelled in 90 days, "Cancels deals often" chip on buyer offers,
+  standing line on the reviews page); "Report a problem" on a deal →
+  `reports.transaction_id` + `target_type='transaction'`.
+- **Part 3:** every announcement (broadcast or personal) now queues a phone
+  push via `queue_announcement_push()` + `plan_sale_pushes.recipient_id` —
+  offers both directions, deal events, admin announcements all push;
+  subscription approved/rejected → personal notice
+  (`notify_subscription_decision()`); new/updated review → seller notice
+  (`notify_new_review()`); price drop on favorited listing → favoriter
+  notices with a 20-hour per-listing cap (`notify_price_drop()` +
+  `price_drop_notices`).
+
 ## ⏭ Remaining work — pick up here
 
-**From Part 2 (deal lifecycle polish):**
-1. Buyer confirmation step — "Did you receive it?" prompt after the seller
-   completes, auto-confirm after ~7 days (pg_cron); until then a deal is
-   only seller-confirmed.
-2. "Buy at asking price" button — one-tap offer at the listed price.
-3. Cancellation trust metric — repeated cancellations affect standing.
-4. "Report a problem" on a transaction — reports carrying deal context.
-
-**From Part 3 (notifications), in priority order:**
-1. Phone push for existing in-app notices — offers (both directions),
-   transaction completed/cancelled, admin announcements. One migration:
-   `plan_sale_pushes.recipient_id` + trigger on `announcements` insert +
-   drop the duplicate queue insert in `announce_plan_sale()`; edge function
-   gains targeted sends. (Prompt already drafted in chat 2026-07-06.)
-2. Subscription approved/rejected → notify the requesting user (biggest
-   silent gap left in the app).
-3. New review received → notify the seller (pairs with the new
-   "Rate seller" flow).
-4. Price drop on a favorited listing → notify favoriters (cap repeats).
-5. ~~Sold to someone else~~ ✅ done 2026-07-07 (auto-decline + notices).
-
-**Also still open from Part 1's "smaller but real" list:** listing expiry
+**Still open from Part 1's "smaller but real" list:** listing expiry
 nudges, real listing links (Copy Link points at a fake domain), account
-deletion, in-app payment instructions for premium requests, rate limiting.
+deletion, in-app payment instructions for premium requests, rate limiting
+on offers/reports.
+
+**Part 3 nice-to-haves not yet wired:** subscription about-to-expire
+reminder, report-outcome notice, listing-taken-down notice, favorited
+listing sold/relisted, stale-listing nudge, welcome notice.
 
 ---
 

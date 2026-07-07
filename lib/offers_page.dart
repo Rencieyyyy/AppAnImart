@@ -29,6 +29,10 @@ class _OffersPageState extends State<OffersPage> {
   /// offers show their transaction state (reserved/completed/cancelled).
   Map<String, TransactionInfo> _txByOffer = {};
 
+  /// Buyers' cancellation standing keyed by buyer id, so the seller sees a
+  /// "cancels deals often" hint before accepting.
+  Map<String, CancellationStats> _buyerStats = {};
+
   @override
   void initState() {
     super.initState();
@@ -55,6 +59,9 @@ class _OffersPageState extends State<OffersPage> {
       final transactions =
           await MarketplaceService.fetchTransactions(asSeller: true);
 
+      final buyerStats = await MarketplaceService.fetchCancellationStats(
+          offers.map((o) => o.buyerId).toSet().toList());
+
       final byListing = <String, List<Offer>>{};
       for (final o in offers) {
         byListing.putIfAbsent(o.listingId, () => []).add(o);
@@ -73,6 +80,7 @@ class _OffersPageState extends State<OffersPage> {
         _offersByListing = byListing;
         _listingsById = listings;
         _txByOffer = txByOffer;
+        _buyerStats = buyerStats;
         _loading = false;
       });
     } catch (e) {
@@ -420,6 +428,7 @@ class _OffersPageState extends State<OffersPage> {
   Widget _buildOfferRow(Offer offer) {
     final isPending = offer.status == 'pending';
     final tx = _txByOffer[offer.id];
+    final cancelsOften = _buyerStats[offer.buyerId]?.cancelsOften ?? false;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
       child: Row(
@@ -442,13 +451,40 @@ class _OffersPageState extends State<OffersPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(offer.buyerName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87)),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(offer.buyerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87)),
+                    ),
+                    if (cancelsOften) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'This buyer cancelled '
+                            '${_buyerStats[offer.buyerId]!.cancelled90d} '
+                            'deal(s) in the last 90 days.',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFF3E0),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text('Cancels deals often',
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFFE65100))),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
                 Text(
                   'Offered ${_formatPeso(offer.amount)}'
                   '${offer.quantity > 1 ? ' for ${offer.quantity} pcs' : ''}'
@@ -550,7 +586,11 @@ class _OffersPageState extends State<OffersPage> {
     String label;
     Color bg;
     Color fg;
-    if (tx != null && tx.status == 'completed') {
+    if (tx != null && tx.awaitingBuyerConfirm) {
+      label = 'Awaiting buyer confirmation';
+      bg = const Color(0xFFFFF8E1);
+      fg = const Color(0xFFB28704);
+    } else if (tx != null && tx.status == 'completed') {
       label = 'Completed';
       bg = const Color(0xFFE8F7F1);
       fg = const Color(0xFF1D9E75);

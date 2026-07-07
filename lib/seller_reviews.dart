@@ -289,6 +289,28 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
                       : 'Ratings build seller trust',
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
                 ),
+                if (_rating.recentCancellations > 0) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          size: 14, color: Color(0xFFE65100)),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          'Cancelled ${_rating.recentCancellations} deal'
+                          '${_rating.recentCancellations == 1 ? '' : 's'} '
+                          'in the last 90 days',
+                          style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFE65100)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

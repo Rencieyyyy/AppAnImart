@@ -99,6 +99,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   /// point shows it without having to pass it in); null = unknown/not set.
   int? _stock;
 
+  /// The listing's numeric asking price, fetched with the stock — drives the
+  /// one-tap "Buy at asking price" offer. null = unknown.
+  double? _askingPrice;
+
   /// Owner edits override the values passed in via the constructor, so the
   /// page reflects a save immediately without re-fetching.
   String? _editTitle, _editPrice, _editDesc, _editBreed, _editAge,
@@ -354,21 +358,158 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     _loadListingOffers(widget.listingId?.trim() ?? '');
   }
 
-  /// Fetches the stock quantity from the listing row; callers don't pass it.
+  /// Fetches the stock quantity and numeric price from the listing row;
+  /// callers don't pass them in.
   Future<void> _loadStock(String listingId) async {
     if (listingId.isEmpty) return;
     try {
       final row = await supabase
           .from('listings')
-          .select('stock')
+          .select('stock, price')
           .eq('id', listingId)
           .maybeSingle();
       final raw = row?['stock'];
       final stock = raw is num ? raw.toInt() : int.tryParse('$raw');
-      if (mounted && stock != null) setState(() => _stock = stock);
+      final priceRaw = row?['price'];
+      final price = priceRaw is num
+          ? priceRaw.toDouble()
+          : double.tryParse('$priceRaw');
+      if (!mounted) return;
+      setState(() {
+        if (stock != null) _stock = stock;
+        if (price != null && price > 0) _askingPrice = price;
+      });
     } catch (e) {
       debugPrint('Failed to load stock: $e');
     }
+  }
+
+  /// One-tap "Buy at asking price": sends an offer pre-filled with the
+  /// listed price (× quantity), so the deal starts with a paper trail the
+  /// seller only has to accept.
+  Future<void> _buyAtAskingPrice() async {
+    final price = _askingPrice;
+    if (price == null || price <= 0) return;
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to buy.');
+      return;
+    }
+
+    int qty = 1;
+    final maxQty = (_stock != null && _stock! > 0) ? _stock! : 1;
+    bool sending = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocal) {
+          final total = price * qty;
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Buy at asking price',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'This sends the seller an offer at the listed price — no '
+                  'haggling. Once they accept, the listing is reserved for '
+                  'you.',
+                  style: const TextStyle(color: Colors.black54, fontSize: 13),
+                ),
+                const SizedBox(height: 14),
+                if (maxQty > 1)
+                  Row(
+                    children: [
+                      const Text('Quantity',
+                          style: TextStyle(
+                              fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: qty > 1
+                            ? () => setLocal(() => qty--)
+                            : null,
+                        icon: const Icon(Icons.remove_circle_outline),
+                        color: const Color(0xFF6DBF99),
+                      ),
+                      Text('$qty',
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w700)),
+                      IconButton(
+                        onPressed: qty < maxQty
+                            ? () => setLocal(() => qty++)
+                            : null,
+                        icon: const Icon(Icons.add_circle_outline),
+                        color: const Color(0xFF6DBF99),
+                      ),
+                    ],
+                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Total',
+                        style: TextStyle(
+                            fontSize: 13.5, fontWeight: FontWeight.w600)),
+                    Text(_formatPeso(total),
+                        style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF1D9E75))),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: sending ? null : () => Navigator.pop(dialogCtx),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.black54)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6DBF99),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: sending
+                    ? null
+                    : () async {
+                        setLocal(() => sending = true);
+                        final error = await MarketplaceService.submitOffer(
+                          listingId: widget.listingId?.trim() ?? '',
+                          sellerId: widget.sellerId?.trim() ?? '',
+                          amount: price * qty,
+                          quantity: qty,
+                          note: 'Buy at asking price',
+                        );
+                        if (dialogCtx.mounted) Navigator.pop(dialogCtx);
+                        if (!mounted) return;
+                        if (error == null) {
+                          setState(() => _offerSent = true);
+                          _showSnackBar(
+                              'Offer sent at the asking price — you\'ll be '
+                              'notified when the seller accepts.');
+                        } else {
+                          _showSnackBar(error);
+                        }
+                      },
+                child: sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Colors.white),
+                      )
+                    : const Text('Send offer',
+                        style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -1413,6 +1554,36 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                     ),
                   ),
                 ),
+
+              // ── Buy at asking price (one-tap offer) ───────────────
+              if (!_isOwner &&
+                  _myReservation == null &&
+                  _status == 'active' &&
+                  (_askingPrice ?? 0) > 0) ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: _buyAtAskingPrice,
+                      icon: const Icon(Icons.shopping_bag_outlined, size: 18),
+                      label: Text(
+                          'Buy at asking price — ${_formatPeso(_askingPrice!)}',
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6DBF99),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
 
               const SizedBox(height: 16),
 

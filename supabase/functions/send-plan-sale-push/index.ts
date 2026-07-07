@@ -1,13 +1,18 @@
 // Supabase Edge Function: send-plan-sale-push
 //
-// Delivers subscription plan-sale notifications to every registered device
-// via Firebase Cloud Messaging (FCM HTTP v1) — this is what reaches users'
-// phones even when the AniMart app is closed.
+// Delivers queued AniMart notifications to registered devices via Firebase
+// Cloud Messaging (FCM HTTP v1) — this is what reaches users' phones even
+// when the app is closed.
+//
+// Despite the historical name, this drains ALL queued pushes: a queue row
+// with recipient_id = null is broadcast to every device (plan sales, admin
+// announcements); a row with recipient_id set is delivered only to that
+// user's devices (offer notices, deal updates, subscription decisions, ...).
 //
 // HOW IT'S TRIGGERED
-//   The announce_plan_sale() DB trigger (see migration
-//   20260705010000_plan_sale_announcements.sql) queues a row in
-//   public.plan_sale_pushes whenever an admin puts a plan on sale. Point a
+//   The queue_announcement_push() DB trigger (see migration
+//   20260708000000_announcement_push_pipeline.sql) queues a row in
+//   public.plan_sale_pushes whenever an announcement goes live. Point a
 //   Database Webhook (Dashboard → Database → Webhooks) at this function for
 //   INSERTs on plan_sale_pushes, or invoke it on a schedule — either way it
 //   simply drains all unsent queue rows, so duplicate invocations are safe.
@@ -117,11 +122,15 @@ Deno.serve(async (req) => {
   const admin = createClient(supabaseUrl, serviceRoleKey);
 
   // Everything queued and not yet sent — never trust the request body.
+  // Claim the rows by flipping `sent` in the same statement: a personal
+  // notice fan-out (e.g. a price drop) inserts many rows at once, invoking
+  // this function once per row via the webhook, and claim-first keeps those
+  // concurrent invocations from delivering the same push twice.
   const { data: pending, error: queueError } = await admin
     .from("plan_sale_pushes")
-    .select("id, title, body")
+    .update({ sent: true })
     .eq("sent", false)
-    .order("created_at", { ascending: true });
+    .select("id, title, body, recipient_id");
   if (queueError) return json({ error: queueError.message }, 500);
   if (!pending || pending.length === 0) {
     return json({ result: "nothing to send" });
@@ -129,21 +138,28 @@ Deno.serve(async (req) => {
 
   const { data: tokenRows, error: tokenError } = await admin
     .from("device_push_tokens")
-    .select("token");
+    .select("token, user_id");
   if (tokenError) return json({ error: tokenError.message }, 500);
-  const tokens = (tokenRows ?? []).map((r) => r.token as string);
+  const devices = (tokenRows ?? []).map((r) => ({
+    token: r.token as string,
+    userId: r.user_id as string,
+  }));
 
   let sent = 0;
   const deadTokens = new Set<string>();
 
-  if (tokens.length > 0) {
+  if (devices.length > 0) {
     const sa = JSON.parse(serviceAccountJson);
     const accessToken = await fetchAccessToken(sa);
     const endpoint =
       `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`;
 
     for (const push of pending) {
-      for (const token of tokens) {
+      // recipient_id null → broadcast; set → only that user's devices.
+      const targets = push.recipient_id
+        ? devices.filter((d) => d.userId === push.recipient_id)
+        : devices;
+      for (const { token } of targets) {
         if (deadTokens.has(token)) continue;
         const res = await fetch(endpoint, {
           method: "POST",
@@ -180,13 +196,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Mark the queue drained even when there were no tokens, so old sales are
-  // not re-broadcast to the first device that ever registers.
-  await admin
-    .from("plan_sale_pushes")
-    .update({ sent: true })
-    .in("id", pending.map((p) => p.id));
-
   if (deadTokens.size > 0) {
     await admin
       .from("device_push_tokens")
@@ -197,7 +206,7 @@ Deno.serve(async (req) => {
   return json({
     result: "ok",
     pushes: pending.length,
-    devices: tokens.length,
+    devices: devices.length,
     delivered: sent,
     removedTokens: deadTokens.size,
   });

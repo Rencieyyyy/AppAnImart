@@ -3,19 +3,51 @@ import 'package:supabase_flutter/supabase_flutter.dart'
 
 import '../main.dart';
 
-/// Aggregate rating for a seller (average stars + number of reviews).
+/// Aggregate rating for a seller (average stars + number of reviews),
+/// plus how many deals they've cancelled recently — repeated cancellations
+/// lower the trust percentage.
 class SellerRating {
   final double average;
   final int count;
 
-  const SellerRating({required this.average, required this.count});
+  /// Deals this user cancelled in the last 90 days (both roles).
+  final int recentCancellations;
+
+  const SellerRating({
+    required this.average,
+    required this.count,
+    this.recentCancellations = 0,
+  });
 
   static const empty = SellerRating(average: 0, count: 0);
 
   bool get hasReviews => count > 0;
 
-  /// Average mapped onto a 0..100 "trust" percentage (5★ => 100%).
-  int get trustPercent => (average / 5 * 100).round();
+  /// Average mapped onto a 0..100 "trust" percentage (5★ => 100%), minus
+  /// 5 points per deal cancelled in the last 90 days.
+  int get trustPercent {
+    final base = (average / 5 * 100).round();
+    final penalty = 5 * (recentCancellations > 10 ? 10 : recentCancellations);
+    final adjusted = base - penalty;
+    return adjusted < 0 ? 0 : adjusted;
+  }
+}
+
+/// A user's deal-cancellation standing, from the cancellation_stats RPC.
+class CancellationStats {
+  /// Deals this user cancelled in the last 90 days.
+  final int cancelled90d;
+
+  /// Deals they completed (all time, either side).
+  final int completedTotal;
+
+  const CancellationStats({
+    required this.cancelled90d,
+    required this.completedTotal,
+  });
+
+  /// Enough repeat cancellations to warn the other party.
+  bool get cancelsOften => cancelled90d >= 2;
 }
 
 /// A single seller review with the reviewer's display name.
@@ -88,6 +120,10 @@ class TransactionInfo {
   final String status; // 'reserved' | 'completed' | 'cancelled'
   final DateTime createdAt;
 
+  /// When the buyer confirmed receiving the order (null until they do;
+  /// auto-set by the server 7 days after completion).
+  final DateTime? buyerConfirmedAt;
+
   const TransactionInfo({
     required this.id,
     required this.listingId,
@@ -98,9 +134,14 @@ class TransactionInfo {
     required this.agreedPrice,
     required this.status,
     required this.createdAt,
+    this.buyerConfirmedAt,
   });
 
   bool get isReserved => status == 'reserved';
+
+  /// Seller marked it done but the buyer hasn't confirmed receipt yet.
+  bool get awaitingBuyerConfirm =>
+      status == 'completed' && buyerConfirmedAt == null;
 }
 
 /// A user the current user has blocked, for the "Blocked Sellers" list.
@@ -195,7 +236,8 @@ class MarketplaceService {
 
   // ── Reviews ───────────────────────────────────────────────────────────────
 
-  /// Average rating + count for a seller.
+  /// Average rating + count for a seller, with their recent cancellations
+  /// folded in so [SellerRating.trustPercent] reflects standing.
   static Future<SellerRating> fetchSellerRating(String sellerId) async {
     if (sellerId.isEmpty) return SellerRating.empty;
     try {
@@ -205,11 +247,42 @@ class MarketplaceService {
           .map((r) => ((r as Map)['rating'] as num?)?.toDouble() ?? 0)
           .where((r) => r > 0)
           .toList();
-      if (ratings.isEmpty) return SellerRating.empty;
+      final stats = await fetchCancellationStats([sellerId]);
+      final cancels = stats[sellerId]?.cancelled90d ?? 0;
+      if (ratings.isEmpty) {
+        return SellerRating(average: 0, count: 0, recentCancellations: cancels);
+      }
       final avg = ratings.reduce((a, b) => a + b) / ratings.length;
-      return SellerRating(average: avg, count: ratings.length);
+      return SellerRating(
+        average: avg,
+        count: ratings.length,
+        recentCancellations: cancels,
+      );
     } catch (_) {
       return SellerRating.empty;
+    }
+  }
+
+  /// Deal-cancellation standing for a batch of users (max 100), keyed by
+  /// user id. Empty map on failure.
+  static Future<Map<String, CancellationStats>> fetchCancellationStats(
+      List<String> userIds) async {
+    final ids = userIds.where((id) => id.isNotEmpty).toSet().toList();
+    if (ids.isEmpty || _uid == null) return const {};
+    try {
+      final rows = await supabase
+          .rpc('cancellation_stats', params: {'p_users': ids});
+      final result = <String, CancellationStats>{};
+      for (final r in (rows as List)) {
+        final m = r as Map<String, dynamic>;
+        result['${m['user_id']}'] = CancellationStats(
+          cancelled90d: (m['cancelled_90d'] as num?)?.toInt() ?? 0,
+          completedTotal: (m['completed_total'] as num?)?.toInt() ?? 0,
+        );
+      }
+      return result;
+    } catch (_) {
+      return const {};
     }
   }
 
@@ -322,12 +395,14 @@ class MarketplaceService {
 
   // ── Reports ───────────────────────────────────────────────────────────────
 
-  /// Files an abuse report against a listing or a seller.
-  /// Returns null on success, or an error message.
+  /// Files an abuse report against a listing, a seller, or a transaction
+  /// ("Report a problem" on a deal — pass [transactionId] so the report
+  /// carries the deal context). Returns null on success, or an error message.
   static Future<String?> submitReport({
-    required String targetType, // 'listing' | 'seller'
+    required String targetType, // 'listing' | 'seller' | 'transaction'
     String? listingId,
     String? sellerId,
+    String? transactionId,
     required String reason,
     String details = '',
   }) async {
@@ -339,6 +414,10 @@ class MarketplaceService {
         'target_type': targetType,
         'listing_id': listingId,
         'seller_id': (sellerId != null && sellerId.isNotEmpty) ? sellerId : null,
+        'transaction_id':
+            (transactionId != null && transactionId.isNotEmpty)
+                ? transactionId
+                : null,
         'reason': reason,
         'details': details.trim().isEmpty ? null : details.trim(),
       });
@@ -513,10 +592,25 @@ class MarketplaceService {
           status: (row['status'] as String?) ?? 'reserved',
           createdAt: DateTime.tryParse('${row['created_at']}')?.toLocal() ??
               DateTime.now(),
+          buyerConfirmedAt: row['buyer_confirmed_at'] == null
+              ? null
+              : DateTime.tryParse('${row['buyer_confirmed_at']}')?.toLocal(),
         );
       }).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// Buyer confirms they received a completed deal ("Did you receive it?").
+  /// Returns null on success.
+  static Future<String?> confirmTransactionReceived(String txId) async {
+    try {
+      final result = await supabase
+          .rpc('confirm_transaction_received', params: {'p_tx': txId});
+      return result as String?;
+    } catch (e) {
+      return 'Could not confirm receipt: $e';
     }
   }
 

@@ -146,6 +146,155 @@ class _MyOffersPageState extends State<MyOffersPage> {
     _load();
   }
 
+  /// "Did you receive it?" — buyer confirms a seller-completed deal.
+  Future<void> _confirmReceived(TransactionInfo tx) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Did you receive your order?',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: const Text(
+          'Confirming closes the deal and lets the seller know everything '
+          'arrived. If something went wrong, use "Report a problem" instead.',
+          style: TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child:
+                const Text('Not yet', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6DBF99)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Yes, I received it',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (_busy.contains(tx.id)) return;
+    setState(() => _busy.add(tx.id));
+    final error = await MarketplaceService.confirmTransactionReceived(tx.id);
+    if (!mounted) return;
+    setState(() => _busy.remove(tx.id));
+    if (error != null) {
+      showTopMessage(context, error);
+      return;
+    }
+    showTopMessage(context, 'Receipt confirmed. You can now rate the seller.',
+        isError: false, backgroundColor: const Color(0xFF6DBF99));
+    _load();
+  }
+
+  /// "Report a problem" — files a report carrying this deal's context.
+  Future<void> _reportProblem(Offer offer, TransactionInfo tx) async {
+    const reasons = [
+      'Item not received',
+      'Item not as described',
+      'Seller is unresponsive',
+      'Payment problem',
+      'Other',
+    ];
+    String reason = reasons.first;
+    final detailsCtrl = TextEditingController();
+    bool sending = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Report a problem',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Our team will review this report together with the deal\'s '
+                'details.',
+                style: TextStyle(fontSize: 12.5, color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: reason,
+                items: reasons
+                    .map((r) => DropdownMenuItem(
+                        value: r,
+                        child: Text(r, style: const TextStyle(fontSize: 13))))
+                    .toList(),
+                onChanged: (v) => setLocal(() => reason = v ?? reason),
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: detailsCtrl,
+                maxLines: 3,
+                maxLength: 400,
+                decoration: InputDecoration(
+                  hintText: 'Tell us what happened (optional)',
+                  hintStyle:
+                      const TextStyle(fontSize: 13, color: Colors.black38),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: sending ? null : () => Navigator.pop(ctx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Colors.black54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: sending
+                  ? null
+                  : () async {
+                      setLocal(() => sending = true);
+                      final error = await MarketplaceService.submitReport(
+                        targetType: 'transaction',
+                        listingId:
+                            offer.listingId.isEmpty ? null : offer.listingId,
+                        sellerId: offer.sellerId,
+                        transactionId: tx.id,
+                        reason: reason,
+                        details: detailsCtrl.text,
+                      );
+                      if (ctx.mounted) Navigator.pop(ctx);
+                      if (!mounted) return;
+                      showTopMessage(
+                        context,
+                        error ??
+                            'Report submitted. Our team will review this deal.',
+                        isError: error != null,
+                        backgroundColor: error == null
+                            ? const Color(0xFF6DBF99)
+                            : null,
+                      );
+                    },
+              child: const Text('Submit report',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _rateSeller(Offer offer) {
     if (offer.sellerId.isEmpty) return;
     final name = _sellerNames[offer.sellerId] ?? '';
@@ -224,7 +373,8 @@ class _MyOffersPageState extends State<MyOffersPage> {
     final tx = _txByOffer[offer.id];
     final title = (listing?['title'] as String?) ?? 'Listing removed';
     final img = (listing?['image_url'] as String?)?.trim() ?? '';
-    final busy = _busy.contains(offer.id);
+    final busy =
+        _busy.contains(offer.id) || (tx != null && _busy.contains(tx.id));
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -306,22 +456,66 @@ class _MyOffersPageState extends State<MyOffersPage> {
           color: Colors.red.shade400, onTap: () => _withdraw(offer));
     }
     if (tx != null && tx.isReserved) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           const Text('Arrange the sale with the seller on Messenger.',
               style: TextStyle(fontSize: 11, color: Colors.black45)),
-          const SizedBox(width: 8),
-          _pillButton('Cancel deal',
-              outline: true,
-              color: Colors.red.shade400,
-              onTap: () => _cancelDeal(tx)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              _pillButton('Report a problem',
+                  outline: true,
+                  color: Colors.black45,
+                  onTap: () => _reportProblem(offer, tx)),
+              _pillButton('Cancel deal',
+                  outline: true,
+                  color: Colors.red.shade400,
+                  onTap: () => _cancelDeal(tx)),
+            ],
+          ),
+        ],
+      );
+    }
+    if (tx != null && tx.awaitingBuyerConfirm) {
+      // Seller says it's done — ask the buyer to confirm receipt.
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          const Text('Did you receive this order?',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFFB28704))),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              _pillButton('Report a problem',
+                  outline: true,
+                  color: Colors.red.shade400,
+                  onTap: () => _reportProblem(offer, tx)),
+              _pillButton('Yes, I received it',
+                  color: const Color(0xFF6DBF99),
+                  onTap: () => _confirmReceived(tx)),
+            ],
+          ),
         ],
       );
     }
     if (tx != null && tx.status == 'completed') {
-      return _pillButton('Rate seller',
-          color: const Color(0xFF6DBF99), onTap: () => _rateSeller(offer));
+      return Wrap(
+        spacing: 8,
+        children: [
+          _pillButton('Report a problem',
+              outline: true,
+              color: Colors.black45,
+              onTap: () => _reportProblem(offer, tx)),
+          _pillButton('Rate seller',
+              color: const Color(0xFF6DBF99), onTap: () => _rateSeller(offer)),
+        ],
+      );
     }
     return null;
   }
@@ -354,6 +548,10 @@ class _MyOffersPageState extends State<MyOffersPage> {
       label = 'Reserved for you';
       bg = const Color(0xFFFFF3E0);
       fg = const Color(0xFFE65100);
+    } else if (tx != null && tx.awaitingBuyerConfirm) {
+      label = 'Confirm receipt';
+      bg = const Color(0xFFFFF8E1);
+      fg = const Color(0xFFB28704);
     } else if (tx != null && tx.status == 'completed') {
       label = 'Completed';
       bg = const Color(0xFFE8F7F1);
