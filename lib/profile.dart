@@ -1053,7 +1053,7 @@ class _ProfilePageState extends State<ProfilePage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-          builder: (_) => _PremiumSubscriptionPage(
+          builder: (_) => PremiumSubscriptionPage(
               currentPlan: _planName, currentPlanIsYearly: _planIsYearly)),
     );
   }
@@ -2574,8 +2574,10 @@ class _BenefitRow extends StatelessWidget {
 
 // ── Premium Subscription page ──────────────────────────────────────────────
 /// Full-screen plan-selection page reached from the profile's
-/// "Premium Subscription" button. Replaces the old plan popup dialog.
-class _PremiumSubscriptionPage extends StatefulWidget {
+/// "Premium Subscription" button (and from the dashboard's plan popup).
+/// Paid plans use the pay-first flow: pay via GCash, attach the receipt,
+/// and only then is the request submitted for admin approval.
+class PremiumSubscriptionPage extends StatefulWidget {
   /// App-facing label of the user's active plan ('Free' / 'Premium' /
   /// 'Super Premium'); decides which plan buttons are shown, disabled or
   /// relabelled ("Current Plan" / "Upgrade Plan").
@@ -2585,15 +2587,15 @@ class _PremiumSubscriptionPage extends StatefulWidget {
   /// toggle no longer offers "Upgrade to Yearly Plan" on that plan's card.
   final bool currentPlanIsYearly;
 
-  const _PremiumSubscriptionPage(
-      {this.currentPlan = 'Free', this.currentPlanIsYearly = false});
+  const PremiumSubscriptionPage(
+      {super.key, this.currentPlan = 'Free', this.currentPlanIsYearly = false});
 
   @override
-  State<_PremiumSubscriptionPage> createState() =>
+  State<PremiumSubscriptionPage> createState() =>
       _PremiumSubscriptionPageState();
 }
 
-class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
+class _PremiumSubscriptionPageState extends State<PremiumSubscriptionPage> {
   // Brand palette (matches the rest of the app).
   static const Color _green = Color(0xFF1D9E75);
   static const Color _greenMid = Color(0xFF3AA876);
@@ -2603,18 +2605,23 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   bool _yearly = false;
   String _selectedPlan = 'premium';
 
-  // Id of the plan whose request is currently being submitted, if any.
-  String? _submittingId;
-
   /// Whether the user has a request awaiting admin approval — shows the
-  /// "how to pay" banner so they know the next step.
+  /// pending banner so they know the next step.
   bool _hasPendingRequest = false;
 
-  /// GCash number/name/QR + instructions the super admin configured.
+  /// Active GCash accounts + instructions the super admin configured.
   PaymentDetails _payment = const PaymentDetails();
 
   /// Amount due for the pending request (its stored price), for the sheet.
   double? _pendingAmount;
+
+  /// Storage path of the receipt attached to the pending request; null for
+  /// legacy requests submitted before receipts were required.
+  String? _pendingReceiptPath;
+
+  /// GCash reference number submitted with the pending request ('' when the
+  /// request predates the field).
+  String _pendingReferenceNumber = '';
 
   /// Free-tier benefit list; the active-listing cap comes from the `prices`
   /// row's `listing_capacity` column.
@@ -2690,6 +2697,13 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     setState(() {
       _hasPendingRequest = pending;
       _pendingAmount = pending ? (sub['price'] as num?)?.toDouble() : null;
+      _pendingReceiptPath = pending
+          ? ((sub['receipt_url'] as String?)?.trim().isNotEmpty == true
+              ? (sub['receipt_url'] as String).trim()
+              : null)
+          : null;
+      _pendingReferenceNumber =
+          pending ? ((sub['reference_number'] as String?)?.trim() ?? '') : '';
       _payment = results[1] as PaymentDetails;
     });
   }
@@ -2697,215 +2711,49 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   bool get _hasPaymentInfo =>
       _payment.hasGcash || _payment.instructions.isNotEmpty;
 
-  /// "Pay with GCash" sheet: the amount due, the super admin's GCash number
-  /// (copyable) and QR code, the instruction steps, and a shortcut to
-  /// Support Chat for sending the receipt. Shown right after submitting a
-  /// request and from the pending banner.
-  void _showPaymentSheet({double? amount}) {
+  /// Opens the "Pay with GCash" sheet.
+  ///
+  /// With [checkoutPlan] this is the pay-first checkout for that plan: the
+  /// user sees every GCash account and the amount due, pays outside the app,
+  /// MUST attach their receipt screenshot, and only then is the request
+  /// submitted (no receipt → no request). Without it, the sheet re-opens in
+  /// read-only mode from the pending banner, showing the same payment info
+  /// plus the already-submitted receipt.
+  Future<void> _showPaymentSheet(
+      {double? amount, _PlanData? checkoutPlan}) async {
     if (!_hasPaymentInfo) return;
-    final due = amount ?? _pendingAmount;
 
-    showModalBottomSheet(
+    final submittedPath = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(ctx).size.height * 0.85),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.black12,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Row(
-                children: [
-                  Icon(Icons.payments_outlined, color: _green, size: 24),
-                  SizedBox(width: 10),
-                  Text('Pay with GCash',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: _dark)),
-                ],
-              ),
-              const SizedBox(height: 14),
-
-              // ── Amount due ─────────────────────────────────────────
-              if (due != null && due > 0)
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF4FAF7),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text('Amount to send',
-                          style: TextStyle(fontSize: 12, color: _muted)),
-                      const SizedBox(height: 2),
-                      Text(_peso(due),
-                          style: const TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.w800,
-                              color: _green)),
-                    ],
-                  ),
-                ),
-
-              // ── GCash number (copyable) + account name ─────────────
-              if (_payment.hasGcash) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFFE2EFE9)),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('GCash number',
-                                style:
-                                    TextStyle(fontSize: 12, color: _muted)),
-                            const SizedBox(height: 2),
-                            Text(_payment.gcashNumber,
-                                style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w800,
-                                    letterSpacing: 0.5,
-                                    color: _dark)),
-                            if (_payment.gcashName.isNotEmpty)
-                              Text(_payment.gcashName,
-                                  style: const TextStyle(
-                                      fontSize: 12.5, color: _muted)),
-                          ],
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: () {
-                          Clipboard.setData(
-                              ClipboardData(text: _payment.gcashNumber));
-                          showTopMessage(ctx, 'GCash number copied!',
-                              isError: false);
-                        },
-                        icon: const Icon(Icons.copy_rounded,
-                            size: 16, color: _green),
-                        label: const Text('Copy',
-                            style: TextStyle(
-                                color: _green, fontWeight: FontWeight.w700)),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-
-              // ── QR code ────────────────────────────────────────────
-              if (_payment.hasQr) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFFE2EFE9)),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text('Or scan this QR code in the GCash app',
-                          style: TextStyle(fontSize: 12.5, color: _muted)),
-                      const SizedBox(height: 10),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.network(
-                          _payment.qrUrl,
-                          height: 220,
-                          fit: BoxFit.contain,
-                          loadingBuilder: (c, child, progress) =>
-                              progress == null
-                                  ? child
-                                  : const SizedBox(
-                                      height: 220,
-                                      child: Center(
-                                          child: CircularProgressIndicator(
-                                              color: _green))),
-                          errorBuilder: (c, e, s) => const SizedBox(
-                            height: 80,
-                            child: Center(
-                              child: Text('QR code unavailable',
-                                  style: TextStyle(
-                                      fontSize: 12, color: _muted)),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-
-              // ── Steps / instructions ───────────────────────────────
-              if (_payment.instructions.isNotEmpty) ...[
-                const SizedBox(height: 14),
-                Text(_payment.instructions,
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF3D5247), height: 1.5)),
-              ],
-
-              const SizedBox(height: 18),
-
-              // ── Send receipt via Support Chat ──────────────────────
-              SizedBox(
-                height: 48,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => const SupportChatPage()),
-                    );
-                  },
-                  icon: const Icon(Icons.support_agent_rounded, size: 18),
-                  label: const Text('Send receipt via Support Chat',
-                      style: TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _green,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('I\'ll pay later',
-                    style: TextStyle(color: _muted, fontSize: 13)),
-              ),
-            ],
-          ),
-        ),
+      builder: (_) => _GcashPaymentSheet(
+        payment: _payment,
+        amount: amount ?? _pendingAmount,
+        plan: checkoutPlan == null
+            ? null
+            : SubscriptionService.planById(checkoutPlan.id),
+        yearly: _yearly,
+        monthlyPrice: checkoutPlan?.effectiveMonthly,
+        receiptPath: _pendingReceiptPath,
+        referenceNumber: _pendingReferenceNumber,
       ),
+    );
+    if (!mounted || submittedPath == null) return;
+
+    // Checkout submitted successfully — reflect the new pending request.
+    setState(() {
+      _hasPendingRequest = true;
+      _pendingAmount = amount;
+      _pendingReceiptPath = submittedPath;
+    });
+    // Re-fetch the pending row so the reference number (and anything else
+    // stored with it) shows on the info sheet.
+    _loadPaymentState();
+    showTopMessage(
+      context,
+      'Receipt received — your request is pending admin approval.',
+      isError: false,
     );
   }
 
@@ -3076,7 +2924,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                     // ── Pending request: how-to-pay banner ──────────
                     if (_hasPendingRequest) ...[
                       GestureDetector(
-                        onTap: _showPaymentSheet,
+                        onTap: () => _showPaymentSheet(),
                         child: Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
@@ -3104,10 +2952,14 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                                             fontWeight: FontWeight.w700,
                                             color: Color(0xFFB28704))),
                                     if (_hasPaymentInfo)
-                                      const Text(
-                                          'Haven\'t paid yet? Tap to see '
-                                          'how to pay with GCash.',
-                                          style: TextStyle(
+                                      Text(
+                                          _pendingReceiptPath != null
+                                              ? 'We\'re verifying your '
+                                                  'payment. Tap to view your '
+                                                  'receipt.'
+                                              : 'Haven\'t paid yet? Tap to '
+                                                  'see how to pay with GCash.',
+                                          style: const TextStyle(
                                               fontSize: 12,
                                               color: Color(0xFF8A6D1B))),
                                   ],
@@ -3422,10 +3274,9 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                 width: double.infinity,
                 height: 46,
                 child: ElevatedButton(
-                  onPressed:
-                      _submittingId != null || (isCurrentPaid && !yearlyUpgrade)
-                          ? null
-                          : () => _choosePlan(plan),
+                  onPressed: isCurrentPaid && !yearlyUpgrade
+                      ? null
+                      : () => _choosePlan(plan),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: featured ? Colors.white : _green,
                     foregroundColor: featured ? _green : Colors.white,
@@ -3437,22 +3288,13 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                       borderRadius: BorderRadius.circular(30),
                     ),
                   ),
-                  child: _submittingId == plan.id
-                      ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.4,
-                            color: featured ? _green : Colors.white,
-                          ),
-                        )
-                      : Text(
-                          buttonLabel,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                  child: Text(
+                    buttonLabel,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -3473,36 +3315,26 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
       return;
     }
 
-    setState(() => _submittingId = plan.id);
-    // Store the live per-month price the card showed (admin-set base with
-    // any promo applied) so the admin sees — and the user pays — the same
-    // amount that was advertised.
-    final error = await SubscriptionService.requestPlan(appPlan,
-        yearly: _yearly, monthlyPrice: plan.effectiveMonthly);
-    if (!mounted) return;
-    setState(() => _submittingId = null);
-
-    if (error == null) {
+    if (_hasPendingRequest) {
       showTopMessage(
-        context,
-        '${appPlan.label}${_yearly ? ' (Yearly)' : ''} request submitted — '
-        'pending admin approval.',
-        isError: false,
-      );
-      // The request only becomes active once it's paid — show the GCash
-      // payment sheet right away, then keep the banner visible on this page.
-      final due = double.parse((_yearly
-              ? plan.effectiveMonthly * 10
-              : plan.effectiveMonthly)
-          .toStringAsFixed(2));
-      setState(() {
-        _hasPendingRequest = true;
-        _pendingAmount = due;
-      });
-      _showPaymentSheet(amount: due);
-    } else {
-      showTopMessage(context, error);
+          context, 'You already have a request awaiting admin approval.');
+      return;
     }
+    if (!_hasPaymentInfo) {
+      showTopMessage(context,
+          'GCash payment details aren\'t set up yet. Please try again later.');
+      return;
+    }
+
+    // Pay-first: the checkout sheet collects the payment + receipt and
+    // submits the request itself — nothing is inserted until the user has
+    // paid and attached their receipt. The sheet shows the same live
+    // per-month price the card showed (admin-set base with any promo
+    // applied) so the admin sees — and the user pays — the advertised amount.
+    final due = double.parse(
+        (_yearly ? plan.effectiveMonthly * 10 : plan.effectiveMonthly)
+            .toStringAsFixed(2));
+    await _showPaymentSheet(amount: due, checkoutPlan: plan);
   }
 }
 
@@ -3514,7 +3346,7 @@ class _Benefit {
   const _Benefit(this.text, {this.included = true});
 }
 
-// Description of a subscription plan rendered by [_PremiumSubscriptionPage].
+// Description of a subscription plan rendered by [PremiumSubscriptionPage].
 // Price / tagline / POPULAR ribbon / listing capacity come from the `prices`
 // table (editable on the admin website); these values are the fallbacks.
 class _PlanData {
@@ -3570,6 +3402,697 @@ class _PlanData {
       popular: popular ?? this.popular,
       promoLabel: promoLabel ?? this.promoLabel,
     );
+  }
+}
+
+// ── "Pay with GCash" bottom sheet ───────────────────────────────────────────
+/// Bottom sheet listing EVERY active admin-configured GCash account (primary
+/// first), the amount due and the global payment instructions.
+///
+/// Two modes:
+///  * Checkout ([plan] non-null) — the pay-first flow: the user pays outside
+///    the app, MUST attach their GCash receipt screenshot (uploaded to the
+///    private `payment-receipts` bucket), and only then is the
+///    `subscriptions` request inserted with `receipt_url` = the object path.
+///    Pops with that path on success. If the insert fails after a successful
+///    upload, the uploaded path is kept so retrying doesn't re-upload.
+///  * Info ([plan] null) — read-only view from the pending banner: the same
+///    payment details plus the already-submitted receipt (via a signed URL),
+///    or a "no receipt" note for legacy requests made before receipts.
+class _GcashPaymentSheet extends StatefulWidget {
+  final PaymentDetails payment;
+
+  /// Amount due, shown at the top when > 0.
+  final double? amount;
+
+  /// Checkout mode: the plan being requested. Null = info mode.
+  final AppPlan? plan;
+
+  /// Billing cycle of the checkout request.
+  final bool yearly;
+
+  /// Live per-month price the user was shown (promo applied).
+  final double? monthlyPrice;
+
+  /// Info mode: receipt path of the pending request (null = legacy request
+  /// with no receipt).
+  final String? receiptPath;
+
+  /// Info mode: GCash reference number submitted with the pending request
+  /// ('' when the request predates the field).
+  final String referenceNumber;
+
+  const _GcashPaymentSheet({
+    required this.payment,
+    this.amount,
+    this.plan,
+    this.yearly = false,
+    this.monthlyPrice,
+    this.receiptPath,
+    this.referenceNumber = '',
+  });
+
+  @override
+  State<_GcashPaymentSheet> createState() => _GcashPaymentSheetState();
+}
+
+class _GcashPaymentSheetState extends State<_GcashPaymentSheet> {
+  static const Color _green = Color(0xFF1D9E75);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _muted = Color(0xFF7C8B83);
+  static const Color _border = Color(0xFFE2EFE9);
+
+  /// The receipt image the user attached (checkout mode only).
+  Uint8List? _receiptBytes;
+  String _receiptName = '';
+
+  /// GCash reference number the user typed (checkout mode only).
+  final TextEditingController _referenceCtrl = TextEditingController();
+
+  /// Path of the already-uploaded receipt: kept after a failed request
+  /// insert so retrying the submit reuses it instead of re-uploading.
+  String? _uploadedPath;
+
+  bool _submitting = false;
+
+  bool get _checkout => widget.plan != null;
+
+  @override
+  void dispose() {
+    _referenceCtrl.dispose();
+    super.dispose();
+  }
+
+  String _peso(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toStringAsFixed(2);
+    return '₱$text';
+  }
+
+  Future<void> _pickReceipt(ImageSource source) async {
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (picked == null) return; // user cancelled
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > SubscriptionService.maxReceiptBytes) {
+        showTopMessage(context, 'Receipt image is too large — max 5 MB.');
+        return;
+      }
+      setState(() {
+        _receiptBytes = bytes;
+        _receiptName = picked.name;
+        _uploadedPath = null; // a newly picked image needs a fresh upload
+      });
+    } catch (e) {
+      if (mounted) showTopMessage(context, 'Could not pick the image: $e');
+    }
+  }
+
+  /// Pay-first submit: upload the receipt to the private bucket (once),
+  /// THEN insert the subscription request. No receipt → no request.
+  Future<void> _submit() async {
+    final plan = widget.plan;
+    if (plan == null) return;
+    if (_referenceCtrl.text.trim().isEmpty) {
+      showTopMessage(context,
+          'Please enter the reference number from your GCash receipt.');
+      return;
+    }
+    if (_receiptBytes == null) {
+      showTopMessage(context,
+          'Please attach your GCash receipt screenshot before submitting.');
+      return;
+    }
+    setState(() => _submitting = true);
+
+    // Step 1 — upload (skipped when retrying after a failed insert).
+    var path = _uploadedPath;
+    if (path == null) {
+      try {
+        path = await SubscriptionService.uploadReceipt(
+            _receiptBytes!, _receiptName);
+        _uploadedPath = path;
+      } on ReceiptUploadException catch (e) {
+        if (!mounted) return;
+        setState(() => _submitting = false);
+        showTopMessage(context, e.message);
+        return;
+      }
+      if (!mounted) return;
+    }
+
+    // Step 2 — insert the request with the receipt's storage path.
+    final error = await SubscriptionService.requestPlan(
+      plan,
+      receiptPath: path,
+      referenceNumber: _referenceCtrl.text,
+      yearly: widget.yearly,
+      monthlyPrice: widget.monthlyPrice,
+    );
+    if (!mounted) return;
+    setState(() => _submitting = false);
+    if (error == null) {
+      Navigator.pop(context, path);
+    } else {
+      // The receipt is already uploaded — the user can retry the submit
+      // without re-uploading it.
+      showTopMessage(context, error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final payment = widget.payment;
+    final due = widget.amount;
+    return Container(
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.9),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.black12,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Row(
+              children: [
+                Icon(Icons.payments_outlined, color: _green, size: 24),
+                SizedBox(width: 10),
+                Text('Pay with GCash',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // ── Amount due ─────────────────────────────────────────────
+            if (due != null && due > 0) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4FAF7),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  children: [
+                    const Text('Amount to send',
+                        style: TextStyle(fontSize: 12, color: _muted)),
+                    const SizedBox(height: 2),
+                    Text(_peso(due),
+                        style: const TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            color: _green)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Exact-amount warning: the admin verifies the receipt against
+              // this amount and will not accept an over- or underpayment.
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFDE08D)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: Color(0xFFB28704), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Send the exact amount of ${_peso(due)}. If your '
+                        'payment doesn\'t match this amount, the admin will '
+                        'not accept your plan request.',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF8A6D1B),
+                            height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // ── Every active GCash account (primary first) ─────────────
+            for (var i = 0; i < payment.accounts.length; i++)
+              _accountCard(payment.accounts[i], primary: i == 0),
+
+            // ── Global instructions ────────────────────────────────────
+            if (payment.instructions.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(payment.instructions,
+                  style: const TextStyle(
+                      fontSize: 13, color: Color(0xFF3D5247), height: 1.5)),
+            ],
+
+            const SizedBox(height: 16),
+            if (_checkout) ..._checkoutSection() else ..._infoSection(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// One GCash account: number (copyable) + account name + its QR code.
+  Widget _accountCard(PaymentAccount account, {required bool primary}) {
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        border: Border.all(color: _border),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Text('GCash number',
+                            style: TextStyle(fontSize: 12, color: _muted)),
+                        if (primary) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE8F8F1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('PRIMARY',
+                                style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: _green)),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(account.number,
+                        style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: _dark)),
+                    if (account.name.isNotEmpty)
+                      Text(account.name,
+                          style:
+                              const TextStyle(fontSize: 12.5, color: _muted)),
+                  ],
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: account.number));
+                  showTopMessage(context, 'GCash number copied!',
+                      isError: false);
+                },
+                icon: const Icon(Icons.copy_rounded, size: 16, color: _green),
+                label: const Text('Copy',
+                    style: TextStyle(
+                        color: _green, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          if (account.hasQr) ...[
+            const SizedBox(height: 10),
+            const Text('Or scan this QR code in the GCash app',
+                style: TextStyle(fontSize: 12.5, color: _muted)),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                account.qrUrl,
+                height: 200,
+                fit: BoxFit.contain,
+                loadingBuilder: (c, child, progress) => progress == null
+                    ? child
+                    : const SizedBox(
+                        height: 200,
+                        child: Center(
+                            child:
+                                CircularProgressIndicator(color: _green))),
+                errorBuilder: (c, e, s) => const SizedBox(
+                  height: 80,
+                  child: Center(
+                    child: Text('QR code unavailable',
+                        style: TextStyle(fontSize: 12, color: _muted)),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Checkout mode: mandatory reference number + receipt attach + submit.
+  /// No receipt → the submit button stays disabled and nothing is inserted.
+  List<Widget> _checkoutSection() {
+    final plan = widget.plan!;
+    return [
+      // ── GCash reference number (required) ──────────────────────────
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.tag_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('GCash reference number',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Copy the reference number from your GCash receipt and enter '
+              'it in the field provided below.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _referenceCtrl,
+              enabled: !_submitting,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w600, color: _dark),
+              decoration: InputDecoration(
+                hintText: 'e.g. 0012 345 678901',
+                hintStyle:
+                    const TextStyle(fontSize: 13, color: Color(0xFFB2C0B9)),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 12),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _green, width: 1.4),
+                ),
+                disabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _border),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.receipt_long_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('Attach your GCash receipt',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Pay first, then attach a screenshot of your GCash receipt. '
+              'Your request is only submitted once a receipt is attached.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.4),
+            ),
+            if (_receiptBytes != null) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.memory(_receiptBytes!,
+                    height: 160, fit: BoxFit.contain),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.check_circle, color: _green, size: 14),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(_receiptName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(fontSize: 11.5, color: _muted)),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => _pickReceipt(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library_outlined,
+                        size: 16, color: _green),
+                    label: Text(
+                        _receiptBytes == null ? 'Gallery' : 'Replace',
+                        style: const TextStyle(
+                            color: _green, fontWeight: FontWeight.w700)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: _border),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => _pickReceipt(ImageSource.camera),
+                    icon: const Icon(Icons.photo_camera_outlined,
+                        size: 16, color: _green),
+                    label: const Text('Camera',
+                        style: TextStyle(
+                            color: _green, fontWeight: FontWeight.w700)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: _border),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      SizedBox(
+        height: 48,
+        child: ElevatedButton.icon(
+          onPressed:
+              _submitting || _receiptBytes == null ? null : _submit,
+          icon: _submitting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2.4, color: Colors.white),
+                )
+              : const Icon(Icons.send_rounded, size: 18),
+          label: Text(
+              _submitting
+                  ? 'Submitting…'
+                  : 'Submit ${plan.label}${widget.yearly ? ' (Yearly)' : ''} '
+                      'request',
+              style: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w700)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _green,
+            foregroundColor: Colors.white,
+            disabledBackgroundColor: _green.withOpacity(0.5),
+            disabledForegroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: _submitting ? null : () => Navigator.pop(context),
+        child: const Text('Cancel',
+            style: TextStyle(color: _muted, fontSize: 13)),
+      ),
+    ];
+  }
+
+  /// Info mode: the submitted receipt (signed URL — the bucket is private),
+  /// or a "no receipt" note for legacy requests, plus a support shortcut.
+  List<Widget> _infoSection() {
+    return [
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.receipt_long_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('Your submitted receipt',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (widget.referenceNumber.isNotEmpty) ...[
+              Row(
+                children: [
+                  const Text('Reference number: ',
+                      style: TextStyle(fontSize: 12.5, color: _muted)),
+                  Expanded(
+                    child: Text(widget.referenceNumber,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                            color: _dark)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            if ((widget.receiptPath ?? '').isEmpty)
+              const Text(
+                'No receipt is attached to this request. If you haven\'t '
+                'paid yet, send the amount above and contact support with '
+                'your GCash reference number.',
+                style: TextStyle(fontSize: 12.5, color: _muted, height: 1.4),
+              )
+            else
+              FutureBuilder<String?>(
+                future:
+                    SubscriptionService.receiptSignedUrl(widget.receiptPath),
+                builder: (c, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const SizedBox(
+                      height: 120,
+                      child: Center(
+                          child: CircularProgressIndicator(color: _green)),
+                    );
+                  }
+                  final url = snap.data;
+                  if (url == null) {
+                    return const Text('Receipt preview unavailable.',
+                        style: TextStyle(fontSize: 12.5, color: _muted));
+                  }
+                  return Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        url,
+                        height: 200,
+                        fit: BoxFit.contain,
+                        errorBuilder: (c, e, s) => const Text(
+                            'Receipt preview unavailable.',
+                            style:
+                                TextStyle(fontSize: 12.5, color: _muted)),
+                      ),
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      SizedBox(
+        height: 48,
+        child: ElevatedButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SupportChatPage()),
+            );
+          },
+          icon: const Icon(Icons.support_agent_rounded, size: 18),
+          label: const Text('Contact Support',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _green,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child:
+            const Text('Close', style: TextStyle(color: _muted, fontSize: 13)),
+      ),
+    ];
   }
 }
 

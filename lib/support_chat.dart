@@ -1,4 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'main.dart';
 import 'widgets/top_message.dart';
@@ -9,6 +13,11 @@ import 'widgets/top_message.dart';
 /// by `user_id`). The user posts rows with `sender = 'user'`; an admin replies
 /// from the admin panel with `sender = 'admin'`. Realtime keeps both sides in
 /// sync — see `supabase/migrations/20260625000000_support_chat.sql`.
+///
+/// Users can also attach pictures: the image goes to the private
+/// `support-chat` bucket at `<uid>/<ms>.<ext>` and its object PATH is stored
+/// in `support_messages.image_url`; both sides render it via a signed URL
+/// (see `supabase/migrations/20260711000000_support_chat_images.sql`).
 class SupportChatPage extends StatefulWidget {
   const SupportChatPage({super.key});
 
@@ -19,12 +28,31 @@ class SupportChatPage extends StatefulWidget {
 class _SupportChatPageState extends State<SupportChatPage> {
   static const Color _brand = Color(0xFF3AA876);
 
+  /// Private Storage bucket for chat pictures — never build public URLs
+  /// from it; rendering uses signed URLs.
+  static const String _imageBucket = 'support-chat';
+
+  /// Max picture size accepted by the bucket (5 MB), checked client-side too
+  /// so the user gets a clear message instead of a storage error.
+  static const int _maxImageBytes = 5 * 1024 * 1024;
+
+  static const Map<String, String> _imageContentTypes = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'webp': 'image/webp',
+  };
+
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
 
   Stream<List<Map<String, dynamic>>>? _stream;
   String? _uid;
   bool _sending = false;
+
+  /// Signed URLs for image messages, cached per object path so the realtime
+  /// stream's rebuilds don't re-sign (and re-download) every picture.
+  final Map<String, Future<String?>> _signedUrls = {};
 
   @override
   void initState() {
@@ -68,6 +96,121 @@ class _SupportChatPageState extends State<SupportChatPage> {
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  /// Lets the user pick a picture (gallery or camera), uploads it to the
+  /// private bucket under their own folder, then posts it as a message —
+  /// with whatever is in the text box as an optional caption.
+  Future<void> _sendImage(ImageSource source) async {
+    if (_sending || _uid == null) return;
+
+    final XFile? picked;
+    try {
+      picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+    } catch (e) {
+      if (mounted) showTopMessage(context, 'Could not pick the image: $e');
+      return;
+    }
+    if (picked == null || !mounted) return; // user cancelled
+
+    final Uint8List bytes = await picked.readAsBytes();
+    if (!mounted) return;
+    if (bytes.length > _maxImageBytes) {
+      showTopMessage(context, 'Image is too large — max 5 MB.');
+      return;
+    }
+    final dot = picked.name.lastIndexOf('.');
+    final ext = dot < 0 ? '' : picked.name.substring(dot + 1).toLowerCase();
+    final contentType = _imageContentTypes[ext];
+    if (contentType == null) {
+      showTopMessage(context, 'Please pick a JPG, PNG or WebP image.');
+      return;
+    }
+
+    final caption = _controller.text.trim();
+    setState(() => _sending = true);
+    try {
+      final path =
+          '$_uid/${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await supabase.storage.from(_imageBucket).uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: contentType),
+          );
+      await supabase.from('support_messages').insert({
+        'user_id': _uid,
+        'sender': 'user',
+        'body': caption,
+        'image_url': path,
+      });
+      _controller.clear();
+      _scrollToBottom();
+    } on StorageException catch (e) {
+      if (mounted) {
+        showTopMessage(context, 'Couldn\'t send the picture: ${e.message}');
+      }
+    } catch (_) {
+      if (mounted) {
+        showTopMessage(
+            context, 'Couldn\'t send the picture. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// Gallery / camera choice for the composer's attach button.
+  void _showAttachSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading:
+                  const Icon(Icons.photo_library_outlined, color: _brand),
+              title: const Text('Choose from gallery'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _sendImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.photo_camera_outlined, color: _brand),
+              title: const Text('Take a photo'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _sendImage(ImageSource.camera);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Signed URL for a chat picture, cached per path (the bucket is private).
+  Future<String?> _signedUrl(String path) {
+    return _signedUrls.putIfAbsent(path, () async {
+      try {
+        return await supabase.storage
+            .from(_imageBucket)
+            .createSignedUrl(path, 3600);
+      } catch (_) {
+        return null;
+      }
+    });
   }
 
   void _scrollToBottom() {
@@ -185,6 +328,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
             final isUser = (m['sender'] as String?) == 'user';
             return _bubble(
               body: (m['body'] as String?) ?? '',
+              imagePath: ((m['image_url'] as String?) ?? '').trim(),
               time: _formatTime(m['created_at'] as String?),
               isUser: isUser,
             );
@@ -195,7 +339,10 @@ class _SupportChatPageState extends State<SupportChatPage> {
   }
 
   Widget _bubble(
-      {required String body, required String time, required bool isUser}) {
+      {required String body,
+      String imagePath = '',
+      required String time,
+      required bool isUser}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -240,14 +387,20 @@ class _SupportChatPageState extends State<SupportChatPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    body,
-                    style: TextStyle(
-                      fontSize: 14,
-                      height: 1.35,
-                      color: isUser ? Colors.white : const Color(0xFF1A2E22),
+                  if (imagePath.isNotEmpty) ...[
+                    _bubbleImage(imagePath, isUser),
+                    if (body.isNotEmpty) const SizedBox(height: 6),
+                  ],
+                  if (body.isNotEmpty)
+                    Text(
+                      body,
+                      style: TextStyle(
+                        fontSize: 14,
+                        height: 1.35,
+                        color:
+                            isUser ? Colors.white : const Color(0xFF1A2E22),
+                      ),
                     ),
-                  ),
                   const SizedBox(height: 3),
                   Text(
                     time,
@@ -261,6 +414,89 @@ class _SupportChatPageState extends State<SupportChatPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// A picture inside a chat bubble, resolved via a cached signed URL.
+  /// Tapping opens it full-screen.
+  Widget _bubbleImage(String path, bool isUser) {
+    return FutureBuilder<String?>(
+      future: _signedUrl(path),
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return _imagePlaceholder(
+              const CircularProgressIndicator(color: _brand, strokeWidth: 2));
+        }
+        final url = snap.data;
+        if (url == null) {
+          return _imagePlaceholder(Text('Picture unavailable',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: isUser ? Colors.white70 : Colors.black38)));
+        }
+        return GestureDetector(
+          onTap: () => _openImageViewer(url),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.network(
+              url,
+              width: 220,
+              fit: BoxFit.cover,
+              loadingBuilder: (c, child, progress) => progress == null
+                  ? child
+                  : _imagePlaceholder(const CircularProgressIndicator(
+                      color: _brand, strokeWidth: 2)),
+              errorBuilder: (c, e, s) => _imagePlaceholder(Text(
+                  'Picture unavailable',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: isUser ? Colors.white70 : Colors.black38))),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _imagePlaceholder(Widget child) {
+    return Container(
+      width: 220,
+      height: 140,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: child,
+    );
+  }
+
+  /// Full-screen, zoomable view of a chat picture.
+  void _openImageViewer(String url) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              maxScale: 5,
+              child: Image.network(
+                url,
+                fit: BoxFit.contain,
+                errorBuilder: (c, e, s) => const Text(
+                    'Picture unavailable',
+                    style: TextStyle(color: Colors.white70)),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -337,6 +573,13 @@ class _SupportChatPageState extends State<SupportChatPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          // Attach a picture (goes out with the typed text as its caption).
+          IconButton(
+            onPressed: _sending ? null : _showAttachSheet,
+            icon: const Icon(Icons.add_photo_alternate_outlined,
+                color: _brand, size: 26),
+            tooltip: 'Send a picture',
+          ),
           Expanded(
             child: Container(
               decoration: BoxDecoration(

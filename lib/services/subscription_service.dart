@@ -1,3 +1,7 @@
+import 'dart:typed_data';
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../main.dart';
 
 /// One purchasable plan as shown in the AniMart app.
@@ -50,22 +54,46 @@ class PlanPricing {
       discounted ? price * (1 - discountPercent / 100) : price;
 }
 
-/// GCash payment details configured by the super admin in `app_settings`.
-class PaymentDetails {
-  final String gcashNumber;
-  final String gcashName;
+/// One GCash receiving account from the admin-managed `payment_methods`
+/// table. The app only ever reads this table — the super admin maintains it.
+class PaymentAccount {
+  final String id;
+  final String name;
+  final String number;
   final String qrUrl;
+
+  const PaymentAccount({
+    required this.id,
+    this.name = '',
+    this.number = '',
+    this.qrUrl = '',
+  });
+
+  bool get hasQr => qrUrl.startsWith('http');
+}
+
+/// GCash payment details for the "Pay with GCash" sheet: every active
+/// receiving account (`payment_methods`, primary first) plus the global
+/// instructions from `app_settings.premium_payment_instructions`.
+class PaymentDetails {
+  final List<PaymentAccount> accounts;
   final String instructions;
 
   const PaymentDetails({
-    this.gcashNumber = '',
-    this.gcashName = '',
-    this.qrUrl = '',
+    this.accounts = const [],
     this.instructions = '',
   });
 
-  bool get hasGcash => gcashNumber.isNotEmpty;
-  bool get hasQr => qrUrl.startsWith('http');
+  bool get hasGcash => accounts.isNotEmpty;
+}
+
+/// Thrown by [SubscriptionService.uploadReceipt] with a user-facing message.
+class ReceiptUploadException implements Exception {
+  final String message;
+  const ReceiptUploadException(this.message);
+
+  @override
+  String toString() => message;
 }
 
 /// The user's resolved active plan, including how it's billed.
@@ -246,32 +274,114 @@ class SubscriptionService {
     return (await fetchPaymentDetails()).instructions;
   }
 
-  /// The GCash payment details + instructions the super admin configured in
-  /// `app_settings`, for the "Pay with GCash" sheet. Empty fields simply
-  /// hide their section in the UI.
+  /// The GCash payment details for the "Pay with GCash" sheet: every active
+  /// account from `payment_methods` (primary first) plus the global
+  /// instructions. Missing pieces just hide their section in the UI.
+  ///
+  /// The legacy `app_settings` keys (`gcash_number` / `gcash_account_name` /
+  /// `gcash_qr_url`) are kept in sync with the primary account by a DB
+  /// trigger for OLD app builds only — never read or write them here.
   static Future<PaymentDetails> fetchPaymentDetails() async {
+    var accounts = const <PaymentAccount>[];
     try {
       final rows = await supabase
-          .from('app_settings')
-          .select('key, value')
-          .inFilter('key', [
-        'gcash_number',
-        'gcash_account_name',
-        'gcash_qr_url',
-        'premium_payment_instructions',
-      ]);
-      final byKey = <String, String>{
+          .from('payment_methods')
+          .select('id, account_name, account_number, qr_url')
+          .eq('is_active', true)
+          .order('sort_order', ascending: true);
+      accounts = [
         for (final r in (rows as List))
-          '${(r as Map)['key']}': ((r['value'] as String?) ?? '').trim(),
-      };
-      return PaymentDetails(
-        gcashNumber: byKey['gcash_number'] ?? '',
-        gcashName: byKey['gcash_account_name'] ?? '',
-        qrUrl: byKey['gcash_qr_url'] ?? '',
-        instructions: byKey['premium_payment_instructions'] ?? '',
-      );
+          PaymentAccount(
+            id: '${(r as Map)['id']}',
+            name: ((r['account_name'] as String?) ?? '').trim(),
+            number: ((r['account_number'] as String?) ?? '').trim(),
+            qrUrl: ((r['qr_url'] as String?) ?? '').trim(),
+          ),
+      ].where((a) => a.number.isNotEmpty).toList();
     } catch (_) {
-      return const PaymentDetails();
+      // Table unreadable — the sheet just won't show account rows.
+    }
+
+    var instructions = '';
+    try {
+      final row = await supabase
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'premium_payment_instructions')
+          .maybeSingle();
+      instructions = ((row?['value'] as String?) ?? '').trim();
+    } catch (_) {}
+
+    return PaymentDetails(accounts: accounts, instructions: instructions);
+  }
+
+  // ── Receipt upload (pay-first flow) ─────────────────────────────────────
+
+  /// Private Storage bucket holding payment-receipt screenshots. Never build
+  /// public URLs from it — the admin panel (and [receiptSignedUrl]) use
+  /// signed URLs.
+  static const String receiptBucket = 'payment-receipts';
+
+  /// Max receipt size accepted by the bucket (5 MB), checked client-side too
+  /// so the user gets a clear message instead of a storage error.
+  static const int maxReceiptBytes = 5 * 1024 * 1024;
+
+  static const Map<String, String> _receiptContentTypes = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'webp': 'image/webp',
+  };
+
+  /// Uploads a GCash receipt screenshot to the private [receiptBucket] under
+  /// the signed-in user's own folder (`<uid>/<ms>.<ext>` — the only prefix
+  /// its RLS allows). Returns the storage object PATH, which is what gets
+  /// stored in `subscriptions.receipt_url` (the admin panel opens it with a
+  /// signed URL). Throws [ReceiptUploadException] with a user-facing message
+  /// on failure.
+  static Future<String> uploadReceipt(Uint8List bytes, String filename) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      throw const ReceiptUploadException(
+          'You must be signed in to attach a receipt.');
+    }
+    final dot = filename.lastIndexOf('.');
+    final ext = dot < 0 ? '' : filename.substring(dot + 1).toLowerCase();
+    final contentType = _receiptContentTypes[ext];
+    if (contentType == null) {
+      throw const ReceiptUploadException(
+          'Please attach a JPG, PNG or WebP image.');
+    }
+    if (bytes.length > maxReceiptBytes) {
+      throw const ReceiptUploadException(
+          'Receipt image is too large — max 5 MB.');
+    }
+    final path = '${user.id}/${DateTime.now().millisecondsSinceEpoch}.$ext';
+    try {
+      await supabase.storage.from(receiptBucket).uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: contentType),
+          );
+      return path;
+    } on StorageException catch (e) {
+      throw ReceiptUploadException('Receipt upload failed: ${e.message}');
+    } catch (e) {
+      throw ReceiptUploadException('Receipt upload failed: $e');
+    }
+  }
+
+  /// A short-lived signed URL for one of the user's OWN receipts (the bucket
+  /// is private; its select policy only lets users read their own folder).
+  /// Null for a null/empty [path] (legacy requests have no receipt) or when
+  /// signing fails.
+  static Future<String?> receiptSignedUrl(String? path) async {
+    final p = (path ?? '').trim();
+    if (p.isEmpty) return null;
+    try {
+      return await supabase.storage.from(receiptBucket).createSignedUrl(p, 3600);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -293,11 +403,17 @@ class SubscriptionService {
     }
   }
 
-  /// Submits a premium request for [plan].
+  /// Submits a premium request for [plan] — pay-first flow.
   ///
   /// Returns `null` on success, or a user-facing error message. Selecting the
   /// free plan is a no-op (it needs no admin approval). The inserted row lands
   /// in the admin website's pending queue with `status = 'pending'`.
+  ///
+  /// [receiptPath] is REQUIRED for paid plans: the storage object path (not a
+  /// URL) returned by [uploadReceipt] — the user pays and attaches their
+  /// GCash receipt BEFORE anything is submitted. If this insert fails after a
+  /// successful upload, retry with the same path so the receipt isn't
+  /// re-uploaded.
   ///
   /// With [yearly] the request is for the yearly billing cycle: the stored
   /// price is 10× the monthly one (2 months free), matching the plans page.
@@ -305,11 +421,20 @@ class SubscriptionService {
   /// [monthlyPrice] is the live per-month price the user was shown (admin-set
   /// base with any promo discount applied); without it the static fallback
   /// price is stored — which would over-charge during a sale.
+  ///
+  /// [referenceNumber] is the GCash payment reference number the user copied
+  /// from their receipt, stored so the admin can verify the payment.
   static Future<String?> requestPlan(AppPlan plan,
-      {bool yearly = false, double? monthlyPrice}) async {
+      {required String receiptPath,
+      String referenceNumber = '',
+      bool yearly = false,
+      double? monthlyPrice}) async {
     final user = supabase.auth.currentUser;
     if (user == null) return 'You must be signed in to choose a plan.';
     if (plan.isFree) return null; // free tier needs no approval
+    if (receiptPath.trim().isEmpty) {
+      return 'Please attach your GCash receipt first.';
+    }
 
     final monthly = (monthlyPrice != null && monthlyPrice > 0)
         ? monthlyPrice
@@ -336,6 +461,11 @@ class SubscriptionService {
         'billing_cycle': yearly ? 'yearly' : 'monthly',
         'status': 'pending',
         'requested_at': DateTime.now().toUtc().toIso8601String(),
+        // Storage object path in the private receipts bucket; the admin
+        // panel opens it with a signed URL.
+        'receipt_url': receiptPath.trim(),
+        if (referenceNumber.trim().isNotEmpty)
+          'reference_number': referenceNumber.trim(),
       });
       return null;
     } catch (e) {

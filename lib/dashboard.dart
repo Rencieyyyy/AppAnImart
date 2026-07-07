@@ -390,7 +390,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _showPlanDialog() {
     String selectedPlan = 'free';
-    bool submitting = false;
 
     final List<AppPlan> plans = SubscriptionService.plans;
 
@@ -410,31 +409,22 @@ class _DashboardPageState extends State<DashboardPage> {
       context: context,
       barrierDismissible: false, // must tap X or Continue to dismiss
       builder: (ctx) {
-        // Submits the chosen plan as a pending request for admin approval.
-        Future<void> submit(StateSetter setDialog) async {
+        // Paid plans use the pay-first flow on the full plans page: pay via
+        // GCash, attach the receipt, and only then is the request submitted.
+        // Free just closes the popup — it needs no approval.
+        void submit() {
           final plan = SubscriptionService.planById(selectedPlan);
-
-          // Free needs no approval — just close.
+          Navigator.pop(ctx);
           if (plan.isFree) {
-            Navigator.pop(ctx);
             showTopMessage(context, "You're on the Free plan.",
                 isError: false);
             return;
           }
-
-          setDialog(() => submitting = true);
-          final error = await SubscriptionService.requestPlan(plan);
-          if (!mounted) return;
-          Navigator.pop(ctx);
-          if (error == null) {
-            showTopMessage(
-              context,
-              '${plan.label} request submitted — pending admin approval.',
-              isError: false,
-            );
-          } else {
-            showTopMessage(context, error);
-          }
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => const PremiumSubscriptionPage()),
+          );
         }
 
         return StatefulBuilder(
@@ -459,7 +449,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     Align(
                       alignment: Alignment.topRight,
                       child: GestureDetector(
-                        onTap: submitting ? null : () => Navigator.pop(ctx),
+                        onTap: () => Navigator.pop(ctx),
                         child: Container(
                           width: 30,
                           height: 30,
@@ -520,9 +510,8 @@ class _DashboardPageState extends State<DashboardPage> {
                       final discounted = planPricing?.discounted ?? false;
                       final pct = planPricing?.discountPercent ?? 0;
                       return GestureDetector(
-                        onTap: submitting
-                            ? null
-                            : () => setDialog(() => selectedPlan = plan.id),
+                        onTap: () =>
+                            setDialog(() => selectedPlan = plan.id),
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.symmetric(
@@ -654,35 +643,22 @@ class _DashboardPageState extends State<DashboardPage> {
                       width: double.infinity,
                       height: 48,
                       child: ElevatedButton(
-                        onPressed:
-                            submitting ? null : () => submit(setDialog),
+                        onPressed: submit,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF6DBF99),
                           foregroundColor: Colors.white,
-                          disabledBackgroundColor:
-                              const Color(0xFF6DBF99).withOpacity(0.6),
-                          disabledForegroundColor: Colors.white,
                           elevation: 0,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(30),
                           ),
                         ),
-                        child: submitting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.4,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Text(
-                                'Continue',
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
+                        child: const Text(
+                          'Continue',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ),
 
