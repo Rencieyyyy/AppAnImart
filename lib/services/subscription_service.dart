@@ -50,6 +50,24 @@ class PlanPricing {
       discounted ? price * (1 - discountPercent / 100) : price;
 }
 
+/// GCash payment details configured by the super admin in `app_settings`.
+class PaymentDetails {
+  final String gcashNumber;
+  final String gcashName;
+  final String qrUrl;
+  final String instructions;
+
+  const PaymentDetails({
+    this.gcashNumber = '',
+    this.gcashName = '',
+    this.qrUrl = '',
+    this.instructions = '',
+  });
+
+  bool get hasGcash => gcashNumber.isNotEmpty;
+  bool get hasQr => qrUrl.startsWith('http');
+}
+
 /// The user's resolved active plan, including how it's billed.
 class ActivePlan {
   /// 'Free' | 'Premium' | 'Super Premium'.
@@ -225,15 +243,35 @@ class SubscriptionService {
   /// Admin-editable payment instructions shown after a premium request
   /// (`app_settings.premium_payment_instructions`). '' when unreadable.
   static Future<String> fetchPaymentInstructions() async {
+    return (await fetchPaymentDetails()).instructions;
+  }
+
+  /// The GCash payment details + instructions the super admin configured in
+  /// `app_settings`, for the "Pay with GCash" sheet. Empty fields simply
+  /// hide their section in the UI.
+  static Future<PaymentDetails> fetchPaymentDetails() async {
     try {
-      final row = await supabase
+      final rows = await supabase
           .from('app_settings')
-          .select('value')
-          .eq('key', 'premium_payment_instructions')
-          .maybeSingle();
-      return ((row?['value'] as String?) ?? '').trim();
+          .select('key, value')
+          .inFilter('key', [
+        'gcash_number',
+        'gcash_account_name',
+        'gcash_qr_url',
+        'premium_payment_instructions',
+      ]);
+      final byKey = <String, String>{
+        for (final r in (rows as List))
+          '${(r as Map)['key']}': ((r['value'] as String?) ?? '').trim(),
+      };
+      return PaymentDetails(
+        gcashNumber: byKey['gcash_number'] ?? '',
+        gcashName: byKey['gcash_account_name'] ?? '',
+        qrUrl: byKey['gcash_qr_url'] ?? '',
+        instructions: byKey['premium_payment_instructions'] ?? '',
+      );
     } catch (_) {
-      return '';
+      return const PaymentDetails();
     }
   }
 
@@ -245,10 +283,21 @@ class SubscriptionService {
   ///
   /// With [yearly] the request is for the yearly billing cycle: the stored
   /// price is 10× the monthly one (2 months free), matching the plans page.
-  static Future<String?> requestPlan(AppPlan plan, {bool yearly = false}) async {
+  ///
+  /// [monthlyPrice] is the live per-month price the user was shown (admin-set
+  /// base with any promo discount applied); without it the static fallback
+  /// price is stored — which would over-charge during a sale.
+  static Future<String?> requestPlan(AppPlan plan,
+      {bool yearly = false, double? monthlyPrice}) async {
     final user = supabase.auth.currentUser;
     if (user == null) return 'You must be signed in to choose a plan.';
     if (plan.isFree) return null; // free tier needs no approval
+
+    final monthly = (monthlyPrice != null && monthlyPrice > 0)
+        ? monthlyPrice
+        : plan.price.toDouble();
+    final price =
+        double.parse((yearly ? monthly * 10 : monthly).toStringAsFixed(2));
 
     try {
       // Don't stack duplicate pending requests for the same user.
@@ -265,7 +314,7 @@ class SubscriptionService {
       await supabase.from('subscriptions').insert({
         'user_id': user.id,
         'plan': plan.label,
-        'price': yearly ? plan.price * 10 : plan.price,
+        'price': price,
         'billing_cycle': yearly ? 'yearly' : 'monthly',
         'status': 'pending',
         'requested_at': DateTime.now().toUtc().toIso8601String(),

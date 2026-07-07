@@ -2808,8 +2808,11 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   /// "how to pay" banner so they know the next step.
   bool _hasPendingRequest = false;
 
-  /// Admin-editable payment instructions from app_settings.
-  String _paymentInstructions = '';
+  /// GCash number/name/QR + instructions the super admin configured.
+  PaymentDetails _payment = const PaymentDetails();
+
+  /// Amount due for the pending request (its stored price), for the sheet.
+  double? _pendingAmount;
 
   /// Free-tier benefit list; the active-listing cap comes from the `prices`
   /// row's `listing_capacity` column.
@@ -2872,55 +2875,234 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     _loadPaymentState();
   }
 
-  /// Loads the payment instructions and whether a request is already
-  /// pending, so the page can tell the user how to pay.
+  /// Loads the GCash payment details and whether a request is already
+  /// pending (plus its amount), so the page can tell the user how to pay.
   Future<void> _loadPaymentState() async {
     final results = await Future.wait([
-      SubscriptionService.hasPendingRequest(),
-      SubscriptionService.fetchPaymentInstructions(),
+      SubscriptionService.currentSubscription(),
+      SubscriptionService.fetchPaymentDetails(),
     ]);
     if (!mounted) return;
+    final sub = results[0] as Map<String, dynamic>?;
+    final pending = sub != null && '${sub['status']}' == 'pending';
     setState(() {
-      _hasPendingRequest = results[0] as bool;
-      _paymentInstructions = results[1] as String;
+      _hasPendingRequest = pending;
+      _pendingAmount = pending ? (sub['price'] as num?)?.toDouble() : null;
+      _payment = results[1] as PaymentDetails;
     });
   }
 
-  /// "How to pay" dialog shown right after submitting a request (and from
-  /// the pending banner).
-  void _showPaymentInstructions() {
-    if (_paymentInstructions.isEmpty) return;
-    showDialog(
+  bool get _hasPaymentInfo =>
+      _payment.hasGcash || _payment.instructions.isNotEmpty;
+
+  /// "Pay with GCash" sheet: the amount due, the super admin's GCash number
+  /// (copyable) and QR code, the instruction steps, and a shortcut to
+  /// Support Chat for sending the receipt. Shown right after submitting a
+  /// request and from the pending banner.
+  void _showPaymentSheet({double? amount}) {
+    if (!_hasPaymentInfo) return;
+    final due = amount ?? _pendingAmount;
+
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.payments_outlined, color: _green, size: 22),
-            SizedBox(width: 8),
-            Text('How to pay',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
-        content: SingleChildScrollView(
-          child: Text(
-            _paymentInstructions,
-            style: const TextStyle(
-                fontSize: 13.5, color: Color(0xFF3D5247), height: 1.5),
+        padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              const Row(
+                children: [
+                  Icon(Icons.payments_outlined, color: _green, size: 24),
+                  SizedBox(width: 10),
+                  Text('Pay with GCash',
+                      style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: _dark)),
+                ],
+              ),
+              const SizedBox(height: 14),
+
+              // ── Amount due ─────────────────────────────────────────
+              if (due != null && due > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4FAF7),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text('Amount to send',
+                          style: TextStyle(fontSize: 12, color: _muted)),
+                      const SizedBox(height: 2),
+                      Text(_peso(due),
+                          style: const TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w800,
+                              color: _green)),
+                    ],
+                  ),
+                ),
+
+              // ── GCash number (copyable) + account name ─────────────
+              if (_payment.hasGcash) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE2EFE9)),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('GCash number',
+                                style:
+                                    TextStyle(fontSize: 12, color: _muted)),
+                            const SizedBox(height: 2),
+                            Text(_payment.gcashNumber,
+                                style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: _dark)),
+                            if (_payment.gcashName.isNotEmpty)
+                              Text(_payment.gcashName,
+                                  style: const TextStyle(
+                                      fontSize: 12.5, color: _muted)),
+                          ],
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: () {
+                          Clipboard.setData(
+                              ClipboardData(text: _payment.gcashNumber));
+                          showTopMessage(ctx, 'GCash number copied!',
+                              isError: false);
+                        },
+                        icon: const Icon(Icons.copy_rounded,
+                            size: 16, color: _green),
+                        label: const Text('Copy',
+                            style: TextStyle(
+                                color: _green, fontWeight: FontWeight.w700)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              // ── QR code ────────────────────────────────────────────
+              if (_payment.hasQr) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE2EFE9)),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text('Or scan this QR code in the GCash app',
+                          style: TextStyle(fontSize: 12.5, color: _muted)),
+                      const SizedBox(height: 10),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.network(
+                          _payment.qrUrl,
+                          height: 220,
+                          fit: BoxFit.contain,
+                          loadingBuilder: (c, child, progress) =>
+                              progress == null
+                                  ? child
+                                  : const SizedBox(
+                                      height: 220,
+                                      child: Center(
+                                          child: CircularProgressIndicator(
+                                              color: _green))),
+                          errorBuilder: (c, e, s) => const SizedBox(
+                            height: 80,
+                            child: Center(
+                              child: Text('QR code unavailable',
+                                  style: TextStyle(
+                                      fontSize: 12, color: _muted)),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              // ── Steps / instructions ───────────────────────────────
+              if (_payment.instructions.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Text(_payment.instructions,
+                    style: const TextStyle(
+                        fontSize: 13, color: Color(0xFF3D5247), height: 1.5)),
+              ],
+
+              const SizedBox(height: 18),
+
+              // ── Send receipt via Support Chat ──────────────────────
+              SizedBox(
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const SupportChatPage()),
+                    );
+                  },
+                  icon: const Icon(Icons.support_agent_rounded, size: 18),
+                  label: const Text('Send receipt via Support Chat',
+                      style: TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w700)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _green,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('I\'ll pay later',
+                    style: TextStyle(color: _muted, fontSize: 13)),
+              ),
+            ],
           ),
         ),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _green,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Got it'),
-          ),
-        ],
       ),
     );
   }
@@ -3092,7 +3274,7 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                     // ── Pending request: how-to-pay banner ──────────
                     if (_hasPendingRequest) ...[
                       GestureDetector(
-                        onTap: _showPaymentInstructions,
+                        onTap: _showPaymentSheet,
                         child: Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
@@ -3119,17 +3301,17 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                                             fontSize: 13,
                                             fontWeight: FontWeight.w700,
                                             color: Color(0xFFB28704))),
-                                    if (_paymentInstructions.isNotEmpty)
+                                    if (_hasPaymentInfo)
                                       const Text(
                                           'Haven\'t paid yet? Tap to see '
-                                          'how to pay.',
+                                          'how to pay with GCash.',
                                           style: TextStyle(
                                               fontSize: 12,
                                               color: Color(0xFF8A6D1B))),
                                   ],
                                 ),
                               ),
-                              if (_paymentInstructions.isNotEmpty)
+                              if (_hasPaymentInfo)
                                 const Icon(Icons.chevron_right,
                                     color: Color(0xFFB28704), size: 20),
                             ],
@@ -3490,8 +3672,11 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
     }
 
     setState(() => _submittingId = plan.id);
-    final error =
-        await SubscriptionService.requestPlan(appPlan, yearly: _yearly);
+    // Store the live per-month price the card showed (admin-set base with
+    // any promo applied) so the admin sees — and the user pays — the same
+    // amount that was advertised.
+    final error = await SubscriptionService.requestPlan(appPlan,
+        yearly: _yearly, monthlyPrice: plan.effectiveMonthly);
     if (!mounted) return;
     setState(() => _submittingId = null);
 
@@ -3502,10 +3687,17 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
         'pending admin approval.',
         isError: false,
       );
-      // The request only becomes active once it's paid — show how, right
-      // away, then keep the how-to-pay banner visible on this page.
-      setState(() => _hasPendingRequest = true);
-      _showPaymentInstructions();
+      // The request only becomes active once it's paid — show the GCash
+      // payment sheet right away, then keep the banner visible on this page.
+      final due = double.parse((_yearly
+              ? plan.effectiveMonthly * 10
+              : plan.effectiveMonthly)
+          .toStringAsFixed(2));
+      setState(() {
+        _hasPendingRequest = true;
+        _pendingAmount = due;
+      });
+      _showPaymentSheet(amount: due);
     } else {
       showTopMessage(context, error);
     }

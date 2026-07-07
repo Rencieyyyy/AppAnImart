@@ -40,7 +40,15 @@ targeted, claim-first sends).*
 - **Premium payment instructions** — `app_settings` table seeded with
   `premium_payment_instructions`; the plans page shows a "how to pay"
   dialog after submitting a request and a pending-approval banner.
-  **Admin: put the real GCash/bank details into that row.**
+  *Upgraded same day to a full "Pay with GCash" sheet:* amount due, super
+  admin's GCash number (copy button) + account name + QR code
+  (`app_settings` keys `gcash_number` / `gcash_account_name` /
+  `gcash_qr_url`, migration 20260708060000), steps text, and a "Send
+  receipt via Support Chat" shortcut. Requests now store the *effective*
+  (admin-set, promo-discounted) price instead of the static fallback.
+  **Admin repo still needs the management UI + super-admin role split +
+  audit logs — ready-to-paste prompt in
+  `docs/admin_prompt_payment_and_audit.md`.**
 - **Rate limiting** — max 10 new offers/hour per buyer, 5 reports/day per
   user (BEFORE INSERT triggers); the app surfaces the clean messages.
 
