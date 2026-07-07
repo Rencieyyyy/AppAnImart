@@ -222,6 +222,21 @@ class SubscriptionService {
     return sub != null && '${sub['status']}' == 'pending';
   }
 
+  /// Admin-editable payment instructions shown after a premium request
+  /// (`app_settings.premium_payment_instructions`). '' when unreadable.
+  static Future<String> fetchPaymentInstructions() async {
+    try {
+      final row = await supabase
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'premium_payment_instructions')
+          .maybeSingle();
+      return ((row?['value'] as String?) ?? '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// Submits a premium request for [plan].
   ///
   /// Returns `null` on success, or a user-facing error message. Selecting the

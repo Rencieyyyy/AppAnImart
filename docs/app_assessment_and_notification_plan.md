@@ -25,16 +25,34 @@ targeted, claim-first sends).*
   notices with a 20-hour per-listing cap (`notify_price_drop()` +
   `price_drop_notices`).
 
-## ⏭ Remaining work — pick up here
+*Updated 2026-07-08 (later): **Part 1's "smaller but real" items are done**
+(migration 20260708050000 applied; `listing-page` edge function deployed):*
 
-**Still open from Part 1's "smaller but real" list:** listing expiry
-nudges, real listing links (Copy Link points at a fake domain), account
-deletion, in-app payment instructions for premium requests, rate limiting
-on offers/reports.
+- **Listing expiry nudges** — daily pg_cron `nudge-stale-listings`: one
+  personal notice per seller covering their active listings up 60+ days;
+  re-nudges each listing at most every 60 days (`listings.last_nudged_at`).
+- **Real listing links** — "Copy Link" now copies
+  `…/functions/v1/listing-page?id=<id>`, a public edge-function page with
+  the listing photo/price/details and OpenGraph tags for chat unfurls.
+- **Account deletion** — `delete_my_account()` RPC (blocked while a
+  reserved deal exists; removes listings + profile + auth user, the rest
+  cascades); type-DELETE-to-confirm button at the bottom of the profile.
+- **Premium payment instructions** — `app_settings` table seeded with
+  `premium_payment_instructions`; the plans page shows a "how to pay"
+  dialog after submitting a request and a pending-approval banner.
+  **Admin: put the real GCash/bank details into that row.**
+- **Rate limiting** — max 10 new offers/hour per buyer, 5 reports/day per
+  user (BEFORE INSERT triggers); the app surfaces the clean messages.
+
+## ⏭ Remaining work — pick up here
 
 **Part 3 nice-to-haves not yet wired:** subscription about-to-expire
 reminder, report-outcome notice, listing-taken-down notice, favorited
-listing sold/relisted, stale-listing nudge, welcome notice.
+listing sold/relisted, welcome notice.
+
+**Known accepted gaps:** Messenger-link liveness can't be validated;
+Cloudinary images of a deleted account's listings are not bulk-removed;
+offer *revisions* aren't rate-limited (only new offers are).
 
 ---
 

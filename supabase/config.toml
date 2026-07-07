@@ -13,6 +13,12 @@ verify_jwt = true
 # avatar_url, so it can only ever delete their own image.
 verify_jwt = true
 
+[functions.listing-page]
+# Public share page for a listing ("Copy Link" URLs). Must be reachable by
+# people without the app or an account, so JWT verification is off; it only
+# renders fields that are already public in the browse feed.
+verify_jwt = false
+
 [functions.send-plan-sale-push]
 # Broadcasts queued plan-sale pushes to all devices. Takes no meaningful
 # input (it drains the plan_sale_pushes queue that only the DB trigger can

@@ -7,6 +7,7 @@ import 'main.dart';
 import 'cloudinary_function.dart';
 import 'services/marketplace_service.dart';
 import 'seller_reviews.dart';
+import 'supabase_config.dart';
 
 /// Lets scrollables (e.g. the image carousel) be dragged with a mouse/trackpad
 /// on web & desktop, not just touch — Flutter disables mouse drag by default.
@@ -1199,16 +1200,23 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _shareProduct() {
+    // Real share URL: the listing-page edge function renders a public
+    // preview of this listing (with OpenGraph tags for chat unfurls).
+    final id = widget.listingId?.trim() ?? '';
+    final link = id.isEmpty
+        ? ''
+        : '${SupabaseConfig.url}/functions/v1/listing-page?id=$id';
+
     final shareText =
         '🐔 Check out this listing!\n\n'
         '$_title — $_priceText\n'
         'Location: $_location\n'
-        'Seller: $_sellerName\n\n'
-        'https://farm.app/listing/${widget.name.toLowerCase().replaceAll(' ', '-')}';
+        'Seller: $_sellerName'
+        '${link.isEmpty ? '' : '\n\n$link'}';
 
     // Copy to clipboard as a simple share fallback
     Clipboard.setData(ClipboardData(text: shareText));
-    _showSnackBar('Listing info copied! You can now paste it to share.');
+    _showSnackBar('Listing link copied! You can now paste it to share.');
   }
 
   Future<void> _toggleFavorite() async {

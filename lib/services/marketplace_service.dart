@@ -1,5 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart'
-    show PostgrestFilterBuilder;
+    show PostgrestException, PostgrestFilterBuilder;
 
 import '../main.dart';
 
@@ -422,6 +422,10 @@ class MarketplaceService {
         'details': details.trim().isEmpty ? null : details.trim(),
       });
       return null;
+    } on PostgrestException catch (e) {
+      // Server-side guards (e.g. the daily report rate limit) raise clean,
+      // user-facing sentences — show them as-is.
+      return e.message;
     } catch (e) {
       return 'Could not submit report: $e';
     }
@@ -460,6 +464,10 @@ class MarketplaceService {
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }, onConflict: 'listing_id,buyer_id');
       return null;
+    } on PostgrestException catch (e) {
+      // Server-side guards (offer rate limit, listing-not-active) raise
+      // clean, user-facing sentences — show them as-is.
+      return e.message;
     } catch (e) {
       return 'Could not send offer: $e';
     }

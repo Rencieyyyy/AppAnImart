@@ -365,6 +365,108 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  // ── Delete Account ────────────────────────────────────────────────────────
+  /// Permanent account deletion (App Store requirement). Type-to-confirm so
+  /// it can't be triggered by an accidental double tap; the server RPC
+  /// refuses while a reserved deal is in progress.
+  void _showDeleteAccountDialog() {
+    final confirmCtrl = TextEditingController();
+    bool deleting = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocal) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Delete Account',
+              style: TextStyle(
+                  fontWeight: FontWeight.bold, color: Color(0xFFE53E3E))),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This permanently deletes your account — your profile, '
+                'listings, offers, deals, reviews and favorites. This cannot '
+                'be undone.\n\nType DELETE to confirm.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF6B8578)),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmCtrl,
+                onChanged: (_) => setLocal(() {}),
+                decoration: InputDecoration(
+                  hintText: 'DELETE',
+                  hintStyle:
+                      const TextStyle(fontSize: 13, color: Colors.black26),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: deleting ? null : () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Color(0xFF6B8578))),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE53E3E),
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: Colors.black12,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed:
+                  deleting || confirmCtrl.text.trim().toUpperCase() != 'DELETE'
+                      ? null
+                      : () async {
+                          setLocal(() => deleting = true);
+                          String? error;
+                          try {
+                            error = await supabase
+                                .rpc('delete_my_account') as String?;
+                          } catch (e) {
+                            error = 'Could not delete account: $e';
+                          }
+                          if (!dialogCtx.mounted) return;
+                          if (error != null) {
+                            setLocal(() => deleting = false);
+                            Navigator.pop(dialogCtx);
+                            if (mounted) showTopMessage(context, error);
+                            return;
+                          }
+                          // The account is gone server-side: clear the local
+                          // session and leave for the login screen.
+                          final navigator = Navigator.of(dialogCtx);
+                          navigator.pop();
+                          navigator.pushAndRemoveUntil(
+                            MaterialPageRoute(
+                                builder: (_) => const LoginPage()),
+                            (route) => false,
+                          );
+                          supabase.auth.signOut().catchError((_) {});
+                        },
+              child: deleting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.2, color: Colors.white),
+                    )
+                  : const Text('Delete forever'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Edit Profile ──────────────────────────────────────────────────────────
   // Opens a full-screen edit page (list-row layout) for the profile fields.
   Future<void> _showEditProfile() async {
@@ -2326,6 +2428,22 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
 
+            const SizedBox(height: 8),
+
+            // ── Delete Account ───────────────────────────────────────
+            Center(
+              child: TextButton.icon(
+                onPressed: _showDeleteAccountDialog,
+                icon: const Icon(Icons.delete_forever_outlined,
+                    size: 17, color: Colors.black38),
+                label: const Text('Delete account',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Colors.black38,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+
             const SizedBox(height: 100),
           ],
         ),
@@ -2686,6 +2804,13 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   // Id of the plan whose request is currently being submitted, if any.
   String? _submittingId;
 
+  /// Whether the user has a request awaiting admin approval — shows the
+  /// "how to pay" banner so they know the next step.
+  bool _hasPendingRequest = false;
+
+  /// Admin-editable payment instructions from app_settings.
+  String _paymentInstructions = '';
+
   /// Free-tier benefit list; the active-listing cap comes from the `prices`
   /// row's `listing_capacity` column.
   static List<_Benefit> _freeBenefits(int capacity) => [
@@ -2744,6 +2869,60 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
   void initState() {
     super.initState();
     _loadPrices();
+    _loadPaymentState();
+  }
+
+  /// Loads the payment instructions and whether a request is already
+  /// pending, so the page can tell the user how to pay.
+  Future<void> _loadPaymentState() async {
+    final results = await Future.wait([
+      SubscriptionService.hasPendingRequest(),
+      SubscriptionService.fetchPaymentInstructions(),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _hasPendingRequest = results[0] as bool;
+      _paymentInstructions = results[1] as String;
+    });
+  }
+
+  /// "How to pay" dialog shown right after submitting a request (and from
+  /// the pending banner).
+  void _showPaymentInstructions() {
+    if (_paymentInstructions.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.payments_outlined, color: _green, size: 22),
+            SizedBox(width: 8),
+            Text('How to pay',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Text(
+            _paymentInstructions,
+            style: const TextStyle(
+                fontSize: 13.5, color: Color(0xFF3D5247), height: 1.5),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _green,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Overrides price / tagline / POPULAR ribbon / free-tier listing capacity
@@ -2909,6 +3088,56 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
                     ),
 
                     const SizedBox(height: 20),
+
+                    // ── Pending request: how-to-pay banner ──────────
+                    if (_hasPendingRequest) ...[
+                      GestureDetector(
+                        onTap: _showPaymentInstructions,
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFF8E1),
+                            borderRadius: BorderRadius.circular(14),
+                            border:
+                                Border.all(color: const Color(0xFFFDE08D)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.hourglass_top_rounded,
+                                  color: Color(0xFFB28704), size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                        'Your request is pending admin '
+                                        'approval.',
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFFB28704))),
+                                    if (_paymentInstructions.isNotEmpty)
+                                      const Text(
+                                          'Haven\'t paid yet? Tap to see '
+                                          'how to pay.',
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              color: Color(0xFF8A6D1B))),
+                                  ],
+                                ),
+                              ),
+                              if (_paymentInstructions.isNotEmpty)
+                                const Icon(Icons.chevron_right,
+                                    color: Color(0xFFB28704), size: 20),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
 
                     // ── Billing toggle ──────────────────────────────
                     _billingToggle(),
@@ -3273,7 +3502,10 @@ class _PremiumSubscriptionPageState extends State<_PremiumSubscriptionPage> {
         'pending admin approval.',
         isError: false,
       );
-      Navigator.pop(context);
+      // The request only becomes active once it's paid — show how, right
+      // away, then keep the how-to-pay banner visible on this page.
+      setState(() => _hasPendingRequest = true);
+      _showPaymentInstructions();
     } else {
       showTopMessage(context, error);
     }
