@@ -309,6 +309,14 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  /// Pull-to-refresh: reloads the feed plus the per-user state behind it.
+  Future<void> _refreshAll() => Future.wait([
+        _loadItems(),
+        _loadFavorites(),
+        _loadBlocked(),
+        _loadReservedForMe(),
+      ]);
+
   /// Shared row → item mapping, including the seller-tier lookup.
   Future<List<LivestockItem>> _mapRows(List rows) async {
     if (rows.isEmpty) return const [];
@@ -766,7 +774,30 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // ── Favourites sheet (same design & behavior as the Explore section) ──────
 
+  /// Fetches the user's favourited listings straight from the server, so the
+  /// sheet shows EVERY favourite — not just the ones inside the feed pages
+  /// loaded so far.
+  Future<List<LivestockItem>> _fetchFavoriteListings() async {
+    final ids = (await MarketplaceService.fetchFavoriteIds()).toList();
+    if (ids.isEmpty) return const [];
+    if (mounted) setState(() => _favourites = ids.toSet());
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select('*, users(name)')
+          .inFilter('id', ids)
+          .inFilter('status', ['active', 'sold', 'reserved'])
+          .order('created_at', ascending: false);
+      return _mapRows(rows as List);
+    } catch (e) {
+      debugPrint('Failed to load favourites: $e');
+      // Fall back to whatever is already in the loaded pages.
+      return _allItems.where((i) => _favourites.contains(i.id)).toList();
+    }
+  }
+
   void _showFavourites() {
+    final future = _fetchFavoriteListings();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -774,11 +805,17 @@ class _DashboardPageState extends State<DashboardPage> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) {
-        final favs =
-            _allItems.where((i) => _favourites.contains(i.id)).toList();
         return SizedBox(
           height: MediaQuery.of(ctx).size.height * 0.72,
-          child: Column(
+          child: FutureBuilder<List<LivestockItem>>(
+              future: future,
+              builder: (ctx, snap) {
+                final loadingFavs =
+                    snap.connectionState != ConnectionState.done;
+                final favs = (snap.data ?? const <LivestockItem>[])
+                    .where((i) => _favourites.contains(i.id))
+                    .toList();
+                return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Center(
@@ -815,9 +852,11 @@ class _DashboardPageState extends State<DashboardPage> {
                                   fontWeight: FontWeight.bold,
                                   color: Colors.black87)),
                           Text(
-                            favs.isEmpty
-                                ? 'Nothing saved yet'
-                                : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
+                            loadingFavs
+                                ? 'Loading…'
+                                : favs.isEmpty
+                                    ? 'Nothing saved yet'
+                                    : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
                             style: const TextStyle(
                                 fontSize: 12, color: Colors.black45),
                           ),
@@ -836,7 +875,11 @@ class _DashboardPageState extends State<DashboardPage> {
               const Divider(height: 1, color: Color(0xFFF0F0F0)),
               // Body
               Expanded(
-                child: favs.isEmpty
+                child: loadingFavs
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF6DBF99)))
+                    : favs.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -988,7 +1031,8 @@ class _DashboardPageState extends State<DashboardPage> {
                       ),
               ),
             ],
-          ),
+                );
+              }),
         );
       }),
     );
@@ -1292,7 +1336,11 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Column(
           children: [
             Expanded(
-              child: SingleChildScrollView(
+              child: RefreshIndicator(
+                color: const Color(0xFF6DBF99),
+                onRefresh: _refreshAll,
+                child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1702,6 +1750,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
                     const SizedBox(height: 80),
                   ],
+                ),
                 ),
               ),
             ),

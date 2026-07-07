@@ -21,8 +21,12 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.ani_mart"
-        
+        // Google Play rejects com.example.* package names. NOTE: after this
+        // change, register a NEW Android app with this package name in the
+        // Firebase console (project animart-5eb9b) and update the appId in
+        // lib/firebase_options.dart, or push notifications will stop working.
+        applicationId = "com.animart.app"
+
         // Android 10 (API 29) and above only. Also satisfies every plugin's
         // floor (passkeys_android needs >= 23, ua_client_hints >= 22).
         minSdk = 29

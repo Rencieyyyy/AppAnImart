@@ -275,6 +275,24 @@ class SubscriptionService {
     }
   }
 
+  /// Support contact details the super admin configured in `app_settings`
+  /// (`support_phone` / `support_email`). Empty values simply hide their row
+  /// in the Customer Service sheet — nothing hardcoded is ever shown.
+  static Future<Map<String, String>> fetchSupportContacts() async {
+    try {
+      final rows = await supabase
+          .from('app_settings')
+          .select('key, value')
+          .inFilter('key', ['support_phone', 'support_email']);
+      return {
+        for (final r in (rows as List))
+          '${(r as Map)['key']}': ((r['value'] as String?) ?? '').trim(),
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
   /// Submits a premium request for [plan].
   ///
   /// Returns `null` on success, or a user-facing error message. Selecting the

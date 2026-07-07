@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'cloudinary_function.dart';
+import 'legal.dart';
 import 'login.dart';
 import 'main.dart';
 import 'services/location_service.dart';
@@ -262,22 +263,44 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
   }
 
   // ── Validation per step ───────────────────────────────────
+
+  static final RegExp _emailRe =
+      RegExp(r'^[\w.+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$');
+
+  /// Accepts Philippine mobile numbers: 09XXXXXXXXX or +639XXXXXXXXX
+  /// (spaces and dashes are ignored).
+  static bool _isValidPhPhone(String input) {
+    final digits = input.replaceAll(RegExp(r'[\s\-()]'), '');
+    return RegExp(r'^(09\d{9}|\+639\d{9})$').hasMatch(digits);
+  }
+
   String? _validateCurrentStep() {
     switch (_currentStep) {
       case 1:
         if (_nameController.text.trim().isEmpty) return 'Please enter your name.';
-        if (_emailController.text.trim().isEmpty) return 'Please enter your email.';
-        if (_phoneController.text.trim().isEmpty) return 'Please enter your phone number.';
+        final email = _emailController.text.trim();
+        if (email.isEmpty) return 'Please enter your email.';
+        if (!_emailRe.hasMatch(email)) return 'Please enter a valid email address.';
+        final phone = _phoneController.text.trim();
+        if (phone.isEmpty) return 'Please enter your phone number.';
+        if (!_isValidPhPhone(phone)) {
+          return 'Please enter a valid PH mobile number (09XXXXXXXXX or +639XXXXXXXXX).';
+        }
         return null;
       case 2:
         if (_selectedCity == null) return 'Please select your city/municipality.';
         if (_houseController.text.trim().isEmpty) return 'Please enter your house/street/unit/lot number.';
         return null;
       case 3:
-        if (_passwordController.text.isEmpty) return 'Please enter a password.';
-        if (_passwordController.text.length < 6) return 'Password must be at least 6 characters.';
+        final password = _passwordController.text;
+        if (password.isEmpty) return 'Please enter a password.';
+        if (password.length < 8) return 'Password must be at least 8 characters.';
+        if (!RegExp(r'[A-Za-z]').hasMatch(password) ||
+            !RegExp(r'[0-9]').hasMatch(password)) {
+          return 'Password must contain at least one letter and one number.';
+        }
         if (_retypePasswordController.text.isEmpty) return 'Please retype your password.';
-        if (_passwordController.text != _retypePasswordController.text) return 'Passwords do not match.';
+        if (password != _retypePasswordController.text) return 'Passwords do not match.';
         if (_selectedIdType == null) return 'Please select the type of your valid ID.';
         if (_validIdBytes == null) return 'Please upload a photo of your valid ID.';
         if (!_agreedToTerms) return 'Please agree to the Terms and Conditions.';
@@ -749,20 +772,33 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                 ),
                 Expanded(
-                  child: RichText(
-                    text: const TextSpan(
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
-                      children: [
-                        TextSpan(text: 'I agree to the '),
-                        TextSpan(
-                          text: 'Terms and Conditions & Privacy Policy',
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'I agree to the ',
+                        style: TextStyle(fontSize: 12, color: Colors.black54),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const TermsAndPrivacyPage()),
+                          );
+                        },
+                        child: const Text(
+                          'Terms and Conditions & Privacy Policy',
                           style: TextStyle(
+                            fontSize: 12,
                             color: Color(0xFF4CAF7D),
                             fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.underline,
+                            decorationColor: Color(0xFF4CAF7D),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ],

@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'signup.dart';
 import 'dashboard.dart';
 import 'current_user.dart';
+import 'forgot_password.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -142,12 +143,12 @@ class _LoginPageState extends State<LoginPage> {
 
               const SizedBox(height: 36),
 
-              // Email / Contact Number field
+              // Email field (login is by email only)
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
                 decoration: InputDecoration(
-                  hintText: 'Email or Contact Number',
+                  hintText: 'Email',
                   hintStyle: const TextStyle(
                     color: Colors.black45,
                     fontSize: 14,
@@ -211,13 +212,18 @@ class _LoginPageState extends State<LoginPage> {
               // Forgot Password
               GestureDetector(
                 onTap: () {
-                  // TODO: Navigate to Forgot Password page
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ForgotPasswordPage()),
+                  );
                 },
                 child: const Text(
                   'Forgot Password?',
                   style: TextStyle(
                     fontSize: 13,
-                    color: Colors.black54,
+                    color: Color(0xFF4CAF7D),
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),

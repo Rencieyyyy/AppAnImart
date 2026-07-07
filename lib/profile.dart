@@ -669,8 +669,14 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── Customer Service ──────────────────────────────────────────────────────
-  void _showCustomerService() {
-    final bool chatOnline = DateTime.now().hour >= 8 && DateTime.now().hour < 17;
+  Future<void> _showCustomerService() async {
+    // Contact details are configured by the super admin in app_settings
+    // (support_phone / support_email); a row is hidden until its value is
+    // set, so no placeholder contact info is ever shown.
+    final contacts = await SubscriptionService.fetchSupportContacts();
+    if (!mounted) return;
+    final supportPhone = contacts['support_phone'] ?? '';
+    final supportEmail = contacts['support_email'] ?? '';
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -726,34 +732,35 @@ class _ProfilePageState extends State<ProfilePage> {
                 style: TextStyle(fontSize: 13, color: Colors.black45, height: 1.45),
               ),
               const SizedBox(height: 22),
-              _serviceRow(
-                icon: Icons.phone_rounded,
-                title: 'Call Us',
-                subtitle: '+63 912 345 6789',
-                color: const Color(0xFF3AA876),
-                actionLabel: 'Copy',
-                onTap: () => _copyContact('Phone number', '+63 912 345 6789'),
-              ),
-              const SizedBox(height: 12),
-              _serviceRow(
-                icon: Icons.email_outlined,
-                title: 'Email Us',
-                subtitle: 'support@animart.ph',
-                color: const Color(0xFF2196F3),
-                actionLabel: 'Copy',
-                onTap: () => _copyContact('Email', 'support@animart.ph'),
-              ),
-              const SizedBox(height: 12),
+              if (supportPhone.isNotEmpty) ...[
+                _serviceRow(
+                  icon: Icons.phone_rounded,
+                  title: 'Call Us',
+                  subtitle: supportPhone,
+                  color: const Color(0xFF3AA876),
+                  actionLabel: 'Copy',
+                  onTap: () => _copyContact('Phone number', supportPhone),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (supportEmail.isNotEmpty) ...[
+                _serviceRow(
+                  icon: Icons.email_outlined,
+                  title: 'Email Us',
+                  subtitle: supportEmail,
+                  color: const Color(0xFF2196F3),
+                  actionLabel: 'Copy',
+                  onTap: () => _copyContact('Email', supportEmail),
+                ),
+                const SizedBox(height: 12),
+              ],
               _serviceRow(
                 icon: Icons.chat_bubble_outline_rounded,
                 title: 'Live Chat',
-                subtitle: chatOnline
-                    ? 'Online now · Typically replies in minutes'
-                    : 'Available 8AM – 5PM',
+                subtitle: 'Message our support team in the app',
                 color: const Color(0xFFFFB300),
                 actionLabel: 'Open',
                 actionIcon: Icons.arrow_forward_rounded,
-                online: chatOnline,
                 onTap: () {
                   Navigator.pop(ctx);
                   Navigator.push(
@@ -761,30 +768,6 @@ class _ProfilePageState extends State<ProfilePage> {
                     MaterialPageRoute(builder: (_) => const SupportChatPage()),
                   );
                 },
-              ),
-              const SizedBox(height: 18),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF4F6F5),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  children: const [
-                    Icon(Icons.schedule_rounded,
-                        size: 18, color: Color(0xFF3AA876)),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Average response time under 24 hours.',
-                        style: TextStyle(
-                            fontSize: 12.5,
-                            color: Colors.black54,
-                            fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                  ],
-                ),
               ),
               const SizedBox(height: 18),
               SizedBox(
@@ -1072,170 +1055,6 @@ class _ProfilePageState extends State<ProfilePage> {
       MaterialPageRoute(
           builder: (_) => _PremiumSubscriptionPage(
               currentPlan: _planName, currentPlanIsYearly: _planIsYearly)),
-    );
-  }
-
-  // ── View Comments (listing card) ──────────────────────────────────────────
-  void _showListingComments() {
-    final List<Map<String, String>> comments = [
-      {'user': 'Maria Santos', 'text': 'How much per kilo?', 'time': '2 days ago'},
-      {'user': 'Pedro Reyes', 'text': 'Still available?', 'time': '1 day ago'},
-    ];
-    final commentCtrl = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx2, setLocal) => Container(
-          height: MediaQuery.of(context).size.height * 0.7,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 12),
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Comments (${comments.length})',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                    GestureDetector(
-                      onTap: () => Navigator.pop(ctx),
-                      child: const Icon(Icons.close, color: Colors.black45, size: 20),
-                    ),
-                  ],
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: Divider(height: 18, thickness: 0.5),
-              ),
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  itemCount: comments.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
-                  itemBuilder: (_, i) {
-                    final c = comments[i];
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CircleAvatar(
-                          radius: 16,
-                          backgroundColor: const Color(0xFF6DBF99).withOpacity(0.2),
-                          child: Text(c['user']![0],
-                              style: const TextStyle(color: Color(0xFF3AA876), fontWeight: FontWeight.bold, fontSize: 12)),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF4FAF7),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(c['user']!,
-                                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF1A2E22))),
-                                    const SizedBox(height: 2),
-                                    Text(c['text']!,
-                                        style: const TextStyle(fontSize: 13, color: Color(0xFF3D5247), height: 1.4)),
-                                  ],
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(left: 4, top: 3),
-                                child: Text(c['time']!,
-                                    style: const TextStyle(fontSize: 10, color: Colors.black38)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-              Container(
-                padding: EdgeInsets.only(
-                    left: 16, right: 16, top: 10,
-                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  border: Border(top: BorderSide(color: Colors.black.withOpacity(0.07))),
-                ),
-                child: Row(
-                  children: [
-                    const CircleAvatar(
-                      radius: 16,
-                      backgroundColor: Color(0xFF6DBF99),
-                      child: Text('J', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4FAF7),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.3)),
-                        ),
-                        child: TextField(
-                          controller: commentCtrl,
-                          style: const TextStyle(fontSize: 13),
-                          maxLines: null,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) {
-                            if (commentCtrl.text.trim().isEmpty) return;
-                            setLocal(() {
-                              comments.add({'user': 'John Smith', 'text': commentCtrl.text.trim(), 'time': 'Just now'});
-                            });
-                            commentCtrl.clear();
-                          },
-                          decoration: const InputDecoration(
-                            hintText: 'Write a comment...',
-                            hintStyle: TextStyle(color: Colors.black38, fontSize: 13),
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () {
-                        if (commentCtrl.text.trim().isEmpty) return;
-                        setLocal(() {
-                          comments.add({'user': 'John Smith', 'text': commentCtrl.text.trim(), 'time': 'Just now'});
-                        });
-                        commentCtrl.clear();
-                      },
-                      child: Container(
-                        width: 38, height: 38,
-                        decoration: const BoxDecoration(color: Color(0xFF6DBF99), shape: BoxShape.circle),
-                        child: const Icon(Icons.send_rounded, color: Colors.white, size: 16),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -2602,23 +2421,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF27803F))),
                   ),
                 ],
-              ),
-            ),
-            GestureDetector(
-              onTap: _showListingComments,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: const BoxDecoration(
-                  border: Border(top: BorderSide(color: Color(0xFFE8F8F1), width: 1)),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.mode_comment_outlined, size: 14, color: Color(0xFF3AA876)),
-                    SizedBox(width: 6),
-                    Text('View Comments',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF3AA876), fontWeight: FontWeight.w500)),
-                  ],
-                ),
               ),
             ),
           ],

@@ -239,6 +239,13 @@ class _BuyerPageState extends State<BuyerPage> {
     }
   }
 
+  /// Pull-to-refresh: reloads the feed plus the per-user state behind it.
+  Future<void> _refreshAll() => Future.wait([
+        _loadListings(),
+        _loadFavorites(),
+        _loadBlocked(),
+      ]);
+
   /// Debounced server-side search over ALL listings (title, category,
   /// breed, location) — not just the loaded pages.
   void _onSearchChanged(String query) {
@@ -922,7 +929,33 @@ class _BuyerPageState extends State<BuyerPage> {
 
   // ── Favourites bottom sheet ────────────────────────────────────────────────
 
+  /// Fetches the user's favourited listings straight from the server, so the
+  /// sheet shows EVERY favourite — not just the ones that happen to be inside
+  /// the feed pages loaded so far. Distances are merged in from already-loaded
+  /// rows when available (the direct query can't compute them).
+  Future<List<_Listing>> _fetchFavoriteListings() async {
+    final ids = (await MarketplaceService.fetchFavoriteIds()).toList();
+    if (ids.isEmpty) return const [];
+    if (mounted) setState(() => _favourites = ids.toSet());
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select()
+          .inFilter('id', ids)
+          .inFilter('status', ['active', 'sold', 'reserved'])
+          .order('created_at', ascending: false);
+      final fetched = await _mapExploreRows(rows as List);
+      final loadedById = {for (final l in _allListings) l.id: l};
+      return fetched.map((l) => loadedById[l.id] ?? l).toList();
+    } catch (e) {
+      debugPrint('Failed to load favourites: $e');
+      // Fall back to whatever is already in the loaded pages.
+      return _allListings.where((l) => _favourites.contains(l.id)).toList();
+    }
+  }
+
   void _showFavourites() {
+    final future = _fetchFavoriteListings();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -930,11 +963,17 @@ class _BuyerPageState extends State<BuyerPage> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setSheet) {
-        final favs =
-            _allListings.where((l) => _favourites.contains(l.id)).toList();
         return SizedBox(
           height: MediaQuery.of(ctx).size.height * 0.72,
-          child: Column(
+          child: FutureBuilder<List<_Listing>>(
+              future: future,
+              builder: (ctx, snap) {
+                final loadingFavs =
+                    snap.connectionState != ConnectionState.done;
+                final favs = (snap.data ?? const <_Listing>[])
+                    .where((l) => _favourites.contains(l.id))
+                    .toList();
+                return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Center(
@@ -971,9 +1010,11 @@ class _BuyerPageState extends State<BuyerPage> {
                                   fontWeight: FontWeight.bold,
                                   color: Colors.black87)),
                           Text(
-                            favs.isEmpty
-                                ? 'Nothing saved yet'
-                                : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
+                            loadingFavs
+                                ? 'Loading…'
+                                : favs.isEmpty
+                                    ? 'Nothing saved yet'
+                                    : '${favs.length} saved ${favs.length == 1 ? 'listing' : 'listings'}',
                             style: const TextStyle(
                                 fontSize: 12, color: Colors.black45),
                           ),
@@ -992,7 +1033,11 @@ class _BuyerPageState extends State<BuyerPage> {
               const Divider(height: 1, color: Color(0xFFF0F0F0)),
               // Body
               Expanded(
-                child: favs.isEmpty
+                child: loadingFavs
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF6DBF99)))
+                    : favs.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -1129,7 +1174,8 @@ class _BuyerPageState extends State<BuyerPage> {
                       ),
               ),
             ],
-          ),
+                );
+              }),
         );
       }),
     );
@@ -1315,7 +1361,11 @@ class _BuyerPageState extends State<BuyerPage> {
 
           // ── Body ───────────────────────────────────────────────────────────
           Expanded(
-            child: SingleChildScrollView(
+            child: RefreshIndicator(
+              color: const Color(0xFF6DBF99),
+              onRefresh: _refreshAll,
+              child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1624,6 +1674,7 @@ class _BuyerPageState extends State<BuyerPage> {
                   ],
                   const SizedBox(height: 80),
                 ],
+              ),
               ),
             ),
           ),
