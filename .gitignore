@@ -1,3 +1,6 @@
+# Node / tooling (never commit installed packages or their binaries)
+node_modules/
+
 # Miscellaneous
 *.class
 *.log
