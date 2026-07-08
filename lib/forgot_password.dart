@@ -8,8 +8,10 @@ import 'widgets/top_message.dart';
 
 /// Password reset in two steps, all inside the app:
 ///
-///  1. The user enters their email → Supabase emails them a 6-digit
-///     recovery code (`resetPasswordForEmail`).
+///  1. The user enters their email → the `email_exists` RPC confirms an
+///     account exists for it, then Supabase emails a recovery code
+///     (`resetPasswordForEmail`). Code length follows the project's
+///     "Email OTP Length" auth setting (6–8 digits).
 ///  2. They type the code + a new password → `verifyOTP` (type: recovery)
 ///     proves ownership, `updateUser` sets the password, and the temporary
 ///     session is signed out so they log in normally.
@@ -74,6 +76,30 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     }
     setState(() => _busy = true);
     try {
+      // resetPasswordForEmail succeeds silently for unknown emails, so check
+      // first — otherwise a typo'd email sails through to the code screen
+      // where no code will ever arrive.
+      bool exists = true;
+      try {
+        exists = await supabase.rpc(
+              'email_exists',
+              params: {'p_email': email},
+            ) as bool? ??
+            true;
+      } catch (_) {
+        // RPC unavailable (migration not applied yet) — don't block resets.
+      }
+      if (!exists) {
+        if (mounted) {
+          showTopMessage(
+            context,
+            'No account found with that email. Please check the address '
+            'and try again.',
+          );
+        }
+        return;
+      }
+
       await supabase.auth.resetPasswordForEmail(email);
       if (!mounted) return;
       setState(() => _codeSent = true);
@@ -99,7 +125,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     final code = _codeController.text.trim();
     final password = _passwordController.text;
 
-    if (code.isEmpty) {
+    if (code.length < 6) {
       showTopMessage(context, 'Please enter the code from your email.');
       return;
     }
@@ -207,7 +233,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
               const SizedBox(height: 20),
               Text(
                 _codeSent
-                    ? 'Enter the 6-digit code we emailed to\n${_emailController.text.trim()}'
+                    ? 'Enter the code we emailed to\n${_emailController.text.trim()}'
                     : 'Enter your account email and we\'ll send you a code to reset your password.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
@@ -254,7 +280,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                   controller: _codeController,
                   keyboardType: TextInputType.number,
                   textAlign: TextAlign.center,
-                  maxLength: 6,
+                  // Supabase's "Email OTP Length" setting controls how many
+                  // digits the emailed code has (this project currently sends
+                  // 8; the dashboard can lower it to 6). Accept either.
+                  maxLength: 8,
                   style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w700,

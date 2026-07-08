@@ -1,5 +1,5 @@
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'cloudinary_function.dart';
@@ -284,7 +284,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         final phone = _phoneController.text.trim();
         if (phone.isEmpty) return 'Please enter your phone number.';
         if (!_isValidPhPhone(phone)) {
-          return 'Please enter a valid PH mobile number (09XXXXXXXXX or +639XXXXXXXXX).';
+          return 'Please enter a valid PH mobile number (09XXXXXXXXX).';
         }
         return null;
       case 2:
@@ -575,7 +575,15 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
             const SizedBox(height: 14),
             _buildField(controller: _emailController, hint: 'Email', keyboardType: TextInputType.emailAddress),
             const SizedBox(height: 14),
-            _buildField(controller: _phoneController, hint: 'Phone', keyboardType: TextInputType.phone),
+            _buildField(
+              controller: _phoneController,
+              hint: 'Phone (09XXXXXXXXX)',
+              keyboardType: TextInputType.phone,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ],
+            ),
           ],
         );
 
@@ -815,10 +823,12 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     required TextEditingController controller,
     required String hint,
     TextInputType keyboardType = TextInputType.text,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Colors.black45, fontSize: 14),

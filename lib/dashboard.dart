@@ -548,12 +548,16 @@ class _DashboardPageState extends State<DashboardPage> {
                                   children: [
                                     Row(
                                       children: [
-                                        Text(
-                                          plan.label,
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.black87,
+                                        Flexible(
+                                          child: Text(
+                                            plan.label,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.black87,
+                                            ),
                                           ),
                                         ),
                                         // Promo chip, e.g. "-19% OFF".

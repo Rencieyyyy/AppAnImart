@@ -451,18 +451,40 @@ class MarketplaceService {
     if (amount <= 0) return 'Please enter a valid offer amount.';
     if (quantity < 1) return 'Please enter a valid quantity.';
     try {
-      // Re-offering replaces the previous offer and resets it to pending so
-      // the seller sees the latest amount.
-      await supabase.from('offers').upsert({
-        'listing_id': listingId,
-        'seller_id': sellerId,
-        'buyer_id': uid,
+      // A buyer can buy the same listing again over its lifetime, so each
+      // purchase is its own offer row. NEVER reuse a row that already has a
+      // deal attached (status 'accepted') — a second acceptance would bind two
+      // transactions to one offer and the app's offer→deal mapping would
+      // collapse. Reuse only a still-open row (pending/declined never have a
+      // transaction) to revise it; otherwise insert a fresh offer.
+      final payload = {
         'amount': amount,
         'quantity': quantity,
         'note': note.trim().isEmpty ? null : note.trim(),
         'status': 'pending',
         'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }, onConflict: 'listing_id,buyer_id');
+      };
+
+      final existing = await supabase
+          .from('offers')
+          .select('id')
+          .eq('listing_id', listingId)
+          .eq('buyer_id', uid)
+          .inFilter('status', ['pending', 'declined'])
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (existing != null) {
+        await supabase.from('offers').update(payload).eq('id', existing['id']);
+      } else {
+        await supabase.from('offers').insert({
+          'listing_id': listingId,
+          'seller_id': sellerId,
+          'buyer_id': uid,
+          ...payload,
+        });
+      }
       return null;
     } on PostgrestException catch (e) {
       // Server-side guards (offer rate limit, listing-not-active) raise
@@ -703,6 +725,10 @@ class MarketplaceService {
           .eq('id', offerId)
           .eq('seller_id', uid);
       return null;
+    } on PostgrestException catch (e) {
+      // The reserve trigger raises a readable message when a listing has no
+      // stock left to reserve — surface it as-is instead of a raw dump.
+      return e.message;
     } catch (e) {
       return 'Could not update offer: $e';
     }

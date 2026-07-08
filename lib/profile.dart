@@ -4482,7 +4482,12 @@ class _EditProfilePageState extends State<_EditProfilePage> {
           const SizedBox(height: 14),
           _sectionHeader('Details'),
           _row('Name', _nameCtrl, 'Your full name'),
-          _row('Phone', _phoneCtrl, 'Your phone number', type: TextInputType.phone),
+          _row('Phone', _phoneCtrl, 'Your phone number',
+              type: TextInputType.phone,
+              formatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ]),
           _addressRow(),
           if (widget.email.isNotEmpty) _readonlyRow('Email', widget.email),
           if (widget.memberSince.isNotEmpty)
@@ -4660,7 +4665,9 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   // A single label/value row: fixed-width label on the left, inline editable
   // text field on the right, with a thin divider beneath.
   Widget _row(String label, TextEditingController ctrl, String hint,
-      {TextInputType type = TextInputType.text, int maxLines = 1}) {
+      {TextInputType type = TextInputType.text,
+      int maxLines = 1,
+      List<TextInputFormatter>? formatters}) {
     return Container(
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: _line)),
@@ -4683,6 +4690,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             child: TextField(
               controller: ctrl,
               keyboardType: type,
+              inputFormatters: formatters,
               maxLines: maxLines,
               style: const TextStyle(fontSize: 16, color: _dark),
               cursorColor: _accent,

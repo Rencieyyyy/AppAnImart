@@ -100,8 +100,9 @@ class _OffersPageState extends State<OffersPage> {
     showTopMessage(
       context,
       accept
-          ? 'Offer accepted — the listing is now reserved for this buyer. '
-              'Message them on Messenger to arrange the sale.'
+          ? 'Offer accepted — ${offer.quantity} reserved for this buyer. '
+              'Message them on Messenger to arrange the sale. The listing '
+              'stays available while stock remains.'
           : 'Offer declined.',
       isError: false,
       backgroundColor: const Color(0xFF6DBF99),
@@ -432,6 +433,7 @@ class _OffersPageState extends State<OffersPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             width: 36,
@@ -447,6 +449,9 @@ class _OffersPageState extends State<OffersPage> {
                 : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 20),
           ),
           const SizedBox(width: 10),
+          // Buyer info and the action buttons share this flexible column so
+          // the buttons sit BELOW the text (and wrap among themselves) instead
+          // of competing for horizontal space — no overflow on any width.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -464,22 +469,26 @@ class _OffersPageState extends State<OffersPage> {
                     ),
                     if (cancelsOften) ...[
                       const SizedBox(width: 6),
-                      Tooltip(
-                        message: 'This buyer cancelled '
-                            '${_buyerStats[offer.buyerId]!.cancelled90d} '
-                            'deal(s) in the last 90 days.',
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFF3E0),
-                            borderRadius: BorderRadius.circular(6),
+                      Flexible(
+                        child: Tooltip(
+                          message: 'This buyer cancelled '
+                              '${_buyerStats[offer.buyerId]!.cancelled90d} '
+                              'deal(s) in the last 90 days.',
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF3E0),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text('Cancels deals often',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFE65100))),
                           ),
-                          child: const Text('Cancels deals often',
-                              style: TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFFE65100))),
                         ),
                       ),
                     ],
@@ -499,84 +508,56 @@ class _OffersPageState extends State<OffersPage> {
                           fontSize: 11,
                           fontStyle: FontStyle.italic,
                           color: Colors.black38)),
+                const SizedBox(height: 8),
+                _offerActions(offer, tx, isPending),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          if (isPending) ...[
-            // Accept
-            GestureDetector(
-              onTap: () => _respond(offer, accept: true),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6DBF99),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text('Accept',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-            const SizedBox(width: 6),
-            // Decline
-            GestureDetector(
-              onTap: () => _respond(offer, accept: false),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.red.shade300),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text('Decline',
-                    style: TextStyle(
-                        color: Colors.red.shade400,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ] else if (tx != null && tx.isReserved) ...[
-            // The deal is live: seller finishes or backs out.
-            GestureDetector(
-              onTap: () => _completeTx(tx),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6DBF99),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text('Complete',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _cancelTx(tx),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.red.shade300),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text('Cancel',
-                    style: TextStyle(
-                        color: Colors.red.shade400,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ] else
-            _statusPill(offer, tx),
         ],
+      ),
+    );
+  }
+
+  /// The trailing controls for an offer row, laid out with [Wrap] so a second
+  /// button drops to the next line on very narrow screens or large text sizes
+  /// rather than overflowing.
+  Widget _offerActions(Offer offer, TransactionInfo? tx, bool isPending) {
+    final List<Widget> children;
+    if (isPending) {
+      children = [
+        _actionButton('Accept',
+            filled: true, onTap: () => _respond(offer, accept: true)),
+        _actionButton('Decline',
+            filled: false, onTap: () => _respond(offer, accept: false)),
+      ];
+    } else if (tx != null && tx.isReserved) {
+      // The deal is live: seller finishes or backs out.
+      children = [
+        _actionButton('Complete', filled: true, onTap: () => _completeTx(tx)),
+        _actionButton('Cancel', filled: false, onTap: () => _cancelTx(tx)),
+      ];
+    } else {
+      children = [_statusPill(offer, tx)];
+    }
+    return Wrap(spacing: 6, runSpacing: 6, children: children);
+  }
+
+  Widget _actionButton(String label,
+      {required bool filled, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: filled ? const Color(0xFF6DBF99) : null,
+          border: filled ? null : Border.all(color: Colors.red.shade300),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                color: filled ? Colors.white : Colors.red.shade400,
+                fontSize: 12,
+                fontWeight: FontWeight.w600)),
       ),
     );
   }

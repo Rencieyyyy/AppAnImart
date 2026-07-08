@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'widgets/top_message.dart';
 import 'main.dart';
@@ -80,8 +81,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   /// Owner-side: this listing's deals keyed by offer id.
   Map<String, TransactionInfo> _txByOffer = {};
 
-  /// Buyer-side: set when this listing is reserved for the viewer.
-  TransactionInfo? _myReservation;
+  /// Buyer-side: the viewer's live (reserved) deals on this listing. A buyer
+  /// may hold more than one at once while the listing still has stock.
+  List<TransactionInfo> _myReservations = [];
   bool _isDescriptionExpanded = false;
   bool _offerSent = false;
 
@@ -96,9 +98,23 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       ? widget.status!.trim()
       : 'active';
 
-  /// Quantity available. Fetched from the listing row by id (so every entry
-  /// point shows it without having to pass it in); null = unknown/not set.
+  /// The listing's total stock. Fetched by id (so every entry point shows it
+  /// without having to pass it in); null = unknown/not set. This is the raw
+  /// number the seller set — buyers are shown [_available] instead.
   int? _stock;
+
+  /// Units currently reserved in active deals (from other buyers too). Fetched
+  /// server-side via the `listing_stock` RPC so no buyer identities leak.
+  int _reservedQty = 0;
+
+  /// What a buyer can actually still buy: total stock minus reserved units,
+  /// floored at 0. null when stock is unknown.
+  int? get _available {
+    final s = _stock;
+    if (s == null) return null;
+    final a = s - _reservedQty;
+    return a < 0 ? 0 : a;
+  }
 
   /// The listing's numeric asking price, fetched with the stock — drives the
   /// one-tap "Buy at asking price" offer. null = unknown.
@@ -257,13 +273,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               t.offerId: t,
         };
       } else {
-        for (final t in txs) {
-          if (t.listingId == listingId && t.isReserved) {
-            _myReservation = t;
-            return;
-          }
-        }
-        _myReservation = null;
+        _myReservations = [
+          for (final t in txs)
+            if (t.listingId == listingId && t.isReserved) t,
+        ];
       }
     });
   }
@@ -274,16 +287,15 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     final id = widget.listingId?.trim() ?? '';
     if (id.isEmpty) return;
     try {
-      final row = await supabase
-          .from('listings')
-          .select('status, stock')
-          .eq('id', id)
-          .maybeSingle();
-      if (!mounted || row == null) return;
-      final raw = row['stock'];
+      final result =
+          await supabase.rpc('listing_stock', params: {'p_listing_id': id});
+      final rows = (result as List?) ?? const [];
+      if (!mounted || rows.isEmpty) return;
+      final row = rows.first as Map<String, dynamic>;
       setState(() {
         _status = (row['status'] as String?) ?? _status;
-        _stock = raw is num ? raw.toInt() : int.tryParse('$raw') ?? _stock;
+        _stock = (row['stock'] as num?)?.toInt() ?? _stock;
+        _reservedQty = (row['reserved'] as num?)?.toInt() ?? 0;
         _edited = true; // list pages refresh on pop
       });
     } catch (e) {
@@ -315,10 +327,78 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       return;
     }
     _showSnackBar('Deal cancelled. The listing is available again.');
-    setState(() => _myReservation = null);
+    setState(() => _myReservations.removeWhere((r) => r.id == tx.id));
     _loadListingOffers(widget.listingId?.trim() ?? '');
     _loadTransactions(widget.listingId?.trim() ?? '');
     _refreshListingState();
+  }
+
+  /// The buyer-facing "Reserved for you" card for one live deal. Rendered once
+  /// per reservation so a buyer holding several deals on this listing can see
+  /// and cancel each independently.
+  Widget _reservationCard(TransactionInfo res) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF3E0),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFFFE0B2)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.handshake_outlined,
+                    color: Color(0xFFE65100), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Reserved for you — '
+                    '${_formatPeso(res.agreedPrice)}'
+                    '${res.quantity > 1 ? ' for ${res.quantity} pcs' : ''}',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFE65100)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Arrange payment and pickup/delivery with the seller on '
+              'Messenger. The seller marks the sale completed once you\'ve '
+              'received it.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: GestureDetector(
+                onTap: () => _cancelTx(res),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.red.shade300),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('Cancel deal',
+                      style: TextStyle(
+                          color: Colors.red.shade400,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Loads the seller's Messenger link for the contact button.
@@ -356,7 +436,14 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       return;
     }
     _showSnackBar(accept ? 'Offer accepted.' : 'Offer declined.');
-    _loadListingOffers(widget.listingId?.trim() ?? '');
+    final id = widget.listingId?.trim() ?? '';
+    _loadListingOffers(id);
+    if (accept) {
+      // A new reserved deal now exists — pull it in so this offer row shows
+      // Complete/Cancel, and refresh the listing's status/stock.
+      _loadTransactions(id);
+      _refreshListingState();
+    }
   }
 
   /// Fetches the stock quantity and numeric price from the listing row;
@@ -364,20 +451,16 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   Future<void> _loadStock(String listingId) async {
     if (listingId.isEmpty) return;
     try {
-      final row = await supabase
-          .from('listings')
-          .select('stock, price')
-          .eq('id', listingId)
-          .maybeSingle();
-      final raw = row?['stock'];
-      final stock = raw is num ? raw.toInt() : int.tryParse('$raw');
-      final priceRaw = row?['price'];
-      final price = priceRaw is num
-          ? priceRaw.toDouble()
-          : double.tryParse('$priceRaw');
-      if (!mounted) return;
+      final result = await supabase
+          .rpc('listing_stock', params: {'p_listing_id': listingId});
+      final rows = (result as List?) ?? const [];
+      if (!mounted || rows.isEmpty) return;
+      final row = rows.first as Map<String, dynamic>;
+      final stock = (row['stock'] as num?)?.toInt();
+      final price = (row['price'] as num?)?.toDouble();
       setState(() {
         if (stock != null) _stock = stock;
+        _reservedQty = (row['reserved'] as num?)?.toInt() ?? 0;
         if (price != null && price > 0) _askingPrice = price;
       });
     } catch (e) {
@@ -397,7 +480,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     }
 
     int qty = 1;
-    final maxQty = (_stock != null && _stock! > 0) ? _stock! : 1;
+    final maxQty = (_available != null && _available! > 0) ? _available! : 1;
     bool sending = false;
 
     await showDialog<void>(
@@ -419,6 +502,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   'haggling. Once they accept, the listing is reserved for '
                   'you.',
                   style: const TextStyle(color: Colors.black54, fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Listed price: ${_formatPeso(price)}'
+                  '${_available != null ? ' · $_available available' : ''}',
+                  style: const TextStyle(fontSize: 12.5, color: Colors.black45),
                 ),
                 const SizedBox(height: 14),
                 if (maxQty > 1)
@@ -649,21 +738,71 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     );
   }
 
-  /// Marks the listing as sold: it stays visible but greyed out in the feed
-  /// and other users can no longer open it. Saving an edit with stock > 0
-  /// puts it back online.
+  /// Marks the listing sold out: stock is zeroed (so "Sold" always means no
+  /// stock, never a leftover quantity), any still-pending offers are declined,
+  /// and it goes grey in the feed. Blocked while a deal is still reserved — the
+  /// seller must finish or cancel those first. To sell again, edit the stock.
   Future<void> _markAsSold() async {
     final id = widget.listingId;
     if (id == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Mark as sold out?',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: const Text(
+          'This sets the stock to 0, hides the listing from buyers, and '
+          'declines any pending offers. You can put it back on the market '
+          'later by editing its stock.',
+          style: TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child:
+                const Text('Cancel', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6DBF99)),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Mark Sold', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     try {
-      await supabase.from('listings').update({'status': 'sold'}).eq('id', id);
+      // Zeroing stock trips the guard trigger if any unit is still reserved,
+      // which surfaces a readable message here.
+      await supabase
+          .from('listings')
+          .update({'stock': 0, 'status': 'sold'}).eq('id', id);
+      // Best-effort: give pending bidders closure (fires their notification).
+      final uid = supabase.auth.currentUser?.id;
+      if (uid != null) {
+        try {
+          await supabase
+              .from('offers')
+              .update({'status': 'declined'})
+              .eq('listing_id', id)
+              .eq('seller_id', uid)
+              .eq('status', 'pending');
+        } catch (_) {/* non-fatal */}
+      }
       if (!mounted) return;
       setState(() {
         _status = 'sold';
+        _stock = 0;
         _edited = true; // so list pages refresh on pop
       });
-      _showSnackBar(
-          'Listing marked as sold. Edit its stock to put it back online.');
+      _loadListingOffers(id);
+      _showSnackBar('Listing marked as sold out.');
+    } on PostgrestException catch (e) {
+      if (mounted) _showSnackBar(e.message);
     } catch (e) {
       if (mounted) _showSnackBar('Could not update listing. Please try again.');
     }
@@ -798,10 +937,53 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                                   'Please enter a valid title, price and stock.');
                               return;
                             }
-                            setSheet(() => saving = true);
-                            // Restocking a sold listing puts it back online.
+                            // Restocking a sold listing puts it back online —
+                            // make that an explicit choice, never a silent
+                            // side effect of saving other edits.
                             final relist =
                                 _status == 'sold' && stockValue > 0;
+                            if (relist) {
+                              final ok = await showDialog<bool>(
+                                context: sheetCtx,
+                                builder: (ctx) => AlertDialog(
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16)),
+                                  title: const Text(
+                                    'Put this listing back on the market?',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16),
+                                  ),
+                                  content: Text(
+                                    'It will become visible to buyers again '
+                                    'with $stockValue in stock.',
+                                    style: const TextStyle(
+                                        fontSize: 13, color: Colors.black54),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(ctx, false),
+                                      child: const Text('Cancel',
+                                          style: TextStyle(
+                                              color: Colors.black54)),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                          backgroundColor:
+                                              const Color(0xFF6DBF99)),
+                                      onPressed: () =>
+                                          Navigator.pop(ctx, true),
+                                      child: const Text('Relist',
+                                          style:
+                                              TextStyle(color: Colors.white)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (ok != true) return;
+                            }
+                            setSheet(() => saving = true);
                             try {
                               await supabase.from('listings').update({
                                 'title': title,
@@ -1111,7 +1293,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
             children: [
               Text(
                 'Listed price: ${widget.price}'
-                '${_stock != null ? ' · $_stock in stock' : ''}',
+                '${_available != null ? (_isOwner ? ' · $_stock in stock' : ' · $_available available') : ''}',
                 style: const TextStyle(color: Colors.black54, fontSize: 13),
               ),
               const SizedBox(height: 12),
@@ -1159,9 +1341,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       final qty =
                           int.tryParse(qtyController.text.trim()) ?? 1;
                       if (qty < 1 ||
-                          (_stock != null && _stock! > 0 && qty > _stock!)) {
+                          (_available != null &&
+                              _available! > 0 &&
+                              qty > _available!)) {
                         _showSnackBar(
-                            'Please enter a quantity between 1 and ${_stock ?? qty}.');
+                            'Please enter a quantity between 1 and ${_available ?? qty}.');
                         return;
                       }
                       setLocalState(() => sending = true);
@@ -1461,72 +1645,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   ),
                 ),
 
-              // ── Reserved-for-you banner (the winning buyer) ───────
-              if (!_isOwner && _myReservation != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF3E0),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0xFFFFE0B2)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.handshake_outlined,
-                                color: Color(0xFFE65100), size: 20),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Reserved for you — '
-                                '${_formatPeso(_myReservation!.agreedPrice)}'
-                                '${_myReservation!.quantity > 1 ? ' for ${_myReservation!.quantity} pcs' : ''}',
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: Color(0xFFE65100)),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Arrange payment and pickup/delivery with the '
-                          'seller on Messenger. The seller marks the sale '
-                          'completed once you\'ve received it.',
-                          style:
-                              TextStyle(fontSize: 12, color: Colors.black54),
-                        ),
-                        const SizedBox(height: 10),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: GestureDetector(
-                            onTap: () => _cancelTx(_myReservation!),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 7),
-                              decoration: BoxDecoration(
-                                border:
-                                    Border.all(color: Colors.red.shade300),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Text('Cancel deal',
-                                  style: TextStyle(
-                                      color: Colors.red.shade400,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600)),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              // ── Reserved-for-you banners (one per live deal) ──────
+              // A buyer can hold several deals on the same listing while it
+              // still has stock, so each reservation gets its own card.
+              if (!_isOwner && _myReservations.isNotEmpty)
+                ..._myReservations.map(_reservationCard),
 
               // ── Offers on this post (owner only) ─────────────────
               if (_isOwner && _listingOffers.isNotEmpty) ...[
@@ -1564,8 +1687,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 ),
 
               // ── Buy at asking price (one-tap offer) ───────────────
+              // Available whenever the listing still has stock ('active'),
+              // even if the buyer already holds a reservation on it.
               if (!_isOwner &&
-                  _myReservation == null &&
                   _status == 'active' &&
                   (_askingPrice ?? 0) > 0) ...[
                 const SizedBox(height: 10),
@@ -1603,11 +1727,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    // No offers on your own post, on a listing already
-                    // reserved for you, or while it isn't active.
-                    if (!_isOwner &&
-                        _myReservation == null &&
-                        _status == 'active')
+                    // No offers on your own post or while the listing isn't
+                    // active; a buyer with a reservation can still offer for
+                    // more while stock remains.
+                    if (!_isOwner && _status == 'active')
                       _buildActionButton(
                         icon: _offerSent ? Icons.pan_tool : Icons.pan_tool_outlined,
                         color: _offerSent ? const Color(0xFF6DBF99) : null,
@@ -1776,11 +1899,25 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                     _buildDetailRow(Icons.cake_outlined,           'Age',       _age),
                     const SizedBox(height: 6),
                     _buildDetailRow(Icons.monitor_weight_outlined, 'Weight',    _weight),
-                    if (_stock != null) ...[
+                    if (_available != null) ...[
                       const SizedBox(height: 6),
-                      _buildDetailRow(Icons.inventory_2_outlined, 'Stock',
-                          _stock == 0 ? 'Out of stock' : '$_stock available',
-                          valueColor: _stock == 0 ? Colors.red : Colors.black54),
+                      _buildDetailRow(
+                          Icons.inventory_2_outlined,
+                          'Stock',
+                          // The owner sees their real total (plus how many are
+                          // tied up in deals); buyers see what's still free.
+                          _isOwner
+                              ? (_reservedQty > 0
+                                  ? '$_stock in stock · $_reservedQty reserved'
+                                  : '$_stock in stock')
+                              : _stock == 0
+                                  ? 'Out of stock'
+                                  : _available == 0
+                                      ? 'Fully reserved'
+                                      : '$_available available',
+                          valueColor: (!_isOwner && _available == 0)
+                              ? Colors.red
+                              : Colors.black54),
                     ],
                     const SizedBox(height: 6),
                     _buildDetailRow(Icons.location_on_outlined,    'Location',  _location,
@@ -1839,6 +1976,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Buyer's profile picture (falls back to a person icon).
           Container(
@@ -1855,6 +1993,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 20),
           ),
           const SizedBox(width: 10),
+          // The action buttons live BELOW the buyer info (and wrap among
+          // themselves) so they never fight the text for horizontal space —
+          // keeps the row overflow-free on any device width or text scale.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1881,117 +2022,89 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                           fontSize: 11,
                           fontStyle: FontStyle.italic,
                           color: Colors.black38)),
+                const SizedBox(height: 8),
+                _buildOfferActions(offer, tx, isPending),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          if (tx != null && tx.isReserved) ...[
-            // Live deal: finish it or free the listing back up.
-            GestureDetector(
-              onTap: () => _completeTx(tx),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6DBF99),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text('Complete',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _cancelTx(tx),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.red.shade300),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text('Cancel',
-                    style: TextStyle(
-                        color: Colors.red.shade400,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ] else if (isPending) ...[
-            GestureDetector(
-              onTap: () => _respondToOffer(offer, accept: true),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6DBF99),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Text('Accept',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _respondToOffer(offer, accept: false),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.red.shade300),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text('Decline',
-                    style: TextStyle(
-                        color: Colors.red.shade400,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ] else
-            Builder(builder: (_) {
-              // Deal state wins over the raw offer state.
-              final String label;
-              final Color bg;
-              final Color fg;
-              if (tx != null && tx.status == 'completed') {
-                label = 'Completed';
-                bg = const Color(0xFFE8F7F1);
-                fg = const Color(0xFF1D9E75);
-              } else if (tx != null && tx.status == 'cancelled') {
-                label = 'Cancelled';
-                bg = const Color(0xFFF2F2F2);
-                fg = Colors.black45;
-              } else if (offer.status == 'accepted') {
-                label = 'Accepted';
-                bg = const Color(0xFFE8F7F1);
-                fg = const Color(0xFF1D9E75);
-              } else {
-                label = 'Declined';
-                bg = const Color(0xFFFDECEC);
-                fg = Colors.red.shade400;
-              }
-              return Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: bg,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.bold, color: fg),
-                ),
-              );
-            }),
         ],
+      ),
+    );
+  }
+
+  /// Trailing controls for an offer row, in a [Wrap] so a button drops to the
+  /// next line on narrow screens instead of overflowing.
+  Widget _buildOfferActions(Offer offer, TransactionInfo? tx, bool isPending) {
+    final List<Widget> children;
+    if (tx != null && tx.isReserved) {
+      // Live deal: finish it or free the listing back up.
+      children = [
+        _offerActionButton('Complete',
+            filled: true, onTap: () => _completeTx(tx)),
+        _offerActionButton('Cancel',
+            filled: false, onTap: () => _cancelTx(tx)),
+      ];
+    } else if (isPending) {
+      children = [
+        _offerActionButton('Accept',
+            filled: true, onTap: () => _respondToOffer(offer, accept: true)),
+        _offerActionButton('Decline',
+            filled: false, onTap: () => _respondToOffer(offer, accept: false)),
+      ];
+    } else {
+      // Deal state wins over the raw offer state.
+      final String label;
+      final Color bg;
+      final Color fg;
+      if (tx != null && tx.status == 'completed') {
+        label = 'Completed';
+        bg = const Color(0xFFE8F7F1);
+        fg = const Color(0xFF1D9E75);
+      } else if (tx != null && tx.status == 'cancelled') {
+        label = 'Cancelled';
+        bg = const Color(0xFFF2F2F2);
+        fg = Colors.black45;
+      } else if (offer.status == 'accepted') {
+        label = 'Accepted';
+        bg = const Color(0xFFE8F7F1);
+        fg = const Color(0xFF1D9E75);
+      } else {
+        label = 'Declined';
+        bg = const Color(0xFFFDECEC);
+        fg = Colors.red.shade400;
+      }
+      children = [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.bold, color: fg)),
+        ),
+      ];
+    }
+    return Wrap(spacing: 6, runSpacing: 6, children: children);
+  }
+
+  Widget _offerActionButton(String label,
+      {required bool filled, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: filled ? const Color(0xFF6DBF99) : null,
+          border: filled ? null : Border.all(color: Colors.red.shade300),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                color: filled ? Colors.white : Colors.red.shade400,
+                fontSize: 12,
+                fontWeight: FontWeight.w600)),
       ),
     );
   }
