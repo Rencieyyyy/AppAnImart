@@ -29,12 +29,12 @@ class AnnouncementPage extends StatefulWidget {
 
 class _AnnouncementPageState extends State<AnnouncementPage> {
   int _selectedIndex = 2;
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo', 'Offers'
+  // Top-level tab: the main news feed vs. the personal offer notices.
+  String _activeTab = 'announcements'; // 'announcements', 'offers'
+  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo'
   String _audienceFilter = 'all'; // 'all', 'buyers', 'sellers'
 
-  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo', 'Offers'];
+  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo'];
 
   // Audience filter options shown in the dropdown beside "Latest Posts".
   static const List<Map<String, dynamic>> _audienceFilters = [
@@ -263,19 +263,21 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   // ── Filtered list ──────────────────────────────────────────────────────
   List<Map<String, dynamic>> get _filtered {
     return _announcements.where((item) {
-      final q = _searchQuery.toLowerCase();
-      final matchesSearch = q.isEmpty ||
-          (item['title'] as String).toLowerCase().contains(q) ||
-          (item['body'] as String).toLowerCase().contains(q) ||
-          (item['tags'] as List<String>).any((t) => t.toLowerCase().contains(q));
       // The announcement's category lives in its tags (announcement_tags.tag).
       final tags =
           (item['tags'] as List<String>).map((t) => t.toLowerCase()).toList();
-      // The 'Offers' tab filters on the 'offer' tag carried by the personal
-      // offer-notification announcements.
-      final selected =
-          _filterType == 'Offers' ? 'offer' : _filterType.toLowerCase();
-      final matchesFilter = _filterType == 'All'
+      // Personal offer notices carry the 'offer' tag. They live only on the
+      // Offers tab; the main Announcements tab excludes them.
+      final isOffer = tags.contains('offer');
+      if (_activeTab == 'offers') {
+        if (!isOffer) return false;
+      } else if (isOffer) {
+        return false;
+      }
+      // Type filter applies to the Announcements tab only (offers share one
+      // tag, so the type chips are hidden there).
+      final selected = _filterType.toLowerCase();
+      final matchesFilter = _activeTab == 'offers' || _filterType == 'All'
           ? true
           : (tags.isEmpty ? selected == 'general' : tags.contains(selected));
       // Audience filter: 'all' selection shows everything; otherwise show
@@ -284,7 +286,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       final matchesAudience = _audienceFilter == 'all' ||
           audience == _audienceFilter ||
           audience == 'all';
-      return matchesSearch && matchesFilter && matchesAudience;
+      return matchesFilter && matchesAudience;
     }).toList();
   }
 
@@ -1171,64 +1173,19 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                   child: const Icon(Icons.arrow_back,
                       color: Colors.white, size: 24),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Announcements',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Stay updated with the latest farm news',
-                  style: TextStyle(fontSize: 13, color: Colors.white70),
-                ),
-                const SizedBox(height: 16),
-                // ── Functional Search Bar ─────────────────────────
-                Container(
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.95),
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 14),
-                      const Icon(Icons.search,
-                          color: Color(0xFF6DBF99), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
-                          controller: _searchController,
-                          onChanged: (val) =>
-                              setState(() => _searchQuery = val),
-                          style: const TextStyle(
-                              fontSize: 13, color: Colors.black87),
-                          decoration: const InputDecoration(
-                            hintText: 'Search announcements...',
-                            hintStyle:
-                                TextStyle(color: Colors.black38, fontSize: 13),
-                            border: InputBorder.none,
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      if (_searchQuery.isNotEmpty)
-                        GestureDetector(
-                          onTap: () {
-                            _searchController.clear();
-                            setState(() => _searchQuery = '');
-                          },
-                          child: const Padding(
-                            padding: EdgeInsets.only(right: 12),
-                            child: Icon(Icons.close,
-                                color: Colors.black38, size: 18),
-                          ),
-                        ),
-                    ],
-                  ),
+                const SizedBox(height: 14),
+                // ── Announcements / Offers tabs ───────────────────
+                Row(
+                  children: [
+                    _headerTab('Announcements', 'announcements'),
+                    Container(
+                      width: 1,
+                      height: 30,
+                      color: Colors.white38,
+                      margin: const EdgeInsets.symmetric(horizontal: 18),
+                    ),
+                    _headerTab('Offers', 'offers'),
+                  ],
                 ),
               ],
             ),
@@ -1265,6 +1222,9 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
           const SizedBox(height: 10),
 
           // ── Type filter chips (swipeable with touch or mouse) ─────
+          // Hidden on the Offers tab: offer notices all share the 'offer' tag,
+          // so the category chips have nothing to sort there.
+          if (_activeTab != 'offers')
           SizedBox(
             height: 32,
             child: ScrollConfiguration(
@@ -1360,12 +1320,16 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.search_off_rounded,
-                            size: 52, color: Colors.black12),
+                        Icon(
+                            _activeTab == 'offers'
+                                ? Icons.pan_tool_outlined
+                                : Icons.search_off_rounded,
+                            size: 52,
+                            color: Colors.black12),
                         const SizedBox(height: 12),
                         Text(
-                          _searchQuery.isNotEmpty
-                              ? 'No results for "$_searchQuery"'
+                          _activeTab == 'offers'
+                              ? 'No offers yet.'
                               : 'No announcements found.',
                           style: const TextStyle(
                               color: Colors.black38, fontSize: 14),
@@ -1487,6 +1451,26 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
             color: Colors.white,
             fontWeight: FontWeight.bold,
             fontSize: fontSize),
+      ),
+    );
+  }
+
+  // One of the two top-level header tabs (Announcements / Offers). The active
+  // tab is larger and fully white; the other is dimmed but still tappable.
+  Widget _headerTab(String label, String value) {
+    final selected = _activeTab == value;
+    return GestureDetector(
+      onTap: () {
+        if (_activeTab != value) setState(() => _activeTab = value);
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: selected ? 22 : 18,
+          fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+          color: selected ? Colors.white : Colors.white70,
+        ),
       ),
     );
   }

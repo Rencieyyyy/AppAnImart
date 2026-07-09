@@ -302,6 +302,10 @@ class _ProfilePageState extends State<ProfilePage> {
   /// Super Premium exclusive.
   bool get _isSuperTier => _planName == 'Super Premium';
 
+  /// A free, non-seller account has nothing to show for Sales / Trust Score /
+  /// received reviews yet — so those stats are hidden and the plan is centered.
+  bool get _minimalStats => !_isSeller && !_isPremiumTier;
+
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
     if (index == _selectedIndex) return;
@@ -1991,47 +1995,55 @@ class _ProfilePageState extends State<ProfilePage> {
                                       ? 'Yearly Plan'
                                       : 'Monthly Plan')
                                   : 'Plan'),
-                          Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
-                          Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('$_trustScore%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
+                          // Sales / Trust Score only mean something for sellers.
+                          // A free, non-seller account centers the plan instead.
+                          if (!_minimalStats) ...[
+                            Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
+                            _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
+                            Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
+                            _statItem('$_trustScore%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
+                          ],
                         ],
                       ),
                     ),
-                    const Divider(height: 1, thickness: 0.5),
                     // ── My Reviews (rating received as a seller) ─────────
-                    InkWell(
-                      onTap: _openMyReviews,
-                      child: Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.star_rounded,
-                                color: Color(0xFFFFB300), size: 20),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _reviewRating.hasReviews
-                                    ? '${_reviewRating.average.toStringAsFixed(1)} · ${_reviewRating.count} review${_reviewRating.count == 1 ? '' : 's'}'
-                                    : 'No reviews yet',
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xFF1A2E22)),
+                    // Hidden for free, non-seller accounts — they can't have
+                    // received reviews yet, so "No reviews yet" is just noise.
+                    if (!_minimalStats) ...[
+                      const Divider(height: 1, thickness: 0.5),
+                      InkWell(
+                        onTap: _openMyReviews,
+                        child: Padding(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.star_rounded,
+                                  color: Color(0xFFFFB300), size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _reviewRating.hasReviews
+                                      ? '${_reviewRating.average.toStringAsFixed(1)} · ${_reviewRating.count} review${_reviewRating.count == 1 ? '' : 's'}'
+                                      : 'No reviews yet',
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF1A2E22)),
+                                ),
                               ),
-                            ),
-                            const Text('My Reviews',
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF3AA876),
-                                    fontWeight: FontWeight.w600)),
-                            const Icon(Icons.chevron_right,
-                                size: 18, color: Color(0xFF3AA876)),
-                          ],
+                              const Text('My Reviews',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF3AA876),
+                                      fontWeight: FontWeight.w600)),
+                              const Icon(Icons.chevron_right,
+                                  size: 18, color: Color(0xFF3AA876)),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                     const Divider(height: 1, thickness: 0.5),
                     // ── My Offers (offers made as a buyer + deal states) ─
                     InkWell(

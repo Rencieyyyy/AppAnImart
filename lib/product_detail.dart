@@ -2292,6 +2292,18 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   String _viber = '';
   String _contactEmail = '';
 
+  // Registration phone/email, shown as a fallback when the seller didn't set a
+  // dedicated public contact phone/email.
+  String _regPhone = '';
+  String _regEmail = '';
+
+  /// The phone/email to actually surface: the opt-in public channel if the
+  /// seller provided one, otherwise their registration value.
+  String get _effectivePhone =>
+      _contactPhone.trim().isNotEmpty ? _contactPhone.trim() : _regPhone.trim();
+  String get _effectiveEmail =>
+      _contactEmail.trim().isNotEmpty ? _contactEmail.trim() : _regEmail.trim();
+
   List<Map<String, dynamic>> _activeListings = [];
   List<Map<String, dynamic>> _soldListings = [];
   bool _loadingListings = true;
@@ -2386,7 +2398,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       final row = await supabase
           .from('users')
           .select('avatar_url, messenger_link, contact_phone, '
-              'whatsapp_number, viber_number, contact_email')
+              'whatsapp_number, viber_number, contact_email, phone, email')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
@@ -2399,6 +2411,8 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
         _whatsapp = (row?['whatsapp_number'] as String?)?.trim() ?? '';
         _viber = (row?['viber_number'] as String?)?.trim() ?? '';
         _contactEmail = (row?['contact_email'] as String?)?.trim() ?? '';
+        _regPhone = (row?['phone'] as String?)?.trim() ?? '';
+        _regEmail = (row?['email'] as String?)?.trim() ?? '';
       });
     } catch (_) {
       // Fall back to the default person icon.
@@ -2428,6 +2442,14 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     } catch (_) {
       if (mounted) _toast('No app available to open this contact.');
     }
+  }
+
+  /// Copies the seller's phone number to the clipboard and confirms with a
+  /// toast, so buyers can paste it wherever they like instead of being sent
+  /// straight to the dialer.
+  Future<void> _copyPhone(String phone) async {
+    await Clipboard.setData(ClipboardData(text: phone));
+    if (mounted) _toast('Phone number copied');
   }
 
   /// Normalises a Philippine mobile number to international digits (no '+'),
@@ -2780,17 +2802,17 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   style: const TextStyle(fontSize: 13, color: Colors.black54)),
               ],
             ),
-            if (_contactPhone.trim().isNotEmpty) ...[
+            if (_effectivePhone.isNotEmpty) ...[
               const SizedBox(height: 4),
               GestureDetector(
-                onTap: () => _launch('tel:${_contactPhone.trim()}'),
+                onTap: () => _copyPhone(_effectivePhone),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Icon(Icons.phone_outlined,
                         size: 14, color: Color(0xFF6DBF99)),
                     const SizedBox(width: 4),
-                    Text(_contactPhone.trim(),
+                    Text(_effectivePhone,
                         style: const TextStyle(
                             fontSize: 13,
                             color: Color(0xFF3AA876),
@@ -3083,17 +3105,18 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   }
 
   /// A stacked list of every contact channel the seller has provided
-  /// (Messenger, WhatsApp, Viber, Call, Text, Email). Channels the seller
-  /// left blank are simply not shown, so no button ever dead-ends.
+  /// (Messenger, WhatsApp, Viber, Text, Email). Channels the seller left blank
+  /// are simply not shown, so no row ever dead-ends. All rows live inside a
+  /// single bordered card, separated by thin dividers.
   Widget _buildContactSection() {
-    final phone = _contactPhone.trim();
+    final phone = _effectivePhone;
     final wa = _whatsapp.trim();
     final viber = _viber.trim();
-    final email = _contactEmail.trim();
+    final email = _effectiveEmail;
 
-    final buttons = <Widget>[];
+    final rows = <Widget>[];
     if (_messengerLink.isNotEmpty) {
-      buttons.add(_contactButton(
+      rows.add(_contactRow(
         icon: Icons.chat_bubble,
         color: const Color(0xFF0084FF),
         label: 'Message on Messenger',
@@ -3101,7 +3124,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       ));
     }
     if (wa.isNotEmpty) {
-      buttons.add(_contactButton(
+      rows.add(_contactRow(
         icon: Icons.chat,
         color: const Color(0xFF25D366),
         label: 'Chat on WhatsApp',
@@ -3109,7 +3132,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       ));
     }
     if (viber.isNotEmpty) {
-      buttons.add(_contactButton(
+      rows.add(_contactRow(
         icon: Icons.message_rounded,
         color: const Color(0xFF7360F2),
         label: 'Chat on Viber',
@@ -3118,13 +3141,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       ));
     }
     if (phone.isNotEmpty) {
-      buttons.add(_contactButton(
-        icon: Icons.call,
-        color: const Color(0xFF3AA876),
-        label: 'Call $phone',
-        onTap: () => _launch('tel:$phone'),
-      ));
-      buttons.add(_contactButton(
+      rows.add(_contactRow(
         icon: Icons.sms_outlined,
         color: const Color(0xFF4A6572),
         label: 'Send an SMS',
@@ -3132,7 +3149,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       ));
     }
     if (email.isNotEmpty) {
-      buttons.add(_contactButton(
+      rows.add(_contactRow(
         icon: Icons.email_outlined,
         color: const Color(0xFFD44638),
         label: 'Email $email',
@@ -3149,7 +3166,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                 fontWeight: FontWeight.bold,
                 color: Colors.black87)),
         const SizedBox(height: 12),
-        if (buttons.isEmpty)
+        if (rows.isEmpty)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -3172,35 +3189,45 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
             ),
           )
         else
-          // Stacked, one channel per row with a thin gap between.
-          for (int i = 0; i < buttons.length; i++) ...[
-            if (i > 0) const SizedBox(height: 10),
-            buttons[i],
-          ],
+          // One bordered card holding every channel, divided row by row.
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFDCE5E0)),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Column(
+                children: [
+                  for (int i = 0; i < rows.length; i++) ...[
+                    if (i > 0)
+                      const Divider(
+                          height: 1,
+                          thickness: 0.5,
+                          color: Color(0xFFE8EDEA)),
+                    rows[i],
+                  ],
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
 
-  /// One full-width contact channel button in the seller's contact stack.
-  Widget _contactButton({
+  /// One channel row inside the seller's contact card: colored icon + label on
+  /// the left, a chevron on the right, the whole width tappable.
+  Widget _contactRow({
     required IconData icon,
     required Color color,
     required String label,
     required VoidCallback onTap,
   }) {
-    return SizedBox(
-      width: double.infinity,
-      child: OutlinedButton(
-        onPressed: onTap,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: color,
-          side: BorderSide(color: color.withOpacity(0.5)),
-          backgroundColor: color.withOpacity(0.06),
-          padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 14),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          alignment: Alignment.centerLeft,
-        ),
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
         child: Row(
           children: [
             Icon(icon, color: color, size: 20),
@@ -3209,12 +3236,12 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
               child: Text(label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: color)),
+                      color: Color(0xFF1A2E22))),
             ),
-            Icon(Icons.chevron_right, color: color.withOpacity(0.6), size: 20),
+            const Icon(Icons.chevron_right, color: Colors.black38, size: 20),
           ],
         ),
       ),
