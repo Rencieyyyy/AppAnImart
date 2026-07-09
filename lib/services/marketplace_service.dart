@@ -3,33 +3,79 @@ import 'package:supabase_flutter/supabase_flutter.dart'
 
 import '../main.dart';
 
-/// Aggregate rating for a seller (average stars + number of reviews),
-/// plus how many deals they've cancelled recently — repeated cancellations
-/// lower the trust percentage.
+/// A seller's reputation: review scores plus their real deal history
+/// (completed sales and self-cancelled deals). Feeds the 0..100 trust score.
 class SellerRating {
   final double average;
   final int count;
 
-  /// Deals this user cancelled in the last 90 days (both roles).
+  /// Deals this user cancelled in the last 90 days (both roles) — recency
+  /// signal for the behavioural penalty.
   final int recentCancellations;
+
+  /// Deals this user completed as the seller (all time) — their sales record.
+  final int completedSales;
+
+  /// Deals where this user was the seller and they backed out (all time) —
+  /// the reliability signal.
+  final int cancelledAsSeller;
 
   const SellerRating({
     required this.average,
     required this.count,
     this.recentCancellations = 0,
+    this.completedSales = 0,
+    this.cancelledAsSeller = 0,
   });
 
   static const empty = SellerRating(average: 0, count: 0);
 
   bool get hasReviews => count > 0;
 
-  /// Average mapped onto a 0..100 "trust" percentage (5★ => 100%), minus
-  /// 5 points per deal cancelled in the last 90 days.
+  /// Whether there's any reputation signal at all (reviews or deal history).
+  /// Screens show "—" for trust when this is false.
+  bool get hasTrustSignal =>
+      count > 0 || completedSales > 0 || cancelledAsSeller > 0;
+
+  /// A 0..100 trust score blending three weighted components, so a single
+  /// glowing review can't read as fully trusted and proven sellers rank
+  /// higher. All terms are bounded, so the result is always 0..100.
+  ///
+  ///  • Rating quality (50%) — the average star score, Bayesian-smoothed
+  ///    toward an assumed-average prior so a handful of reviews carries less
+  ///    weight than a large, consistent history.
+  ///  • Sales experience (30%) — completed sales on a saturating curve
+  ///    (diminishing returns: ~10 sales ≈ half credit).
+  ///  • Reliability (20%) — the seller's completion rate (completed vs. their
+  ///    own cancellations); neutral until they have any deals.
+  ///
+  /// Then a behavioural penalty subtracts for deals cancelled in the last 90
+  /// days, so recent flakiness bites regardless of lifetime stats.
   int get trustPercent {
-    final base = (average / 5 * 100).round();
-    final penalty = 5 * (recentCancellations > 10 ? 10 : recentCancellations);
-    final adjusted = base - penalty;
-    return adjusted < 0 ? 0 : adjusted;
+    // 1. Rating quality — Bayesian average (prior: 3.5★ worth 5 reviews).
+    const priorMean = 3.5;
+    const priorWeight = 5.0;
+    final bayesAvg =
+        (priorWeight * priorMean + average * count) / (priorWeight + count);
+    final ratingScore = bayesAvg / 5 * 100;
+
+    // 2. Sales experience — saturating (half-credit at 10 sales).
+    const halfSat = 10.0;
+    final salesScore = 100 * completedSales / (completedSales + halfSat);
+
+    // 3. Reliability — completion rate as a seller; 70 (neutral) when unproven.
+    final deals = completedSales + cancelledAsSeller;
+    final reliabilityScore =
+        deals == 0 ? 70.0 : 100 * completedSales / deals;
+
+    var score =
+        0.50 * ratingScore + 0.30 * salesScore + 0.20 * reliabilityScore;
+
+    // Behavioural penalty: 4 pts per recent (90-day) cancellation, capped.
+    final recent = recentCancellations > 5 ? 5 : recentCancellations;
+    score -= 4.0 * recent;
+
+    return score.round().clamp(0, 100);
   }
 }
 
@@ -38,12 +84,21 @@ class CancellationStats {
   /// Deals this user cancelled in the last 90 days.
   final int cancelled90d;
 
-  /// Deals they completed (all time, either side).
+  /// Deals they completed (all time, either side — buyer or seller).
   final int completedTotal;
+
+  /// Deals they completed specifically as the seller — their real sales
+  /// record (excludes their own purchases).
+  final int completedAsSeller;
+
+  /// Deals where they were the seller and they cancelled — reliability signal.
+  final int cancelledAsSeller;
 
   const CancellationStats({
     required this.cancelled90d,
     required this.completedTotal,
+    this.completedAsSeller = 0,
+    this.cancelledAsSeller = 0,
   });
 
   /// Enough repeat cancellations to warn the other party.
@@ -59,6 +114,10 @@ class Review {
   final String comment;
   final DateTime createdAt;
 
+  /// When the reviewer last changed this review. Equal to [createdAt] on a
+  /// brand-new review; later once they edit it.
+  final DateTime updatedAt;
+
   const Review({
     required this.id,
     required this.reviewerId,
@@ -66,7 +125,13 @@ class Review {
     required this.rating,
     required this.comment,
     required this.createdAt,
-  });
+    DateTime? updatedAt,
+  }) : updatedAt = updatedAt ?? createdAt;
+
+  /// True when the review was edited after it was first posted. A few seconds'
+  /// tolerance absorbs the small clock skew between the insert's server
+  /// `created_at` default and the client-set `updated_at`.
+  bool get edited => updatedAt.difference(createdAt).inSeconds > 5;
 }
 
 /// A buyer's price offer on a listing, with the buyer's display name joined
@@ -248,15 +313,26 @@ class MarketplaceService {
           .where((r) => r > 0)
           .toList();
       final stats = await fetchCancellationStats([sellerId]);
-      final cancels = stats[sellerId]?.cancelled90d ?? 0;
+      final s = stats[sellerId];
+      final cancels = s?.cancelled90d ?? 0;
+      final sales = s?.completedAsSeller ?? 0;
+      final sellerCancels = s?.cancelledAsSeller ?? 0;
       if (ratings.isEmpty) {
-        return SellerRating(average: 0, count: 0, recentCancellations: cancels);
+        return SellerRating(
+          average: 0,
+          count: 0,
+          recentCancellations: cancels,
+          completedSales: sales,
+          cancelledAsSeller: sellerCancels,
+        );
       }
       final avg = ratings.reduce((a, b) => a + b) / ratings.length;
       return SellerRating(
         average: avg,
         count: ratings.length,
         recentCancellations: cancels,
+        completedSales: sales,
+        cancelledAsSeller: sellerCancels,
       );
     } catch (_) {
       return SellerRating.empty;
@@ -278,6 +354,8 @@ class MarketplaceService {
         result['${m['user_id']}'] = CancellationStats(
           cancelled90d: (m['cancelled_90d'] as num?)?.toInt() ?? 0,
           completedTotal: (m['completed_total'] as num?)?.toInt() ?? 0,
+          completedAsSeller: (m['completed_as_seller'] as num?)?.toInt() ?? 0,
+          cancelledAsSeller: (m['cancelled_as_seller'] as num?)?.toInt() ?? 0,
         );
       }
       return result;
@@ -297,7 +375,7 @@ class MarketplaceService {
     try {
       final rows = await supabase
           .from('reviews')
-          .select('id, reviewer_id, rating, comment, created_at')
+          .select('id, reviewer_id, rating, comment, created_at, updated_at')
           .eq('seller_id', sellerId)
           .order('created_at', ascending: false);
       final list =
@@ -334,6 +412,7 @@ class MarketplaceService {
           comment: (row['comment'] as String?)?.trim() ?? '',
           createdAt:
               DateTime.tryParse('${row['created_at']}')?.toLocal() ?? DateTime.now(),
+          updatedAt: DateTime.tryParse('${row['updated_at']}')?.toLocal(),
         );
       }).toList();
     } catch (_) {
@@ -348,7 +427,7 @@ class MarketplaceService {
     try {
       final row = await supabase
           .from('reviews')
-          .select('id, reviewer_id, rating, comment, created_at')
+          .select('id, reviewer_id, rating, comment, created_at, updated_at')
           .eq('seller_id', sellerId)
           .eq('reviewer_id', uid)
           .maybeSingle();
@@ -361,6 +440,7 @@ class MarketplaceService {
         comment: (row['comment'] as String?)?.trim() ?? '',
         createdAt:
             DateTime.tryParse('${row['created_at']}')?.toLocal() ?? DateTime.now(),
+        updatedAt: DateTime.tryParse('${row['updated_at']}')?.toLocal(),
       );
     } catch (_) {
       return null;

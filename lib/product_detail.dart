@@ -472,6 +472,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   /// listed price (× quantity), so the deal starts with a paper trail the
   /// seller only has to accept.
   Future<void> _buyAtAskingPrice() async {
+    if (_blockedGuard()) return;
     final price = _askingPrice;
     if (price == null || price <= 0) return;
     if (supabase.auth.currentUser == null) {
@@ -1240,8 +1241,69 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         : 'Seller unblocked.');
   }
 
+  /// Guard for buyer actions: returns false (and nudges the user to unblock)
+  /// when the seller is blocked, so message / buy / offer / favourite are all
+  /// withheld until the buyer unblocks them.
+  bool _blockedGuard() {
+    if (_isBlocked) {
+      _showSnackBar(
+          "You've blocked this seller. Unblock them to message, offer, or buy.");
+      return true;
+    }
+    return false;
+  }
+
+  /// The red "you blocked this seller" card with an Unblock button, shown in
+  /// place of the buyer CTAs on a blocked seller's listing.
+  Widget _buildBlockedNotice() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFDECEC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF3C6C6)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.block, color: Colors.redAccent, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  "You've blocked $_sellerName. Unblock them to message, make "
+                  'an offer, or buy from them.',
+                  style: const TextStyle(fontSize: 13, color: Colors.black87),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _toggleBlockSeller,
+              icon: const Icon(Icons.person_add_alt_1, size: 18),
+              label: const Text('Unblock Seller',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF6DBF99),
+                side: const BorderSide(color: Color(0xFF6DBF99)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Opens the seller's Messenger link in the Messenger app / browser.
   Future<void> _openMessenger() async {
+    if (_blockedGuard()) return;
     final link = _sellerMessengerLink;
     if (link.isEmpty) {
       _showSnackBar("This seller hasn't added a Messenger link yet.");
@@ -1257,6 +1319,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _showMakeOfferDialog() {
+    if (_blockedGuard()) return;
     if (supabase.auth.currentUser == null) {
       _showSnackBar('Please log in to make an offer.');
       return;
@@ -1404,6 +1467,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   Future<void> _toggleFavorite() async {
+    if (_blockedGuard()) return;
     final listingId = widget.listingId?.trim() ?? '';
     if (listingId.isEmpty) {
       _showSnackBar('Sign in and open a real listing to save favourites.');
@@ -1660,10 +1724,19 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 ),
               ],
 
+              // ── Blocked-seller notice ────────────────────────────
+              // A blocked seller's buyer actions (message, buy, offer,
+              // favourite) are withheld until the buyer unblocks them.
+              if (!_isOwner && _isBlocked)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _buildBlockedNotice(),
+                ),
+
               // ── Message Seller on Messenger ──────────────────────
               // Chat happens on Facebook Messenger via the seller's link
               // (saved when they became a seller).
-              if (!_isOwner)
+              if (!_isOwner && !_isBlocked)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: SizedBox(
@@ -1690,6 +1763,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               // Available whenever the listing still has stock ('active'),
               // even if the buyer already holds a reservation on it.
               if (!_isOwner &&
+                  !_isBlocked &&
                   _status == 'active' &&
                   (_askingPrice ?? 0) > 0) ...[
                 const SizedBox(height: 10),
@@ -1729,8 +1803,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   children: [
                     // No offers on your own post or while the listing isn't
                     // active; a buyer with a reservation can still offer for
-                    // more while stock remains.
-                    if (!_isOwner && _status == 'active')
+                    // more while stock remains. Blocked sellers get no buyer
+                    // actions until unblocked.
+                    if (!_isOwner && !_isBlocked && _status == 'active')
                       _buildActionButton(
                         icon: _offerSent ? Icons.pan_tool : Icons.pan_tool_outlined,
                         color: _offerSent ? const Color(0xFF6DBF99) : null,
@@ -1742,7 +1817,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       onTap: _shareProduct,
                       tooltip: 'Share',
                     ),
-                    if (!_isOwner)
+                    if (!_isOwner && !_isBlocked)
                       _buildActionButton(
                         icon: _isFavorited ? Icons.favorite : Icons.favorite_border,
                         color: _isFavorited ? Colors.red : null,
@@ -2169,6 +2244,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 }
 
 // ── Seller Profile Page ────────────────────────────────────────────────────
+
+/// How the seller's listing grid is ordered.
+enum _SellerSort { newest, priceLow, priceHigh }
+
 class _SellerProfilePage extends StatefulWidget {
   final String sellerName;
   final String sellerJoined;
@@ -2196,17 +2275,50 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   String? get breederSince => widget.breederSince;
   String get location => widget.location;
   String get sellerId => widget.sellerId;
-  SellerRating get rating => widget.rating;
 
-  // The seller's avatar and their active listings, loaded from Supabase.
+  /// Freshly-loaded reputation; falls back to the value passed in from the
+  /// listing page until the fetch completes. The passed-in one can be stale
+  /// (e.g. a review added after that page loaded), so we always refetch.
+  SellerRating? _loadedRating;
+  SellerRating get rating => _loadedRating ?? widget.rating;
+
+  // The seller's avatar and their listings, loaded from Supabase.
   String _avatarUrl = '';
   String _messengerLink = '';
-  List<Map<String, dynamic>> _sellerListings = [];
+
+  // Opt-in public contact channels the seller filled in (any may be empty).
+  String _contactPhone = '';
+  String _whatsapp = '';
+  String _viber = '';
+  String _contactEmail = '';
+
+  List<Map<String, dynamic>> _activeListings = [];
+  List<Map<String, dynamic>> _soldListings = [];
   bool _loadingListings = true;
+  bool _listingsError = false;
+
+  /// Which listings tab is showing (false = active, true = sold history).
+  bool _showSold = false;
+  _SellerSort _sortMode = _SellerSort.newest;
 
   /// "Verified Seller" is only for sellers on a paid tier
   /// (Premium / Super Premium), resolved via the seller_tiers RPC.
   bool _isVerifiedSeller = false;
+
+  /// Whether the current user has blocked this seller.
+  bool _isBlocked = false;
+
+  /// Deal-history standing, loaded from the cancellation_stats RPC. Drives the
+  /// honest "Sales" stat and the earned Trusted Seller badge (no longer a
+  /// hardcoded label shown to everyone).
+  bool _statsLoaded = false;
+  int _completedSales = 0;
+  int _cancelled90d = 0;
+
+  /// True when the visitor is looking at their own seller profile — hide the
+  /// message / report / block actions in that case.
+  bool get _isSelf =>
+      sellerId.isNotEmpty && sellerId == supabase.auth.currentUser?.id;
 
   @override
   void initState() {
@@ -2214,6 +2326,40 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     _loadSellerDetails();
     _loadSellerListings();
     _loadSellerTier();
+    _loadRating();
+    _loadBlockState();
+  }
+
+  /// Reloads everything on pull-to-refresh.
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _loadSellerDetails(),
+      _loadSellerListings(),
+      _loadSellerTier(),
+      _loadRating(),
+      _loadBlockState(),
+    ]);
+  }
+
+  /// Fetches the seller's live reputation — review average/count AND their
+  /// seller-only completed sales / cancellations — in one call, so the Rating,
+  /// Reviews, Sales and Trust stats always agree with the reviews page.
+  Future<void> _loadRating() async {
+    if (sellerId.isEmpty) return;
+    final r = await MarketplaceService.fetchSellerRating(sellerId);
+    if (!mounted) return;
+    setState(() {
+      _loadedRating = r;
+      _completedSales = r.completedSales;
+      _cancelled90d = r.recentCancellations;
+      _statsLoaded = true;
+    });
+  }
+
+  Future<void> _loadBlockState() async {
+    if (sellerId.isEmpty || _isSelf) return;
+    final blocked = await MarketplaceService.isBlocked(sellerId);
+    if (mounted) setState(() => _isBlocked = blocked);
   }
 
   Future<void> _loadSellerTier() async {
@@ -2239,7 +2385,8 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     try {
       final row = await supabase
           .from('users')
-          .select('avatar_url, messenger_link')
+          .select('avatar_url, messenger_link, contact_phone, '
+              'whatsapp_number, viber_number, contact_email')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
@@ -2248,6 +2395,10 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       setState(() {
         if (url.isNotEmpty) _avatarUrl = url;
         _messengerLink = link;
+        _contactPhone = (row?['contact_phone'] as String?)?.trim() ?? '';
+        _whatsapp = (row?['whatsapp_number'] as String?)?.trim() ?? '';
+        _viber = (row?['viber_number'] as String?)?.trim() ?? '';
+        _contactEmail = (row?['contact_email'] as String?)?.trim() ?? '';
       });
     } catch (_) {
       // Fall back to the default person icon.
@@ -2257,42 +2408,226 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   /// Opens the seller's Messenger link.
   Future<void> _openMessenger() async {
     if (_messengerLink.isEmpty) {
-      showTopMessage(context, "This seller hasn't added a Messenger link yet.",
-          isError: false,
-          backgroundColor: const Color(0xFF3A3A3A),
-          icon: Icons.info_outline);
+      _toast("This seller hasn't added a Messenger link yet.");
       return;
     }
-    final uri = Uri.tryParse(_messengerLink);
-    if (uri != null) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    await _launch(_messengerLink);
+  }
+
+  /// Launches [raw] (a full URL or a tel:/sms:/mailto:/viber: URI), toasting
+  /// if no app can handle it.
+  Future<void> _launch(String raw) async {
+    final uri = Uri.tryParse(raw);
+    if (uri == null) {
+      _toast('Could not open that contact link.');
+      return;
+    }
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) _toast('No app available to open this contact.');
+    } catch (_) {
+      if (mounted) _toast('No app available to open this contact.');
     }
   }
 
-  /// Loads everything this seller currently has posted (active listings).
+  /// Normalises a Philippine mobile number to international digits (no '+'),
+  /// e.g. 0917 123 4567 → 639171234567, for WhatsApp/Viber deep links.
+  String _intlDigits(String raw) {
+    final d = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    if (d.startsWith('0') && d.length == 11) return '63${d.substring(1)}';
+    if (d.startsWith('9') && d.length == 10) return '63$d';
+    return d; // already has a country code, or a non-PH number
+  }
+
+  /// Loads this seller's posts — both what's on sale now (active) and their
+  /// sold history, so a buyer can judge the seller's real track record.
   Future<void> _loadSellerListings() async {
     if (sellerId.isEmpty) {
       setState(() => _loadingListings = false);
       return;
+    }
+    if (mounted) {
+      setState(() {
+        _loadingListings = true;
+        _listingsError = false;
+      });
     }
     try {
       final rows = await supabase
           .from('listings')
           .select()
           .eq('seller_id', sellerId)
-          .eq('status', 'active')
+          .inFilter('status', ['active', 'sold'])
           .order('created_at', ascending: false);
+      final all =
+          (rows as List).map((r) => r as Map<String, dynamic>).toList();
       if (!mounted) return;
       setState(() {
-        _sellerListings = (rows as List)
-            .map((r) => r as Map<String, dynamic>)
-            .toList();
+        _activeListings =
+            all.where((r) => (r['status'] ?? 'active') == 'active').toList();
+        _soldListings = all.where((r) => r['status'] == 'sold').toList();
         _loadingListings = false;
       });
     } catch (e) {
       debugPrint('Failed to load seller listings: $e');
-      if (mounted) setState(() => _loadingListings = false);
+      if (mounted) {
+        setState(() {
+          _loadingListings = false;
+          _listingsError = true;
+        });
+      }
     }
+  }
+
+  /// The listings currently shown (active or sold tab), in the chosen order.
+  List<Map<String, dynamic>> get _visibleListings {
+    final list = [...(_showSold ? _soldListings : _activeListings)];
+    switch (_sortMode) {
+      case _SellerSort.newest:
+        break; // query already returns newest-first
+      case _SellerSort.priceLow:
+        list.sort((a, b) => _priceValue(a).compareTo(_priceValue(b)));
+        break;
+      case _SellerSort.priceHigh:
+        list.sort((a, b) => _priceValue(b).compareTo(_priceValue(a)));
+        break;
+    }
+    return list;
+  }
+
+  double _priceValue(Map<String, dynamic> row) {
+    final raw = row['price'];
+    return raw is num ? raw.toDouble() : (double.tryParse('$raw') ?? 0);
+  }
+
+  void _toast(String message) => showTopMessage(
+        context,
+        message,
+        isError: false,
+        backgroundColor: const Color(0xFF3A3A3A),
+        icon: Icons.info_outline,
+      );
+
+  /// Files an abuse report against this seller (reuses the reports table via
+  /// [MarketplaceService], same reasons as the listing detail sheet).
+  void _reportSeller() {
+    if (supabase.auth.currentUser == null) {
+      _toast('Please log in to submit a report.');
+      return;
+    }
+    final detailsController = TextEditingController();
+    const reasons = [
+      'Fraud / scam',
+      'Poor communication',
+      'Misleading listings',
+      'Other'
+    ];
+    String selectedReason = reasons.first;
+    bool submitting = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocalState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Report Seller',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Why are you reporting this seller?',
+                  style: TextStyle(fontSize: 13, color: Colors.black54)),
+              const SizedBox(height: 12),
+              DropdownButton<String>(
+                value: selectedReason,
+                isExpanded: true,
+                items: reasons
+                    .map((r) => DropdownMenuItem(value: r, child: Text(r)))
+                    .toList(),
+                onChanged: (val) => setLocalState(() => selectedReason = val!),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: detailsController,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  hintText: 'Additional details (optional)...',
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Cancel')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      setLocalState(() => submitting = true);
+                      final error = await MarketplaceService.submitReport(
+                        targetType: 'seller',
+                        sellerId: sellerId,
+                        reason: selectedReason,
+                        details: detailsController.text,
+                      );
+                      if (!dialogCtx.mounted) return;
+                      Navigator.pop(dialogCtx);
+                      _toast(error ??
+                          'Report submitted. Our team will review it. Thank you.');
+                    },
+              child: const Text('Submit Report',
+                  style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Blocks or unblocks this seller. Blocked sellers' listings are hidden from
+  /// the buyer's browse, home and explore feeds.
+  Future<void> _toggleBlock() async {
+    if (supabase.auth.currentUser == null) {
+      _toast('Please log in to block a seller.');
+      return;
+    }
+    if (_isSelf) {
+      _toast('You cannot block yourself.');
+      return;
+    }
+    final was = _isBlocked;
+    final now =
+        await MarketplaceService.toggleBlock(sellerId, currentlyBlocked: was);
+    if (!mounted) return;
+    setState(() => _isBlocked = now);
+    _toast(now
+        ? 'Seller blocked. Their listings are now hidden.'
+        : 'Seller unblocked.');
+  }
+
+  /// Opens the seller's avatar full-screen (tap to dismiss).
+  void _viewAvatar() {
+    if (_avatarUrl.isEmpty) return;
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Center(
+          child: InteractiveViewer(
+            child: Image.network(_avatarUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(Icons.person,
+                    color: Colors.white54, size: 80)),
+          ),
+        ),
+      ),
+    );
   }
 
   String _formatPrice(dynamic raw) {
@@ -2360,22 +2695,58 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
         ),
         title: const Text('Seller Profile',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87)),
+        actions: [
+          if (!_isSelf && sellerId.isNotEmpty)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert, color: Colors.black87),
+              onSelected: (value) {
+                if (value == 'report') _reportSeller();
+                if (value == 'block') _toggleBlock();
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'report',
+                  child: Row(children: [
+                    Icon(Icons.flag_outlined, size: 18, color: Colors.red),
+                    SizedBox(width: 10),
+                    Text('Report Seller'),
+                  ]),
+                ),
+                PopupMenuItem(
+                  value: 'block',
+                  child: Row(children: [
+                    Icon(_isBlocked ? Icons.person_add_alt_1 : Icons.block_outlined,
+                        size: 18, color: Colors.black87),
+                    const SizedBox(width: 10),
+                    Text(_isBlocked ? 'Unblock Seller' : 'Block Seller'),
+                  ]),
+                ),
+              ],
+            ),
+        ],
       ),
-      body: SingleChildScrollView(
+      body: RefreshIndicator(
+        color: const Color(0xFF6DBF99),
+        onRefresh: _refreshAll,
+        child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
             const SizedBox(height: 20),
-            Container(
-              width: 80, height: 80,
-              decoration: const BoxDecoration(color: Color(0xFFD6F0E4), shape: BoxShape.circle),
-              clipBehavior: Clip.antiAlias,
-              child: _avatarUrl.isNotEmpty
-                  ? Image.network(_avatarUrl,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Icon(Icons.person,
-                          color: Color(0xFF6DBF99), size: 44))
-                  : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 44),
+            GestureDetector(
+              onTap: _viewAvatar,
+              child: Container(
+                width: 80, height: 80,
+                decoration: const BoxDecoration(color: Color(0xFFD6F0E4), shape: BoxShape.circle),
+                clipBehavior: Clip.antiAlias,
+                child: _avatarUrl.isNotEmpty
+                    ? Image.network(_avatarUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const Icon(Icons.person,
+                            color: Color(0xFF6DBF99), size: 44))
+                    : const Icon(Icons.person, color: Color(0xFF6DBF99), size: 44),
+              ),
             ),
             const SizedBox(height: 12),
             Row(
@@ -2390,15 +2761,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
               ],
             ),
             const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFB300),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Text('Trusted Seller',
-                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-            ),
+            _buildTrustBadge(),
             const SizedBox(height: 4),
             Text('Member since $sellerJoined',
               style: const TextStyle(fontSize: 13, color: Colors.black45)),
@@ -2417,6 +2780,25 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   style: const TextStyle(fontSize: 13, color: Colors.black54)),
               ],
             ),
+            if (_contactPhone.trim().isNotEmpty) ...[
+              const SizedBox(height: 4),
+              GestureDetector(
+                onTap: () => _launch('tel:${_contactPhone.trim()}'),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.phone_outlined,
+                        size: 14, color: Color(0xFF6DBF99)),
+                    const SizedBox(width: 4),
+                    Text(_contactPhone.trim(),
+                        style: const TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFF3AA876),
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -2427,8 +2809,9 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                         ? '${rating.average.toStringAsFixed(1)} ⭐'
                         : '—'),
                 _buildStat('Reviews', '${rating.count}'),
+                _buildStat('Sales', _statsLoaded ? '$_completedSales' : '—'),
                 _buildStat('Trust',
-                    rating.hasReviews ? '${rating.trustPercent}%' : '—'),
+                    rating.hasTrustSignal ? '${rating.trustPercent}%' : '—'),
               ],
             ),
             const SizedBox(height: 16),
@@ -2452,7 +2835,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                               sellerName: sellerName,
                             ),
                           ),
-                        ),
+                        ).then((_) => _loadRating()),
                 icon: const Icon(Icons.reviews_outlined, size: 18),
                 label: const Text('See all reviews',
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -2492,22 +2875,37 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                         color: Colors.black87),
                   ),
                 ),
-                if (!_loadingListings)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE8F7F1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text('${_sellerListings.length}',
-                        style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF6DBF99),
-                            fontWeight: FontWeight.bold)),
+                if (!_loadingListings && !_listingsError)
+                  PopupMenuButton<_SellerSort>(
+                    tooltip: 'Sort',
+                    initialValue: _sortMode,
+                    onSelected: (v) => setState(() => _sortMode = v),
+                    icon: const Icon(Icons.sort, size: 20, color: Colors.black54),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                          value: _SellerSort.newest, child: Text('Newest first')),
+                      PopupMenuItem(
+                          value: _SellerSort.priceLow,
+                          child: Text('Price: low to high')),
+                      PopupMenuItem(
+                          value: _SellerSort.priceHigh,
+                          child: Text('Price: high to low')),
+                    ],
                   ),
               ],
             ),
+            const SizedBox(height: 8),
+            // Active / Sold toggle so buyers can see the seller's track record.
+            if (!_loadingListings && !_listingsError)
+              Row(
+                children: [
+                  _listingTab('For sale', _activeListings.length, !_showSold,
+                      () => setState(() => _showSold = false)),
+                  const SizedBox(width: 8),
+                  _listingTab('Sold', _soldListings.length, _showSold,
+                      () => setState(() => _showSold = true)),
+                ],
+              ),
             const SizedBox(height: 12),
             if (_loadingListings)
               const Padding(
@@ -2516,7 +2914,33 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
                 ),
               )
-            else if (_sellerListings.isEmpty)
+            else if (_listingsError)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFDECEC),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    const Icon(Icons.wifi_off_outlined,
+                        color: Colors.redAccent, size: 32),
+                    const SizedBox(height: 8),
+                    const Text("Couldn't load this seller's listings.",
+                        style: TextStyle(fontSize: 13, color: Colors.black54)),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _loadSellerListings,
+                      child: const Text('Retry',
+                          style: TextStyle(
+                              color: Color(0xFF6DBF99),
+                              fontWeight: FontWeight.w600)),
+                    ),
+                  ],
+                ),
+              )
+            else if (_visibleListings.isEmpty)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 28),
@@ -2524,13 +2948,17 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   color: const Color(0xFFF9F9F9),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Column(
+                child: Column(
                   children: [
-                    Icon(Icons.storefront_outlined,
+                    const Icon(Icons.storefront_outlined,
                         color: Colors.black26, size: 36),
-                    SizedBox(height: 8),
-                    Text('No active listings right now',
-                        style: TextStyle(fontSize: 13, color: Colors.black45)),
+                    const SizedBox(height: 8),
+                    Text(
+                        _showSold
+                            ? 'No sold listings yet'
+                            : 'No active listings right now',
+                        style: const TextStyle(
+                            fontSize: 13, color: Colors.black45)),
                   ],
                 ),
               )
@@ -2538,7 +2966,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
               GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: _sellerListings.length,
+                itemCount: _visibleListings.length,
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
                   crossAxisSpacing: 12,
@@ -2546,8 +2974,9 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   childAspectRatio: 0.82,
                 ),
                 itemBuilder: (context, index) {
-                  final row = _sellerListings[index];
+                  final row = _visibleListings[index];
                   final img = (row['image_url'] as String?)?.trim() ?? '';
+                  final isSold = row['status'] == 'sold';
                   return GestureDetector(
                     onTap: () => _openListing(row),
                     child: Container(
@@ -2568,8 +2997,45 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                                   topLeft: Radius.circular(10),
                                   topRight: Radius.circular(10),
                                 ),
-                                child: _listingThumb(
-                                    img.isNotEmpty ? img : 'images/chicken.png'),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    ColorFiltered(
+                                      colorFilter: isSold
+                                          ? const ColorFilter.matrix(<double>[
+                                              0.2126, 0.7152, 0.0722, 0, 0, //
+                                              0.2126, 0.7152, 0.0722, 0, 0, //
+                                              0.2126, 0.7152, 0.0722, 0, 0, //
+                                              0, 0, 0, 1, 0,
+                                            ])
+                                          : const ColorFilter.mode(
+                                              Colors.transparent,
+                                              BlendMode.multiply),
+                                      child: _listingThumb(img.isNotEmpty
+                                          ? img
+                                          : 'images/chicken.png'),
+                                    ),
+                                    if (isSold)
+                                      Positioned(
+                                        top: 6,
+                                        left: 6,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 8, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withOpacity(0.7),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
+                                          ),
+                                          child: const Text('SOLD',
+                                              style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold)),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
@@ -2605,22 +3071,220 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                   );
                 },
               ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6DBF99),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: _openMessenger,
-                child: const Text('Message Seller on Messenger',
-                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-              ),
-            ),
+            if (!_isSelf) ...[
+              const SizedBox(height: 24),
+              _buildContactSection(),
+            ],
           ],
         ),
+        ),
+      ),
+    );
+  }
+
+  /// A stacked list of every contact channel the seller has provided
+  /// (Messenger, WhatsApp, Viber, Call, Text, Email). Channels the seller
+  /// left blank are simply not shown, so no button ever dead-ends.
+  Widget _buildContactSection() {
+    final phone = _contactPhone.trim();
+    final wa = _whatsapp.trim();
+    final viber = _viber.trim();
+    final email = _contactEmail.trim();
+
+    final buttons = <Widget>[];
+    if (_messengerLink.isNotEmpty) {
+      buttons.add(_contactButton(
+        icon: Icons.chat_bubble,
+        color: const Color(0xFF0084FF),
+        label: 'Message on Messenger',
+        onTap: _openMessenger,
+      ));
+    }
+    if (wa.isNotEmpty) {
+      buttons.add(_contactButton(
+        icon: Icons.chat,
+        color: const Color(0xFF25D366),
+        label: 'Chat on WhatsApp',
+        onTap: () => _launch('https://wa.me/${_intlDigits(wa)}'),
+      ));
+    }
+    if (viber.isNotEmpty) {
+      buttons.add(_contactButton(
+        icon: Icons.message_rounded,
+        color: const Color(0xFF7360F2),
+        label: 'Chat on Viber',
+        onTap: () =>
+            _launch('viber://chat?number=%2B${_intlDigits(viber)}'),
+      ));
+    }
+    if (phone.isNotEmpty) {
+      buttons.add(_contactButton(
+        icon: Icons.call,
+        color: const Color(0xFF3AA876),
+        label: 'Call $phone',
+        onTap: () => _launch('tel:$phone'),
+      ));
+      buttons.add(_contactButton(
+        icon: Icons.sms_outlined,
+        color: const Color(0xFF4A6572),
+        label: 'Send an SMS',
+        onTap: () => _launch('sms:$phone'),
+      ));
+    }
+    if (email.isNotEmpty) {
+      buttons.add(_contactButton(
+        icon: Icons.email_outlined,
+        color: const Color(0xFFD44638),
+        label: 'Email $email',
+        onTap: () => _launch('mailto:$email'),
+      ));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Contact $sellerName',
+            style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87)),
+        const SizedBox(height: 12),
+        if (buttons.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F7F7),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.black38, size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "This seller hasn't added contact details. Make an offer on "
+                    'one of their listings to reach them.',
+                    style: TextStyle(fontSize: 12.5, color: Colors.black54),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          // Stacked, one channel per row with a thin gap between.
+          for (int i = 0; i < buttons.length; i++) ...[
+            if (i > 0) const SizedBox(height: 10),
+            buttons[i],
+          ],
+      ],
+    );
+  }
+
+  /// One full-width contact channel button in the seller's contact stack.
+  Widget _contactButton({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: color,
+          side: BorderSide(color: color.withOpacity(0.5)),
+          backgroundColor: color.withOpacity(0.06),
+          padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 14),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          alignment: Alignment.centerLeft,
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: color)),
+            ),
+            Icon(Icons.chevron_right, color: color.withOpacity(0.6), size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// One "For sale / Sold" pill in the listings toggle.
+  Widget _listingTab(String label, int count, bool selected, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF6DBF99) : const Color(0xFFF0F0F0),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text('$label ($count)',
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: selected ? Colors.white : Colors.black54)),
+      ),
+    );
+  }
+
+  /// The earned trust badge — real, not the old hardcoded "Trusted Seller"
+  /// label that showed for everyone. Derived from completed sales + rating +
+  /// recent cancellations (all loaded from real data).
+  Widget _buildTrustBadge() {
+    if (!_statsLoaded) return const SizedBox(height: 20);
+    final r = rating;
+    final trusted = _completedSales >= 5 &&
+        r.hasReviews &&
+        r.average >= 4.5 &&
+        _cancelled90d <= 1;
+    final isNew = _completedSales == 0 && !r.hasReviews;
+
+    late final Color bg;
+    late final Color fg;
+    late final String label;
+    late final IconData icon;
+    if (trusted) {
+      bg = const Color(0xFFFFB300);
+      fg = Colors.white;
+      label = 'Trusted Seller';
+      icon = Icons.verified_user;
+    } else if (isNew) {
+      bg = const Color(0xFFEDEDED);
+      fg = Colors.black54;
+      label = 'New Seller';
+      icon = Icons.fiber_new_outlined;
+    } else {
+      bg = const Color(0xFFE8F7F1);
+      fg = const Color(0xFF3E9C77);
+      label = 'Established Seller';
+      icon = Icons.storefront_outlined;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: fg, size: 12),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(
+                  color: fg, fontSize: 10, fontWeight: FontWeight.bold)),
+        ],
       ),
     );
   }

@@ -139,7 +139,7 @@ class SellerAnalytics {
     }
 
     final rating = await MarketplaceService.fetchSellerRating(userId);
-    if (rating.hasReviews) trust = rating.trustPercent;
+    if (rating.hasTrustSignal) trust = rating.trustPercent;
 
     String topCat = '—';
     int best = 0;

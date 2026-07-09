@@ -56,6 +56,13 @@ class _ProfilePageState extends State<ProfilePage> {
   /// Seller's Facebook Messenger link (m.me/...), required to become a
   /// seller — buyers contact sellers through it.
   String _messengerLink = '';
+
+  /// Optional, opt-in public contact channels shown on the seller's profile
+  /// alongside Messenger. Any may be blank.
+  String _contactPhone = '';
+  String _whatsapp = '';
+  String _viber = '';
+  String _contactEmail = '';
   // App-facing name of the user's active subscription plan (from the
   // `subscriptions` table managed by the admin website). 'Free' by default.
   String _planName = 'Free';
@@ -114,7 +121,7 @@ class _ProfilePageState extends State<ProfilePage> {
     if (!mounted) return;
     setState(() {
       _reviewRating = rating;
-      if (rating.hasReviews) _trustScore = rating.trustPercent;
+      if (rating.hasTrustSignal) _trustScore = rating.trustPercent;
     });
   }
 
@@ -199,7 +206,8 @@ class _ProfilePageState extends State<ProfilePage> {
           .from('users')
           .select('email, name, phone, address, house_number, business_name, '
               'shop_category, shop_description, messenger_link, avatar_url, '
-              'is_seller, sales_count, trust_score, member_since')
+              'is_seller, sales_count, trust_score, member_since, '
+              'contact_phone, whatsapp_number, viber_number, contact_email')
           .eq('id', user.id)
           .maybeSingle();
 
@@ -220,6 +228,10 @@ class _ProfilePageState extends State<ProfilePage> {
         _shopCategory = rawCategory == 'Aquatics' ? 'Aquaculture' : rawCategory;
         _shopDescription = (data['shop_description'] as String?) ?? '';
         _messengerLink = (data['messenger_link'] as String?) ?? '';
+        _contactPhone = (data['contact_phone'] as String?) ?? '';
+        _whatsapp = (data['whatsapp_number'] as String?) ?? '';
+        _viber = (data['viber_number'] as String?) ?? '';
+        _contactEmail = (data['contact_email'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
@@ -486,6 +498,10 @@ class _ProfilePageState extends State<ProfilePage> {
           initialShopCategory: _shopCategory,
           initialShopDescription: _shopDescription,
           initialMessengerLink: _messengerLink,
+          initialContactPhone: _contactPhone,
+          initialWhatsapp: _whatsapp,
+          initialViber: _viber,
+          initialContactEmail: _contactEmail,
           onSave: _saveProfile,
           onAvatarChanged: (url) {
             if (mounted) setState(() => _avatarUrl = url);
@@ -509,6 +525,10 @@ class _ProfilePageState extends State<ProfilePage> {
     required String shopCategory,
     required String shopDescription,
     required String messengerLink,
+    String contactPhone = '',
+    String whatsapp = '',
+    String viber = '',
+    String contactEmail = '',
     PhCity? location,
   }) async {
     final user = supabase.auth.currentUser;
@@ -541,6 +561,14 @@ class _ProfilePageState extends State<ProfilePage> {
             'shop_category': shopCategory,
             'shop_description': shopDescription,
             if (normalizedMessenger != null) 'messenger_link': normalizedMessenger,
+            // Optional public contact channels shown on the seller profile.
+            // Empty strings are stored as null so the profile treats them as
+            // "not provided" and hides the button.
+            'contact_phone': contactPhone.trim().isEmpty ? null : contactPhone.trim(),
+            'whatsapp_number': whatsapp.trim().isEmpty ? null : whatsapp.trim(),
+            'viber_number': viber.trim().isEmpty ? null : viber.trim(),
+            'contact_email':
+                contactEmail.trim().isEmpty ? null : contactEmail.trim(),
             // Coordinates power "Explore near you" distances.
             if (location != null) 'location_name': location.label,
             if (location != null) 'latitude': location.lat,
@@ -549,7 +577,8 @@ class _ProfilePageState extends State<ProfilePage> {
           .eq('id', user.id)
           // Explicit columns: `select *` fails under users' column grants.
           .select('name, phone, address, house_number, business_name, '
-              'shop_category, shop_description, messenger_link')
+              'shop_category, shop_description, messenger_link, '
+              'contact_phone, whatsapp_number, viber_number, contact_email')
           .maybeSingle();
 
       if (row == null) {
@@ -584,6 +613,10 @@ class _ProfilePageState extends State<ProfilePage> {
             _messengerLink =
                 (row['messenger_link'] as String?) ?? normalizedMessenger;
           }
+          _contactPhone = (row['contact_phone'] as String?) ?? '';
+          _whatsapp = (row['whatsapp_number'] as String?) ?? '';
+          _viber = (row['viber_number'] as String?) ?? '';
+          _contactEmail = (row['contact_email'] as String?) ?? '';
         });
       }
       return null;
@@ -4116,6 +4149,10 @@ class _EditProfilePage extends StatefulWidget {
   final String initialShopCategory;
   final String initialShopDescription;
   final String initialMessengerLink;
+  final String initialContactPhone;
+  final String initialWhatsapp;
+  final String initialViber;
+  final String initialContactEmail;
   final Future<String?> Function({
     required String name,
     required String phone,
@@ -4125,6 +4162,10 @@ class _EditProfilePage extends StatefulWidget {
     required String shopCategory,
     required String shopDescription,
     required String messengerLink,
+    String contactPhone,
+    String whatsapp,
+    String viber,
+    String contactEmail,
     PhCity? location,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
@@ -4142,6 +4183,10 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialShopCategory,
     required this.initialShopDescription,
     required this.initialMessengerLink,
+    required this.initialContactPhone,
+    required this.initialWhatsapp,
+    required this.initialViber,
+    required this.initialContactEmail,
     required this.onSave,
     required this.onAvatarChanged,
   });
@@ -4161,6 +4206,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _businessCtrl;
   late final TextEditingController _shopDescCtrl;
   late final TextEditingController _messengerCtrl;
+  late final TextEditingController _contactPhoneCtrl;
+  late final TextEditingController _whatsappCtrl;
+  late final TextEditingController _viberCtrl;
+  late final TextEditingController _contactEmailCtrl;
   late String _shopCategory;
   late String _avatarUrl;
   // Address is picked from the PH city/municipality gazetteer, not typed.
@@ -4188,6 +4237,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _businessCtrl = TextEditingController(text: widget.initialBusinessName);
     _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
     _messengerCtrl = TextEditingController(text: widget.initialMessengerLink);
+    _contactPhoneCtrl = TextEditingController(text: widget.initialContactPhone);
+    _whatsappCtrl = TextEditingController(text: widget.initialWhatsapp);
+    _viberCtrl = TextEditingController(text: widget.initialViber);
+    _contactEmailCtrl = TextEditingController(text: widget.initialContactEmail);
     _shopCategory = widget.initialShopCategory;
     _avatarUrl = widget.initialAvatarUrl;
   }
@@ -4200,6 +4253,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _businessCtrl.dispose();
     _shopDescCtrl.dispose();
     _messengerCtrl.dispose();
+    _contactPhoneCtrl.dispose();
+    _whatsappCtrl.dispose();
+    _viberCtrl.dispose();
+    _contactEmailCtrl.dispose();
     super.dispose();
   }
 
@@ -4216,6 +4273,10 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       shopCategory: _shopCategory,
       shopDescription: _shopDescCtrl.text.trim(),
       messengerLink: _messengerCtrl.text.trim(),
+      contactPhone: _contactPhoneCtrl.text.trim(),
+      whatsapp: _whatsappCtrl.text.trim(),
+      viber: _viberCtrl.text.trim(),
+      contactEmail: _contactEmailCtrl.text.trim(),
     );
     if (!mounted) return;
     if (error == null) {
@@ -4500,6 +4561,30 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
             _row('Messenger', _messengerCtrl, 'm.me/yourname',
                 type: TextInputType.url),
+            _sectionHeader('Contact options (optional)'),
+            _hintText(
+                'Shown as buttons on your public seller profile. Leave any '
+                'blank to hide it. Buyers use these to reach you.'),
+            _row('Phone', _contactPhoneCtrl, 'Public number (call & SMS)',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('WhatsApp', _whatsappCtrl, 'WhatsApp number',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('Viber', _viberCtrl, 'Viber number',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('Email', _contactEmailCtrl, 'Public contact email',
+                type: TextInputType.emailAddress),
           ],
           const SizedBox(height: 24),
         ],
@@ -4517,6 +4602,18 @@ class _EditProfilePageState extends State<_EditProfilePage> {
         label,
         style: const TextStyle(
             fontSize: 13, fontWeight: FontWeight.bold, color: _accent),
+      ),
+    );
+  }
+
+  // A small explanatory caption under a section header.
+  Widget _hintText(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: 12, color: Colors.black45, height: 1.3),
       ),
     );
   }

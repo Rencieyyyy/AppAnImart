@@ -34,6 +34,10 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
   /// completed transaction with this seller (mirrors the reviews RLS).
   bool _canReview = false;
 
+  /// First image of the seller's most recent listing, shown in the summary
+  /// card so the reviews have a visual anchor to what the seller sells.
+  String _listingImage = '';
+
   bool get _isOwnProfile =>
       supabase.auth.currentUser?.id == widget.sellerId;
 
@@ -41,6 +45,38 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
   void initState() {
     super.initState();
     _load();
+    _loadListingImage();
+  }
+
+  /// Loads the first image of the seller's most recent listing (active or
+  /// sold), for the summary card thumbnail.
+  Future<void> _loadListingImage() async {
+    if (widget.sellerId.isEmpty) return;
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select('image_url, image_urls, created_at')
+          .eq('seller_id', widget.sellerId)
+          .inFilter('status', ['active', 'sold'])
+          .order('created_at', ascending: false)
+          .limit(1);
+      final list = rows as List;
+      if (list.isEmpty) return;
+      final row = list.first as Map<String, dynamic>;
+      var img = (row['image_url'] as String?)?.trim() ?? '';
+      if (img.isEmpty) {
+        final imgs = (row['image_urls'] as List?)
+                ?.map((e) => '$e')
+                .where((e) => e.trim().isNotEmpty)
+                .toList() ??
+            const <String>[];
+        if (imgs.isNotEmpty) img = imgs.first;
+      }
+      if (!mounted || img.isEmpty) return;
+      setState(() => _listingImage = img);
+    } catch (_) {
+      // No thumbnail — the card just renders without it.
+    }
   }
 
   Future<void> _load() async {
@@ -204,7 +240,13 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
         elevation: 0,
         title: Text('${widget.sellerName} · Reviews'),
       ),
-      floatingActionButton: _isOwnProfile
+      // Only buyers who completed a purchase from this seller (or who already
+      // left one) can review — otherwise the button is hidden entirely instead
+      // of showing then rejecting them. Enforced server-side by the reviews
+      // RLS too; this just keeps the UI honest.
+      floatingActionButton: (_isOwnProfile ||
+              _loading ||
+              (!_canReview && _myReview == null))
           ? null
           : FloatingActionButton.extended(
               onPressed: _openReviewForm,
@@ -289,31 +331,28 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
                       : 'Ratings build seller trust',
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
                 ),
-                if (_rating.recentCancellations > 0) ...[
-                  const SizedBox(height: 6),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.warning_amber_rounded,
-                          size: 14, color: Color(0xFFE65100)),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          'Cancelled ${_rating.recentCancellations} deal'
-                          '${_rating.recentCancellations == 1 ? '' : 's'} '
-                          'in the last 90 days',
-                          style: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFE65100)),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
               ],
             ),
           ),
+          if (_listingImage.isNotEmpty) ...[
+            const SizedBox(width: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                _listingImage,
+                width: 104,
+                height: 66,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 104,
+                  height: 66,
+                  color: const Color(0xFFD6F0E4),
+                  child: const Icon(Icons.image_not_supported_outlined,
+                      color: Colors.white70, size: 24),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -366,6 +405,14 @@ class _SellerReviewsPageState extends State<SellerReviewsPage> {
             Text(r.comment,
                 style: const TextStyle(
                     fontSize: 13, color: Color(0xFF3D5247), height: 1.4)),
+          ],
+          if (r.edited) ...[
+            const SizedBox(height: 6),
+            const Text('Edited',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.black38,
+                    fontStyle: FontStyle.italic)),
           ],
         ],
       ),
