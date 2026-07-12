@@ -220,7 +220,7 @@ class _DashboardPageState extends State<DashboardPage> {
       // opened by other users); disabled ones stay hidden.
       var othersQuery = supabase
           .from('listings')
-          .select('*, users(name)')
+          .select('*, seller:public_profiles(name)')
           .inFilter('status', ['active', 'sold', 'reserved']);
       if (uid != null) othersQuery = othersQuery.neq('seller_id', uid);
       final results = await Future.wait([
@@ -230,7 +230,7 @@ class _DashboardPageState extends State<DashboardPage> {
         if (uid != null)
           supabase
               .from('listings')
-              .select('*, users(name)')
+              .select('*, seller:public_profiles(name)')
               .eq('seller_id', uid)
               .inFilter('status', ['active', 'sold', 'reserved'])
               .order('created_at', ascending: false),
@@ -263,7 +263,7 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       var query = supabase
           .from('listings')
-          .select('*, users(name)')
+          .select('*, seller:public_profiles(name)')
           .inFilter('status', ['active', 'sold', 'reserved']);
       if (uid != null) query = query.neq('seller_id', uid);
       final rows = await query.order('created_at', ascending: false).range(
@@ -294,7 +294,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final uid = supabase.auth.currentUser?.id;
       var search = supabase
           .from('listings')
-          .select('*, users(name)')
+          .select('*, seller:public_profiles(name)')
           .inFilter('status', ['active', 'sold', 'reserved']).or(
               'title.ilike.%$q%,category.ilike.%$q%,breed.ilike.%$q%');
       if (uid != null) search = search.neq('seller_id', uid);
@@ -351,7 +351,7 @@ class _DashboardPageState extends State<DashboardPage> {
               .where((e) => e.trim().isNotEmpty)
               .toList() ??
           <String>[];
-      final seller = row['users'] as Map<String, dynamic>?;
+      final seller = row['seller'] as Map<String, dynamic>?;
       final sellerId = '${row['seller_id'] ?? ''}';
       return LivestockItem(
         label: (row['title'] as String?) ?? 'Untitled',
@@ -764,7 +764,7 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       final rows = await supabase
           .from('listings')
-          .select('*, users(name)')
+          .select('*, seller:public_profiles(name)')
           .inFilter('id', ids)
           .inFilter('status', ['active', 'sold', 'reserved'])
           .order('created_at', ascending: false);

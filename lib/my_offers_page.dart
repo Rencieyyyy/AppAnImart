@@ -64,8 +64,10 @@ class _MyOffersPageState extends State<MyOffersPage> {
       final names = <String, String>{};
       if (sellerIds.isNotEmpty) {
         try {
+          // public_profiles, not users: cross-user reads of the base table
+          // are being locked down to own-row only.
           final rows = await supabase
-              .from('users')
+              .from('public_profiles')
               .select('id, name')
               .inFilter('id', sellerIds);
           for (final r in (rows as List)) {

@@ -390,7 +390,7 @@ class MarketplaceService {
       if (reviewerIds.isNotEmpty) {
         try {
           final userRows = await supabase
-              .from('users')
+              .from('public_profiles')
               .select('id, name')
               .inFilter('id', reviewerIds);
           for (final u in (userRows as List)) {
@@ -639,7 +639,7 @@ class MarketplaceService {
       if (buyerIds.isNotEmpty) {
         try {
           final userRows = await supabase
-              .from('users')
+              .from('public_profiles')
               .select('id, name, avatar_url')
               .inFilter('id', buyerIds);
           for (final u in (userRows as List)) {
@@ -844,7 +844,7 @@ class MarketplaceService {
       if (ids.isEmpty) return const [];
       // auth.users FKs can't embed, so resolve the profiles separately.
       final rows = await supabase
-          .from('users')
+          .from('public_profiles')
           .select('id, name, avatar_url')
           .inFilter('id', ids);
       final byId = <String, Map<String, dynamic>>{

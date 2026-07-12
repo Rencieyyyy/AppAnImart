@@ -129,7 +129,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               'admins(first_name, last_name, pfp, avatar_url), '
               'announcement_views(count), '
               'announcement_likes(count), '
-              'announcement_comments(id, text, created_at, user_id, users(name))')
+              // Comment author names come from the PII-safe public_profiles
+              // view; cross-user SELECT on users is being locked down.
+              'announcement_comments(id, text, created_at, user_id, '
+              'author:public_profiles(name))')
           .isFilter('deleted_at', null)
           // Public posts plus ones addressed to this user (offer notices).
           .or(me == null
@@ -194,7 +197,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
         final commentRows = (r['announcement_comments'] as List?) ?? const [];
         final comments = commentRows.map<Map<String, String>>((c) {
           final cm = c as Map<String, dynamic>;
-          final u = cm['users'] as Map<String, dynamic>?;
+          final u = cm['author'] as Map<String, dynamic>?;
           final name = ((u?['name'] as String?) ?? '').trim();
           final createdAt = (cm['created_at'] as String?) ?? '';
           return {

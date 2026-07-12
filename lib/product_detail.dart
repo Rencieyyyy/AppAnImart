@@ -402,11 +402,15 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   /// Loads the seller's Messenger link for the contact button.
+  ///
+  /// Reads `public_profiles` (not `users`): cross-user SELECT on the base
+  /// table is being locked down to own-row only, and the view projects just
+  /// the PII-safe columns.
   Future<void> _loadSellerMessengerLink(String sellerId) async {
     if (sellerId.isEmpty) return;
     try {
       final row = await supabase
-          .from('users')
+          .from('public_profiles')
           .select('messenger_link')
           .eq('id', sellerId)
           .maybeSingle();
@@ -2292,17 +2296,11 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   String _viber = '';
   String _contactEmail = '';
 
-  // Registration phone/email, shown as a fallback when the seller didn't set a
-  // dedicated public contact phone/email.
-  String _regPhone = '';
-  String _regEmail = '';
-
-  /// The phone/email to actually surface: the opt-in public channel if the
-  /// seller provided one, otherwise their registration value.
-  String get _effectivePhone =>
-      _contactPhone.trim().isNotEmpty ? _contactPhone.trim() : _regPhone.trim();
-  String get _effectiveEmail =>
-      _contactEmail.trim().isNotEmpty ? _contactEmail.trim() : _regEmail.trim();
+  /// The phone/email to surface: only the opt-in public contact channels.
+  /// (The registration phone/email used to be a fallback here, but they are
+  /// private PII and are not exposed by `public_profiles`.)
+  String get _effectivePhone => _contactPhone.trim();
+  String get _effectiveEmail => _contactEmail.trim();
 
   List<Map<String, dynamic>> _activeListings = [];
   List<Map<String, dynamic>> _soldListings = [];
@@ -2395,10 +2393,14 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   Future<void> _loadSellerDetails() async {
     if (sellerId.isEmpty) return;
     try {
+      // public_profiles, not users: cross-user SELECT on the base table is
+      // being locked down to own-row only. The view carries only the opt-in
+      // contact channels — the seller's registration phone/email are private
+      // and are deliberately no longer read here.
       final row = await supabase
-          .from('users')
+          .from('public_profiles')
           .select('avatar_url, messenger_link, contact_phone, '
-              'whatsapp_number, viber_number, contact_email, phone, email')
+              'whatsapp_number, viber_number, contact_email')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
@@ -2411,8 +2413,6 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
         _whatsapp = (row?['whatsapp_number'] as String?)?.trim() ?? '';
         _viber = (row?['viber_number'] as String?)?.trim() ?? '';
         _contactEmail = (row?['contact_email'] as String?)?.trim() ?? '';
-        _regPhone = (row?['phone'] as String?)?.trim() ?? '';
-        _regEmail = (row?['email'] as String?)?.trim() ?? '';
       });
     } catch (_) {
       // Fall back to the default person icon.
