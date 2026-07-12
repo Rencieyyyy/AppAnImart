@@ -2295,6 +2295,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
   String _whatsapp = '';
   String _viber = '';
   String _contactEmail = '';
+  String _facebook = '';
 
   /// The phone/email to surface: only the opt-in public contact channels.
   /// (The registration phone/email used to be a fallback here, but they are
@@ -2400,7 +2401,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       final row = await supabase
           .from('public_profiles')
           .select('avatar_url, messenger_link, contact_phone, '
-              'whatsapp_number, viber_number, contact_email')
+              'whatsapp_number, viber_number, contact_email, facebook_url')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
@@ -2413,6 +2414,7 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
         _whatsapp = (row?['whatsapp_number'] as String?)?.trim() ?? '';
         _viber = (row?['viber_number'] as String?)?.trim() ?? '';
         _contactEmail = (row?['contact_email'] as String?)?.trim() ?? '';
+        _facebook = (row?['facebook_url'] as String?)?.trim() ?? '';
       });
     } catch (_) {
       // Fall back to the default person icon.
@@ -3121,6 +3123,14 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
         color: const Color(0xFF0084FF),
         label: 'Message on Messenger',
         onTap: _openMessenger,
+      ));
+    }
+    if (_facebook.isNotEmpty) {
+      rows.add(_contactRow(
+        icon: Icons.facebook,
+        color: const Color(0xFF1877F2),
+        label: 'Visit Facebook page',
+        onTap: () => _launch(_facebook),
       ));
     }
     if (wa.isNotEmpty) {

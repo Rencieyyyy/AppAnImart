@@ -63,6 +63,7 @@ class _ProfilePageState extends State<ProfilePage> {
   String _whatsapp = '';
   String _viber = '';
   String _contactEmail = '';
+  String _facebook = '';
   // App-facing name of the user's active subscription plan (from the
   // `subscriptions` table managed by the admin website). 'Free' by default.
   String _planName = 'Free';
@@ -207,7 +208,8 @@ class _ProfilePageState extends State<ProfilePage> {
           .select('email, name, phone, address, house_number, business_name, '
               'shop_category, shop_description, messenger_link, avatar_url, '
               'is_seller, sales_count, trust_score, member_since, '
-              'contact_phone, whatsapp_number, viber_number, contact_email')
+              'contact_phone, whatsapp_number, viber_number, contact_email, '
+              'facebook_url')
           .eq('id', user.id)
           .maybeSingle();
 
@@ -232,6 +234,7 @@ class _ProfilePageState extends State<ProfilePage> {
         _whatsapp = (data['whatsapp_number'] as String?) ?? '';
         _viber = (data['viber_number'] as String?) ?? '';
         _contactEmail = (data['contact_email'] as String?) ?? '';
+        _facebook = (data['facebook_url'] as String?) ?? '';
         _avatarUrl = (data['avatar_url'] as String?) ?? '';
         _isSeller = (data['is_seller'] as bool?) ?? false;
         _salesCount = (data['sales_count'] as int?) ?? 0;
@@ -506,6 +509,7 @@ class _ProfilePageState extends State<ProfilePage> {
           initialWhatsapp: _whatsapp,
           initialViber: _viber,
           initialContactEmail: _contactEmail,
+          initialFacebook: _facebook,
           onSave: _saveProfile,
           onAvatarChanged: (url) {
             if (mounted) setState(() => _avatarUrl = url);
@@ -533,6 +537,7 @@ class _ProfilePageState extends State<ProfilePage> {
     String whatsapp = '',
     String viber = '',
     String contactEmail = '',
+    String facebook = '',
     PhCity? location,
   }) async {
     final user = supabase.auth.currentUser;
@@ -573,6 +578,7 @@ class _ProfilePageState extends State<ProfilePage> {
             'viber_number': viber.trim().isEmpty ? null : viber.trim(),
             'contact_email':
                 contactEmail.trim().isEmpty ? null : contactEmail.trim(),
+            'facebook_url': _normalizeFacebookLink(facebook),
             // Coordinates power "Explore near you" distances.
             if (location != null) 'location_name': location.label,
             if (location != null) 'latitude': location.lat,
@@ -582,7 +588,8 @@ class _ProfilePageState extends State<ProfilePage> {
           // Explicit columns: `select *` fails under users' column grants.
           .select('name, phone, address, house_number, business_name, '
               'shop_category, shop_description, messenger_link, '
-              'contact_phone, whatsapp_number, viber_number, contact_email')
+              'contact_phone, whatsapp_number, viber_number, contact_email, '
+              'facebook_url')
           .maybeSingle();
 
       if (row == null) {
@@ -621,6 +628,7 @@ class _ProfilePageState extends State<ProfilePage> {
           _whatsapp = (row['whatsapp_number'] as String?) ?? '';
           _viber = (row['viber_number'] as String?) ?? '';
           _contactEmail = (row['contact_email'] as String?) ?? '';
+          _facebook = (row['facebook_url'] as String?) ?? '';
         });
       }
       return null;
@@ -1099,6 +1107,25 @@ class _ProfilePageState extends State<ProfilePage> {
   /// Validates and normalises a Facebook Messenger link. Accepts
   /// m.me/<name> or messenger.com/t/<name>, with or without https:// and
   /// www. — returns the canonical https:// URL, or null when invalid.
+  /// Normalizes the optional Facebook contact link. Blank means "not
+  /// provided" (stored as null so the profile hides the button). Accepts a
+  /// full URL, "facebook.com/name", "fb.com/name", or a bare page/username,
+  /// and always stores a https://facebook.com/... URL.
+  static String? _normalizeFacebookLink(String input) {
+    var v = input.trim();
+    if (v.isEmpty) return null;
+    v = v
+        .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'^www\.', caseSensitive: false), '');
+    final lower = v.toLowerCase();
+    if (lower.startsWith('fb.com/')) {
+      v = 'facebook.com/${v.substring('fb.com/'.length)}';
+    } else if (!lower.startsWith('facebook.com/')) {
+      v = 'facebook.com/$v';
+    }
+    return 'https://$v';
+  }
+
   static String? _normalizeMessengerLink(String input) {
     var v = input.trim();
     if (v.isEmpty) return null;
@@ -4165,6 +4192,7 @@ class _EditProfilePage extends StatefulWidget {
   final String initialWhatsapp;
   final String initialViber;
   final String initialContactEmail;
+  final String initialFacebook;
   final Future<String?> Function({
     required String name,
     required String phone,
@@ -4178,6 +4206,7 @@ class _EditProfilePage extends StatefulWidget {
     String whatsapp,
     String viber,
     String contactEmail,
+    String facebook,
     PhCity? location,
   }) onSave;
   final ValueChanged<String> onAvatarChanged;
@@ -4199,6 +4228,7 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialWhatsapp,
     required this.initialViber,
     required this.initialContactEmail,
+    required this.initialFacebook,
     required this.onSave,
     required this.onAvatarChanged,
   });
@@ -4222,6 +4252,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _whatsappCtrl;
   late final TextEditingController _viberCtrl;
   late final TextEditingController _contactEmailCtrl;
+  late final TextEditingController _facebookCtrl;
   late String _shopCategory;
   late String _avatarUrl;
   // Address is picked from the PH city/municipality gazetteer, not typed.
@@ -4253,6 +4284,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _whatsappCtrl = TextEditingController(text: widget.initialWhatsapp);
     _viberCtrl = TextEditingController(text: widget.initialViber);
     _contactEmailCtrl = TextEditingController(text: widget.initialContactEmail);
+    _facebookCtrl = TextEditingController(text: widget.initialFacebook);
     _shopCategory = widget.initialShopCategory;
     _avatarUrl = widget.initialAvatarUrl;
   }
@@ -4269,6 +4301,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _whatsappCtrl.dispose();
     _viberCtrl.dispose();
     _contactEmailCtrl.dispose();
+    _facebookCtrl.dispose();
     super.dispose();
   }
 
@@ -4289,6 +4322,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       whatsapp: _whatsappCtrl.text.trim(),
       viber: _viberCtrl.text.trim(),
       contactEmail: _contactEmailCtrl.text.trim(),
+      facebook: _facebookCtrl.text.trim(),
     );
     if (!mounted) return;
     if (error == null) {
@@ -4597,6 +4631,8 @@ class _EditProfilePageState extends State<_EditProfilePage> {
                 ]),
             _row('Email', _contactEmailCtrl, 'Public contact email',
                 type: TextInputType.emailAddress),
+            _row('Facebook', _facebookCtrl, 'facebook.com/yourpage',
+                type: TextInputType.url),
           ],
           const SizedBox(height: 24),
         ],
