@@ -645,11 +645,20 @@ class _ProfilePageState extends State<ProfilePage> {
   /// seller. Returns null on success, or an error message describing the
   /// failure. State is updated optimistically by the caller, so on failure we
   /// surface the message but keep the entered values on screen.
+  ///
+  /// The optional contact channels are only written when non-null (Shop
+  /// Settings passes them; Become a Seller doesn't, so it can't wipe values
+  /// a seller already saved). A non-null empty string clears the channel.
   Future<String?> _saveSellerDetails({
     required String businessName,
     required String shopDescription,
     required String shopCategory,
     String? messengerLink,
+    String? contactPhone,
+    String? whatsapp,
+    String? viber,
+    String? contactEmail,
+    String? facebook,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
@@ -664,6 +673,21 @@ class _ProfilePageState extends State<ProfilePage> {
             'shop_description': shopDescription,
             'shop_category': shopCategory,
             if (messengerLink != null) 'messenger_link': messengerLink,
+            // Empty strings are stored as null so the profile treats them
+            // as "not provided" and hides the button.
+            if (contactPhone != null)
+              'contact_phone':
+                  contactPhone.trim().isEmpty ? null : contactPhone.trim(),
+            if (whatsapp != null)
+              'whatsapp_number':
+                  whatsapp.trim().isEmpty ? null : whatsapp.trim(),
+            if (viber != null)
+              'viber_number': viber.trim().isEmpty ? null : viber.trim(),
+            if (contactEmail != null)
+              'contact_email':
+                  contactEmail.trim().isEmpty ? null : contactEmail.trim(),
+            if (facebook != null)
+              'facebook_url': _normalizeFacebookLink(facebook),
           })
           .eq('id', user.id)
           // Only checked for null; `select *` fails under column grants.
@@ -1516,6 +1540,11 @@ class _ProfilePageState extends State<ProfilePage> {
     final shopNameCtrl = TextEditingController(text: _businessName);
     final shopDescCtrl = TextEditingController(text: _shopDescription);
     final messengerCtrl = TextEditingController(text: _messengerLink);
+    final contactPhoneCtrl = TextEditingController(text: _contactPhone);
+    final whatsappCtrl = TextEditingController(text: _whatsapp);
+    final viberCtrl = TextEditingController(text: _viber);
+    final contactEmailCtrl = TextEditingController(text: _contactEmail);
+    final facebookCtrl = TextEditingController(text: _facebook);
     String? selectedCategory = _shopCategory.isNotEmpty ? _shopCategory : null;
     const categories = [
       'Poultry',
@@ -1646,6 +1675,36 @@ class _ProfilePageState extends State<ProfilePage> {
                   const SizedBox(height: 10),
                   _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
                       Icons.link_outlined),
+                  const SizedBox(height: 18),
+
+                  // Optional contact channels — same set as the Edit Profile
+                  // screen; blank hides the button on the seller profile.
+                  const Text('Contact options (optional)',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF3AA876))),
+                  const SizedBox(height: 4),
+                  const Text(
+                      'Shown as buttons on your public seller profile. '
+                      'Leave any blank to hide it.',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.black45, height: 1.3)),
+                  const SizedBox(height: 10),
+                  _editField(contactPhoneCtrl, 'Public number (call & SMS)',
+                      Icons.call_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(whatsappCtrl, 'WhatsApp number',
+                      Icons.chat_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(viberCtrl, 'Viber number',
+                      Icons.message_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(contactEmailCtrl, 'Public contact email',
+                      Icons.email_outlined, type: TextInputType.emailAddress),
+                  const SizedBox(height: 10),
+                  _editField(facebookCtrl, 'facebook.com/yourpage',
+                      Icons.facebook, type: TextInputType.url),
                   const SizedBox(height: 20),
 
                   SizedBox(
@@ -1669,18 +1728,34 @@ class _ProfilePageState extends State<ProfilePage> {
                         final shopDescription = shopDescCtrl.text.trim();
                         final shopCategory = selectedCategory ?? '';
 
+                        final contactPhone = contactPhoneCtrl.text.trim();
+                        final whatsapp = whatsappCtrl.text.trim();
+                        final viber = viberCtrl.text.trim();
+                        final contactEmail = contactEmailCtrl.text.trim();
+                        final facebook = facebookCtrl.text.trim();
+
                         Navigator.pop(ctx);
                         setState(() {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
                           _messengerLink = messengerLink;
+                          _contactPhone = contactPhone;
+                          _whatsapp = whatsapp;
+                          _viber = viber;
+                          _contactEmail = contactEmail;
+                          _facebook = _normalizeFacebookLink(facebook) ?? '';
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
                           messengerLink: messengerLink,
+                          contactPhone: contactPhone,
+                          whatsapp: whatsapp,
+                          viber: viber,
+                          contactEmail: contactEmail,
+                          facebook: facebook,
                         );
                         if (!mounted) return;
                         if (error != null) {
