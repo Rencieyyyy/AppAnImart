@@ -1,7 +1,24 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'profile.dart';
+import 'main.dart';
+import 'services/notification_service.dart';
+import 'widgets/top_message.dart';
+
+/// Lets horizontal lists be swiped with any pointer (mouse/trackpad included),
+/// so the filter chips scroll on desktop and web too.
+class _DragScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
+}
 
 class AnnouncementPage extends StatefulWidget {
   const AnnouncementPage({super.key});
@@ -12,74 +29,267 @@ class AnnouncementPage extends StatefulWidget {
 
 class _AnnouncementPageState extends State<AnnouncementPage> {
   int _selectedIndex = 2;
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-  String _filterStatus = 'All'; // 'All', 'Active', 'Pending'
+  // Top-level tab: the main news feed vs. the personal offer notices.
+  String _activeTab = 'announcements'; // 'announcements', 'offers'
+  String _filterType = 'All'; // 'All', 'General', 'Urgent', 'Event', 'Promo'
+  String _audienceFilter = 'all'; // 'all', 'buyers', 'sellers'
 
-  final List<Map<String, dynamic>> _announcements = [
-    {
-      'admin': 'Admin',
-      'time': '15 days ago',
-      'status': 'Active',
-      'title': 'Test Announcement',
-      'body':
-          'Good morning! Please take note of the latest updates regarding our turkey livestock availability this season.',
-      'image': 'images/turkey.png',
-      'tags': ['Poultry', 'Turkey'],
-      'likes': 12,
-      'liked': false,
-      'views': 84,
-      'avatarColor': const Color(0xFF5CC898),
-      'comments': <Map<String, String>>[
-        {'user': 'Juan dela Cruz', 'text': 'Where can I buy?', 'time': '2 days ago'},
-        {'user': 'Maria Santos', 'text': 'How much per kilo?', 'time': '1 day ago'},
-      ],
-    },
-    {
-      'admin': 'Admin',
-      'time': '15 days ago',
-      'status': 'Active',
-      'title': 'New Stock Available',
-      'body':
-          'Good morning! We have a fresh batch of healthy goats ready for sale. Contact us for pricing and delivery.',
-      'image': 'images/whitehen.png',
-      'tags': ['Livestock', 'Goat'],
-      'likes': 7,
-      'liked': false,
-      'views': 51,
-      'avatarColor': const Color(0xFFD85A30),
-      'comments': <Map<String, String>>[
-        {'user': 'Pedro Reyes', 'text': 'Interested! How many heads available?', 'time': '3 days ago'},
-      ],
-    },
-    {
-      'admin': 'Admin',
-      'time': '20 days ago',
-      'status': 'Pending',
-      'title': 'Duck Farm Update',
-      'body':
-          'Our duck farm is expanding! Pekin and Muscovy ducks will be available by next week. Reserve yours now.',
-      'image': 'images/duck.png',
-      'tags': ['Aquatics', 'Duck'],
-      'likes': 3,
-      'liked': false,
-      'views': 29,
-      'avatarColor': const Color(0xFF378ADD),
-      'comments': <Map<String, String>>[],
-    },
+  static const List<String> _typeFilters = ['All', 'General', 'Urgent', 'Event', 'Promo'];
+
+  // Audience filter options shown in the dropdown beside "Latest Posts".
+  static const List<Map<String, dynamic>> _audienceFilters = [
+    {'value': 'all', 'label': 'All', 'icon': Icons.groups_outlined},
+    {'value': 'buyers', 'label': 'Buyers', 'icon': Icons.shopping_cart_outlined},
+    {'value': 'sellers', 'label': 'Sellers', 'icon': Icons.storefront_outlined},
   ];
+
+  // Display label + colors for the audience tag on each post.
+  // [background, border, foreground]
+  static const Map<String, List<Color>> _audienceColors = {
+    'buyers': [Color(0xFFE7F0FB), Color(0xFFC3DBF5), Color(0xFF2563EB)],
+    'sellers': [Color(0xFFF3E9FB), Color(0xFFE0C8F2), Color(0xFF7E3FB0)],
+  };
+  static const Map<String, IconData> _audienceIcons = {
+    'buyers': Icons.shopping_cart_outlined,
+    'sellers': Icons.storefront_outlined,
+  };
+
+  // Icon shown on each filter tab.
+  static const Map<String, IconData> _typeIcons = {
+    'All': Icons.grid_view_rounded,
+    'General': Icons.info_outline,
+    'Urgent': Icons.warning_amber_rounded,
+    'Event': Icons.calendar_today_outlined,
+    'Promo': Icons.local_offer_outlined,
+    'Offers': Icons.pan_tool_outlined,
+  };
+
+  // Icon per tag category (keyed lowercase).
+  static const Map<String, IconData> _tagIcons = {
+    'general': Icons.info_outline,
+    'urgent': Icons.warning_amber_rounded,
+    'event': Icons.calendar_today_outlined,
+    'promo': Icons.local_offer_outlined,
+    'offer': Icons.pan_tool_outlined,
+  };
+
+  // Colors per tag category: [background, border, foreground].
+  static const Map<String, List<Color>> _tagColors = {
+    'general': [Color(0xFFE8F8F1), Color(0xFFC2EDD9), Color(0xFF27803F)],
+    'urgent': [Color(0xFFFDECEC), Color(0xFFF5C2C2), Color(0xFFE53E3E)],
+    'event': [Color(0xFFE7F0FB), Color(0xFFC3DBF5), Color(0xFF2563EB)],
+    'promo': [Color(0xFFFEF3E2), Color(0xFFFDE08D), Color(0xFFB45309)],
+    'offer': [Color(0xFFFDEEEB), Color(0xFFF7CCC3), Color(0xFFC94F3D)],
+  };
+
+  bool _loading = true;
+  String? _loadError;
+  String _currentUserName = 'You';
+  final List<Map<String, dynamic>> _announcements = [];
+
+  static const List<Color> _avatarColors = [
+    Color(0xFF5CC898),
+    Color(0xFFD85A30),
+    Color(0xFF378ADD),
+    Color(0xFF9B59B6),
+    Color(0xFFE0A526),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAnnouncements();
+    // Visiting this page clears the red dot on the announcements nav icon.
+    NotificationService.markAnnouncementsSeen();
+  }
+
+  Future<void> _loadAnnouncements() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      // Cache the current user's display name for newly posted comments.
+      final me = supabase.auth.currentUser;
+      if (me != null) {
+        try {
+          final prof = await supabase
+              .from('users')
+              .select('name')
+              .eq('id', me.id)
+              .maybeSingle();
+          final n = (prof?['name'] as String?)?.trim();
+          if (n != null && n.isNotEmpty) _currentUserName = n;
+        } catch (_) {/* keep default */}
+      }
+
+      final rows = await supabase
+          .from('announcements')
+          .select('*, announcement_tags(tag), '
+              'admins(first_name, last_name, pfp, avatar_url), '
+              'announcement_views(count), '
+              'announcement_likes(count), '
+              // Comment author names come from the PII-safe public_profiles
+              // view; cross-user SELECT on users is being locked down.
+              'announcement_comments(id, text, created_at, user_id, '
+              'author:public_profiles(name))')
+          .isFilter('deleted_at', null)
+          // Public posts plus ones addressed to this user (offer notices).
+          .or(me == null
+              ? 'recipient_id.is.null'
+              : 'recipient_id.is.null,recipient_id.eq.${me.id}')
+          .order('created_at', ascending: false);
+
+      // Which announcements the current user has already liked.
+      final likedIds = <String>{};
+      if (me != null) {
+        try {
+          final likeRows = await supabase
+              .from('announcement_likes')
+              .select('announcement_id')
+              .eq('user_id', me.id);
+          for (final l in likeRows) {
+            final aid = l['announcement_id'];
+            if (aid != null) likedIds.add(aid.toString());
+          }
+        } catch (e) {
+          debugPrint('Failed to load user likes: $e');
+        }
+      }
+
+      final mapped = <Map<String, dynamic>>[];
+      for (var i = 0; i < rows.length; i++) {
+        final r = rows[i];
+        // Drafts and pending announcements are not shown to mobile users.
+        final statusLower = ((r['status'] as String?) ?? '').toLowerCase();
+        if (statusLower == 'draft' || statusLower == 'pending') continue;
+        // Tags come from the announcement_tags join table.
+        final tagRows = (r['announcement_tags'] as List?) ?? const [];
+        final tags = tagRows
+            .map((t) => (t as Map<String, dynamic>)['tag'] as String?)
+            .whereType<String>()
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
+        // Author details come from the admins table via admin_id.
+        final admin = r['admins'] as Map<String, dynamic>?;
+        final first = ((admin?['first_name'] as String?) ?? '').trim();
+        final last = ((admin?['last_name'] as String?) ?? '').trim();
+        final adminName =
+            [first, last].where((s) => s.isNotEmpty).join(' ').trim();
+        // The admin panel saves the uploaded picture to `pfp`; `avatar_url`
+        // is a legacy column kept as a fallback for older accounts.
+        final pfp = (admin?['pfp'] as String?)?.trim() ?? '';
+        final adminAvatar =
+            pfp.isNotEmpty ? pfp : ((admin?['avatar_url'] as String?) ?? '');
+        // Unique view count comes from the announcement_views aggregate.
+        final viewAgg = r['announcement_views'] as List?;
+        final viewsCount = (viewAgg != null && viewAgg.isNotEmpty)
+            ? ((viewAgg.first as Map<String, dynamic>)['count'] as int? ?? 0)
+            : 0;
+        // Like count from the announcement_likes aggregate; liked = this user.
+        final likeAgg = r['announcement_likes'] as List?;
+        final likesCount = (likeAgg != null && likeAgg.isNotEmpty)
+            ? ((likeAgg.first as Map<String, dynamic>)['count'] as int? ?? 0)
+            : 0;
+        final liked = likedIds.contains(r['id'].toString());
+        // Comments come from announcement_comments, with author name from users.
+        final commentRows = (r['announcement_comments'] as List?) ?? const [];
+        final comments = commentRows.map<Map<String, String>>((c) {
+          final cm = c as Map<String, dynamic>;
+          final u = cm['author'] as Map<String, dynamic>?;
+          final name = ((u?['name'] as String?) ?? '').trim();
+          final createdAt = (cm['created_at'] as String?) ?? '';
+          return {
+            'user': name.isNotEmpty ? name : 'User',
+            'text': (cm['text'] as String?) ?? '',
+            'time': _timeAgo(createdAt),
+            'created_at': createdAt,
+          };
+        }).toList()
+          ..sort((a, b) => (a['created_at'] ?? '').compareTo(b['created_at'] ?? ''));
+        mapped.add({
+          'id': r['id'],
+          'admin': adminName.isNotEmpty ? adminName : 'Admin',
+          'adminAvatar': adminAvatar,
+          'time': _timeAgo(r['created_at'] as String?),
+          'status': _prettyStatus(r['status'] as String?),
+          'audience': ((r['audience'] as String?) ?? 'all').toLowerCase(),
+          'type': (r['type'] as String?) ?? '',
+          'title': (r['title'] as String?) ?? '',
+          'body': (r['body'] as String?) ?? '',
+          'image': (r['image_url'] as String?) ?? '',
+          'tags': tags,
+          'likes': likesCount,
+          'liked': liked,
+          'views': viewsCount,
+          'avatarColor': _avatarColors[i % _avatarColors.length],
+          'comments': comments,
+        });
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _announcements
+          ..clear()
+          ..addAll(mapped);
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load announcements: $e');
+      if (!mounted) return;
+      setState(() {
+        _loadError = e is PostgrestException ? e.message : e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  String _prettyStatus(String? status) {
+    if (status == null || status.isEmpty) return 'Active';
+    return status[0].toUpperCase() + status.substring(1).toLowerCase();
+  }
+
+  String _timeAgo(String? isoDate) {
+    if (isoDate == null) return '';
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return '';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays >= 365) return '${(diff.inDays / 365).floor()} year(s) ago';
+    if (diff.inDays >= 30) return '${(diff.inDays / 30).floor()} month(s) ago';
+    if (diff.inDays >= 1) return '${diff.inDays} day(s) ago';
+    if (diff.inHours >= 1) return '${diff.inHours} hour(s) ago';
+    if (diff.inMinutes >= 1) return '${diff.inMinutes} minute(s) ago';
+    return 'Just now';
+  }
 
   // ── Filtered list ──────────────────────────────────────────────────────
   List<Map<String, dynamic>> get _filtered {
     return _announcements.where((item) {
-      final q = _searchQuery.toLowerCase();
-      final matchesSearch = q.isEmpty ||
-          (item['title'] as String).toLowerCase().contains(q) ||
-          (item['body'] as String).toLowerCase().contains(q) ||
-          (item['tags'] as List<String>).any((t) => t.toLowerCase().contains(q));
-      final matchesFilter =
-          _filterStatus == 'All' || item['status'] == _filterStatus;
-      return matchesSearch && matchesFilter;
+      // The announcement's category lives in its tags (announcement_tags.tag).
+      final tags =
+          (item['tags'] as List<String>).map((t) => t.toLowerCase()).toList();
+      // Personal offer notices carry the 'offer' tag. They live only on the
+      // Offers tab; the main Announcements tab excludes them.
+      final isOffer = tags.contains('offer');
+      if (_activeTab == 'offers') {
+        if (!isOffer) return false;
+      } else if (isOffer) {
+        return false;
+      }
+      // Type filter applies to the Announcements tab only (offers share one
+      // tag, so the type chips are hidden there).
+      final selected = _filterType.toLowerCase();
+      final matchesFilter = _activeTab == 'offers' || _filterType == 'All'
+          ? true
+          : (tags.isEmpty ? selected == 'general' : tags.contains(selected));
+      // Audience filter: 'all' selection shows everything; otherwise show
+      // posts targeted at that audience plus posts meant for everyone.
+      final audience = (item['audience'] as String? ?? 'all').toLowerCase();
+      final matchesAudience = _audienceFilter == 'all' ||
+          audience == _audienceFilter ||
+          audience == 'all';
+      return matchesFilter && matchesAudience;
     }).toList();
   }
 
@@ -114,16 +324,51 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   }
 
   // ── Like toggle ────────────────────────────────────────────────────────
-  void _toggleLike(int originalIndex) {
+  Future<void> _toggleLike(int originalIndex) async {
+    final user = supabase.auth.currentUser;
+    final id = _announcements[originalIndex]['id'];
+    final wasLiked = _announcements[originalIndex]['liked'] as bool;
+
+    // Optimistically update the UI first.
     setState(() {
-      final liked = _announcements[originalIndex]['liked'] as bool;
-      _announcements[originalIndex]['liked'] = !liked;
+      _announcements[originalIndex]['liked'] = !wasLiked;
       _announcements[originalIndex]['likes'] =
-          (_announcements[originalIndex]['likes'] as int) + (liked ? -1 : 1);
+          (_announcements[originalIndex]['likes'] as int) + (wasLiked ? -1 : 1);
     });
+
+    if (user == null) return;
+    try {
+      if (wasLiked) {
+        // Unlike: remove this user's like row.
+        await supabase
+            .from('announcement_likes')
+            .delete()
+            .eq('announcement_id', id)
+            .eq('user_id', user.id);
+      } else {
+        // Like: insert (upsert avoids duplicates if the row already exists).
+        await supabase.from('announcement_likes').upsert(
+          {'announcement_id': id, 'user_id': user.id},
+          onConflict: 'announcement_id,user_id',
+          ignoreDuplicates: true,
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to toggle like: $e');
+      // Roll back the optimistic change on failure.
+      if (!mounted) return;
+      setState(() {
+        _announcements[originalIndex]['liked'] = wasLiked;
+        _announcements[originalIndex]['likes'] =
+            (_announcements[originalIndex]['likes'] as int) + (wasLiked ? 1 : -1);
+      });
+    }
   }
 
   // ── See All bottom sheet ───────────────────────────────────────────────
+  // Kept for potential future use; the "See All" button was removed from the
+  // header in favor of the audience dropdown.
+  // ignore: unused_element
   void _showSeeAll() {
     showModalBottomSheet(
       context: context,
@@ -174,13 +419,13 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                 child: Row(
-                  children: ['All', 'Active', 'Pending'].map((f) {
-                    final isSelected = _filterStatus == f;
+                  children: _typeFilters.map((f) {
+                    final isSelected = _filterType == f;
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: GestureDetector(
                         onTap: () {
-                          setState(() => _filterStatus = f);
+                          setState(() => _filterType = f);
                           Navigator.pop(ctx);
                         },
                         child: Container(
@@ -230,13 +475,39 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
   }
 
   // ── Full detail bottom sheet ───────────────────────────────────────────
+  // Records a view for the current account, but only once per post.
+  // The unique (announcement_id, user_id) constraint guarantees one view
+  // per account even across sessions/devices.
+  Future<void> _registerView(int originalIndex) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    final id = _announcements[originalIndex]['id'];
+    try {
+      final existing = await supabase
+          .from('announcement_views')
+          .select('id')
+          .eq('announcement_id', id)
+          .eq('user_id', user.id)
+          .maybeSingle();
+      if (existing != null) return; // already counted for this account
+      await supabase.from('announcement_views').insert({
+        'announcement_id': id,
+        'user_id': user.id,
+      });
+      if (!mounted) return;
+      setState(() {
+        _announcements[originalIndex]['views'] =
+            (_announcements[originalIndex]['views'] as int) + 1;
+      });
+    } catch (e) {
+      debugPrint('Failed to register view: $e');
+    }
+  }
+
   void _showDetail(int originalIndex) {
     final item = _announcements[originalIndex];
-    // Increment views
-    setState(() {
-      _announcements[originalIndex]['views'] =
-          (_announcements[originalIndex]['views'] as int) + 1;
-    });
+    // Register a unique view (one per account) and persist it.
+    _registerView(originalIndex);
 
     showModalBottomSheet(
       context: context,
@@ -297,23 +568,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                       // Tags
                       Wrap(
                         spacing: 6,
-                        children: (item['tags'] as List<String>).map((tag) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F8F1),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color: const Color(0xFFC2EDD9)),
-                            ),
-                            child: Text(tag,
-                                style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w500,
-                                    color: Color(0xFF27803F))),
-                          );
-                        }).toList(),
+                        runSpacing: 6,
+                        children: (item['tags'] as List<String>)
+                            .map((tag) => _tagChip(tag, fontSize: 11))
+                            .toList(),
                       ),
                       const SizedBox(height: 12),
                       // Title
@@ -329,17 +587,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                       // Admin row
                       Row(
                         children: [
-                          CircleAvatar(
-                            radius: 14,
-                            backgroundColor: item['avatarColor'] as Color,
-                            child: Text(
-                              (item['admin'] as String)[0],
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12),
-                            ),
-                          ),
+                          _adminAvatar(item, radius: 14, fontSize: 12),
                           const SizedBox(width: 8),
                           Text(item['admin'] as String,
                               style: const TextStyle(
@@ -355,29 +603,14 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                                   fontSize: 11, color: Colors.black38)),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      // Image
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: Image.asset(
-                          item['image'] as String,
-                          width: double.infinity,
-                          height: 200,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
-                            width: double.infinity,
-                            height: 200,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F8F1),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: const Icon(
-                                Icons.image_not_supported_outlined,
-                                color: Colors.white54,
-                                size: 40),
-                          ),
+                      if ((item['image'] as String).isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        // Image
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: _announcementImage(item['image'] as String, 200),
                         ),
-                      ),
+                      ],
                       const SizedBox(height: 14),
                       // Body
                       Text(
@@ -565,13 +798,14 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                         if (text.isEmpty) return;
                         setLocal(() {
                           comments.add({
-                            'user': 'You',
+                            'user': _currentUserName,
                             'text': text,
                             'time': 'Just now',
                           });
                         });
                         setState(() {});
                         commentController.clear();
+                        _persistComment(originalIndex, text);
                       },
                       decoration: const InputDecoration(
                         hintText: 'Write a comment...',
@@ -591,13 +825,14 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                     if (text.isEmpty) return;
                     setLocal(() {
                       comments.add({
-                        'user': 'You',
+                        'user': _currentUserName,
                         'text': text,
                         'time': 'Just now',
                       });
                     });
                     setState(() {});
                     commentController.clear();
+                    _persistComment(originalIndex, text);
                   },
                   child: Container(
                     width: 38,
@@ -860,20 +1095,45 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     );
   }
 
-  void _postComment(
+  // Saves a single comment to Supabase for the given announcement.
+  Future<void> _persistComment(int originalIndex, String text) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    try {
+      await supabase.from('announcement_comments').insert({
+        'announcement_id': _announcements[originalIndex]['id'],
+        'user_id': user.id,
+        'text': text,
+      });
+      // Commenting also counts as viewing the post. _registerView is
+      // deduplicated per account, so this never adds a second view.
+      await _registerView(originalIndex);
+    } catch (e) {
+      debugPrint('Failed to save comment: $e');
+      if (mounted) {
+        showTopMessage(context, 'Could not save comment. Try again.');
+      }
+    }
+  }
+
+  Future<void> _postComment(
     List<Map<String, String>> comments,
     TextEditingController controller,
     StateSetter setSheetState,
     ScrollController scrollController,
     int originalIndex,
-  ) {
+  ) async {
     final text = controller.text.trim();
     if (text.isEmpty) return;
+    controller.clear();
+
+    // Show the comment immediately, then persist it.
     setSheetState(() {
-      comments.add({'user': 'You', 'text': text, 'time': 'Just now'});
+      comments.add({'user': _currentUserName, 'text': text, 'time': 'Just now'});
     });
     setState(() {});
-    controller.clear();
+    await _persistComment(originalIndex, text);
+
     Future.delayed(const Duration(milliseconds: 100), () {
       if (scrollController.hasClients) {
         scrollController.animateTo(
@@ -916,142 +1176,110 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                   child: const Icon(Icons.arrow_back,
                       color: Colors.white, size: 24),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Announcements',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Stay updated with the latest farm news',
-                  style: TextStyle(fontSize: 13, color: Colors.white70),
-                ),
-                const SizedBox(height: 16),
-                // ── Functional Search Bar ─────────────────────────
-                Container(
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.95),
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 14),
-                      const Icon(Icons.search,
-                          color: Color(0xFF6DBF99), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
-                          controller: _searchController,
-                          onChanged: (val) =>
-                              setState(() => _searchQuery = val),
-                          style: const TextStyle(
-                              fontSize: 13, color: Colors.black87),
-                          decoration: const InputDecoration(
-                            hintText: 'Search announcements...',
-                            hintStyle:
-                                TextStyle(color: Colors.black38, fontSize: 13),
-                            border: InputBorder.none,
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      if (_searchQuery.isNotEmpty)
-                        GestureDetector(
-                          onTap: () {
-                            _searchController.clear();
-                            setState(() => _searchQuery = '');
-                          },
-                          child: const Padding(
-                            padding: EdgeInsets.only(right: 12),
-                            child: Icon(Icons.close,
-                                color: Colors.black38, size: 18),
-                          ),
-                        ),
-                    ],
-                  ),
+                const SizedBox(height: 14),
+                // ── Announcements / Offers tabs ───────────────────
+                Row(
+                  children: [
+                    _headerTab('Announcements', 'announcements'),
+                    Container(
+                      width: 1,
+                      height: 30,
+                      color: Colors.white38,
+                      margin: const EdgeInsets.symmetric(horizontal: 18),
+                    ),
+                    _headerTab('Offers', 'offers'),
+                  ],
                 ),
               ],
             ),
           ),
 
-          // ── Filter chips ──────────────────────────────────────────
+          // ── Section label + See All ───────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
             child: Row(
               children: [
-                // Section label
-                Expanded(
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF6DBF99),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Latest Posts',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A2E22),
-                        ),
-                      ),
-                    ],
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF6DBF99),
+                    borderRadius: BorderRadius.circular(3),
                   ),
                 ),
-                // Filter chips
-                ...['All', 'Active', 'Pending'].map((f) {
-                  final isSelected = _filterStatus == f;
-                  return Padding(
-                    padding: const EdgeInsets.only(left: 6),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _filterStatus = f),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
+                const SizedBox(width: 8),
+                const Text(
+                  'Latest Posts',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1A2E22),
+                  ),
+                ),
+                const Spacer(),
+                _buildAudienceDropdown(),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // ── Type filter chips (swipeable with touch or mouse) ─────
+          // Hidden on the Offers tab: offer notices all share the 'offer' tag,
+          // so the category chips have nothing to sort there.
+          if (_activeTab != 'offers')
+          SizedBox(
+            height: 32,
+            child: ScrollConfiguration(
+              behavior: _DragScrollBehavior(),
+              child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              children: _typeFilters.map((f) {
+                final isSelected = _filterType == f;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _filterType = f),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? const Color(0xFF6DBF99)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
                           color: isSelected
                               ? const Color(0xFF6DBF99)
-                              : Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: isSelected
-                                ? const Color(0xFF6DBF99)
-                                : Colors.black12,
-                          ),
-                        ),
-                        child: Text(
-                          f,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: isSelected ? Colors.white : Colors.black54,
-                          ),
+                              : Colors.black12,
                         ),
                       ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _typeIcons[f] ?? Icons.label_outline,
+                            size: 14,
+                            color: isSelected ? Colors.white : Colors.black45,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            f,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color:
+                                  isSelected ? Colors.white : Colors.black54,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  );
-                }),
-                const SizedBox(width: 8),
-                // See All
-                GestureDetector(
-                  onTap: _showSeeAll,
-                  child: const Text(
-                    'See All',
-                    style: TextStyle(
-                        fontSize: 12, color: Color(0xFF3AA876)),
                   ),
-                ),
-              ],
+                );
+              }).toList(),
+              ),
             ),
           ),
 
@@ -1059,26 +1287,61 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
 
           // ── Feed ──────────────────────────────────────────────────
           Expanded(
-            child: filtered.isEmpty
+            child: _loading
+                ? const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+                  )
+                : _loadError != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.cloud_off_rounded,
+                              size: 52, color: Colors.black12),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Could not load announcements.\n$_loadError',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.black38, fontSize: 13),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _loadAnnouncements,
+                            child: const Text('Retry',
+                                style: TextStyle(
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : filtered.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.search_off_rounded,
-                            size: 52, color: Colors.black12),
+                        Icon(
+                            _activeTab == 'offers'
+                                ? Icons.pan_tool_outlined
+                                : Icons.search_off_rounded,
+                            size: 52,
+                            color: Colors.black12),
                         const SizedBox(height: 12),
                         Text(
-                          _searchQuery.isNotEmpty
-                              ? 'No results for "$_searchQuery"'
+                          _activeTab == 'offers'
+                              ? 'No offers yet.'
                               : 'No announcements found.',
                           style: const TextStyle(
                               color: Colors.black38, fontSize: 14),
                         ),
-                        if (_filterStatus != 'All') ...[
+                        if (_filterType != 'All') ...[
                           const SizedBox(height: 8),
                           GestureDetector(
                             onTap: () =>
-                                setState(() => _filterStatus = 'All'),
+                                setState(() => _filterType = 'All'),
                             child: const Text(
                               'Clear filter',
                               style: TextStyle(
@@ -1138,6 +1401,257 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
     );
   }
 
+  /// A tag chip colored + iconed by its category (General/Urgent/Event/Promo).
+  /// Unknown tags (e.g. content tags) fall back to a neutral style.
+  // Storage bucket that holds admin avatar images.
+  static const String _avatarBucket = 'avatar';
+
+  // Resolves a stored avatar value into a usable image URL.
+  //
+  // Accepts either a full http(s) URL (used as-is) or a Supabase Storage
+  // path within the avatar bucket (e.g. "<id>/avatar.png" or
+  // "avatar/<id>/avatar.png"), which is turned into a public URL. Returns an
+  // empty string when there is nothing to show.
+  String _resolveAvatarUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+    if (value.startsWith('http')) return value;
+
+    var path = value.startsWith('/') ? value.substring(1) : value;
+    // Tolerate values that redundantly include the bucket name as a prefix.
+    if (path.startsWith('$_avatarBucket/')) {
+      path = path.substring(_avatarBucket.length + 1);
+    }
+    if (path.isEmpty) return '';
+    try {
+      return supabase.storage.from(_avatarBucket).getPublicUrl(path);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // Renders the posting admin's avatar: their uploaded photo when available,
+  // otherwise a colored circle with the first letter of their name.
+  Widget _adminAvatar(Map<String, dynamic> item,
+      {required double radius, required double fontSize}) {
+    final url = _resolveAvatarUrl(item['adminAvatar'] as String? ?? '');
+    final name = (item['admin'] as String?) ?? 'Admin';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'A';
+    if (url.isNotEmpty) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: item['avatarColor'] as Color,
+        backgroundImage: NetworkImage(url),
+        onBackgroundImageError: (_, __) {},
+      );
+    }
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: item['avatarColor'] as Color,
+      child: Text(
+        initial,
+        style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: fontSize),
+      ),
+    );
+  }
+
+  // One of the two top-level header tabs (Announcements / Offers). The active
+  // tab is larger and fully white; the other is dimmed but still tappable.
+  Widget _headerTab(String label, String value) {
+    final selected = _activeTab == value;
+    return GestureDetector(
+      onTap: () {
+        if (_activeTab != value) setState(() => _activeTab = value);
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: selected ? 22 : 18,
+          fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+          color: selected ? Colors.white : Colors.white70,
+        ),
+      ),
+    );
+  }
+
+  // Dropdown beside "Latest Posts" that filters the feed by audience.
+  Widget _buildAudienceDropdown() {
+    final current = _audienceFilters.firstWhere(
+      (a) => a['value'] == _audienceFilter,
+      orElse: () => _audienceFilters.first,
+    );
+    return PopupMenuButton<String>(
+      initialValue: _audienceFilter,
+      tooltip: 'Filter by audience',
+      onSelected: (v) => setState(() => _audienceFilter = v),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      itemBuilder: (_) => _audienceFilters.map((a) {
+        final selected = a['value'] == _audienceFilter;
+        return PopupMenuItem<String>(
+          value: a['value'] as String,
+          child: Row(
+            children: [
+              Icon(a['icon'] as IconData,
+                  size: 16,
+                  color: selected
+                      ? const Color(0xFF3AA876)
+                      : Colors.black54),
+              const SizedBox(width: 8),
+              Text(
+                a['label'] as String,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected
+                      ? const Color(0xFF27803F)
+                      : const Color(0xFF1A2E22),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFF6DBF99)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(current['icon'] as IconData,
+                size: 13, color: const Color(0xFF3AA876)),
+            const SizedBox(width: 5),
+            Text(
+              current['label'] as String,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF3AA876),
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down,
+                size: 18, color: Color(0xFF3AA876)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Tag shown on a post indicating its target audience (buyers/sellers).
+  // Posts meant for everyone ('all') get no tag to avoid clutter.
+  Widget? _audienceChip(String audience, {double fontSize = 10}) {
+    final key = audience.trim().toLowerCase();
+    if (key != 'buyers' && key != 'sellers') return null;
+    final colors = _audienceColors[key]!;
+    final icon = _audienceIcons[key]!;
+    final label = key[0].toUpperCase() + key.substring(1);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: colors[0],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors[1]),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: fontSize + 1, color: colors[2]),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight: FontWeight.w600,
+              color: colors[2],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tagChip(String tag, {double fontSize = 10}) {
+    final key = tag.trim().toLowerCase();
+    final colors = _tagColors[key] ??
+        const [Color(0xFFEFF3F1), Color(0xFFDDE7E2), Color(0xFF6B8578)];
+    final icon = _tagIcons[key];
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: colors[0],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors[1]),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: fontSize + 1, color: colors[2]),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            tag,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight: FontWeight.w600,
+              color: colors[2],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Renders an announcement image from a network URL (Supabase) or a bundled
+  /// asset path, with a graceful placeholder on error/while loading.
+  Widget _announcementImage(String src, double height) {
+    Widget placeholder() => Container(
+          width: double.infinity,
+          height: height,
+          color: const Color(0xFFE8F8F1),
+          child: const Icon(Icons.image_not_supported_outlined,
+              color: Colors.white54, size: 40),
+        );
+
+    if (src.startsWith('http')) {
+      return Image.network(
+        src,
+        width: double.infinity,
+        height: height,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return Container(
+            width: double.infinity,
+            height: height,
+            color: const Color(0xFFE8F8F1),
+            child: const Center(
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Color(0xFF6DBF99)),
+            ),
+          );
+        },
+        errorBuilder: (_, __, ___) => placeholder(),
+      );
+    }
+    return Image.asset(
+      src,
+      width: double.infinity,
+      height: height,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => placeholder(),
+    );
+  }
+
   Widget _buildCard(int originalIndex, {bool compact = false}) {
     final item = _announcements[originalIndex];
     final bool isActive = item['status'] == 'Active';
@@ -1174,17 +1688,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                     children: [
                       Row(
                         children: [
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: item['avatarColor'] as Color,
-                            child: Text(
-                              (item['admin'] as String)[0],
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15),
-                            ),
-                          ),
+                          _adminAvatar(item, radius: 20, fontSize: 15),
                           const SizedBox(width: 10),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1237,26 +1741,28 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 6,
-                    children: (item['tags'] as List<String>).map((tag) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE8F8F1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFC2EDD9)),
+                  Builder(
+                    builder: (_) {
+                      final audienceChip =
+                          _audienceChip(item['audience'] as String? ?? 'all');
+                      final tagChips = (item['tags'] as List<String>)
+                          .map<Widget>((tag) => _tagChip(tag))
+                          .toList();
+                      final chips = <Widget>[
+                        if (audienceChip != null) audienceChip,
+                        ...tagChips,
+                      ];
+                      if (chips.isEmpty) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: chips,
                         ),
-                        child: Text(tag,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w500,
-                                color: Color(0xFF27803F))),
                       );
-                    }).toList(),
+                    },
                   ),
-                  const SizedBox(height: 10),
                   Text(item['title'] as String,
                       style: const TextStyle(
                           fontSize: 14,
@@ -1277,21 +1783,10 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                 ],
               ),
             ),
-            ClipRRect(
-              child: Image.asset(
-                item['image'] as String,
-                width: double.infinity,
-                height: 150,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Container(
-                  width: double.infinity,
-                  height: 150,
-                  color: const Color(0xFFE8F8F1),
-                  child: const Icon(Icons.image_not_supported_outlined,
-                      color: Colors.white54, size: 40),
-                ),
+            if ((item['image'] as String).isNotEmpty)
+              ClipRRect(
+                child: _announcementImage(item['image'] as String, 150),
               ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
               child: Row(

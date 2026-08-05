@@ -1,9 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dashboard.dart';
 import 'login.dart';
 import 'signup.dart'; // ✅ Added missing import
+import 'supabase_config.dart';
+import 'services/push_service.dart';
 
-void main() {
- runApp(const AniMartApp());
+/// Convenient shorthand for the Supabase client used across the app.
+final supabase = Supabase.instance.client;
+
+/// Root navigator key so services (e.g. push notifications) can navigate
+/// without a BuildContext of their own.
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    anonKey: SupabaseConfig.anonKey,
+  );
+  // Best-effort: registers this device for plan-sale push notifications.
+  // No-ops until lib/firebase_options.dart is filled in.
+  await PushService.init();
+  runApp(const AniMartApp());
 }
 
 class AniMartApp extends StatelessWidget {
@@ -11,14 +30,24 @@ class AniMartApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Session persistence: supabase_flutter restores the stored session
+    // during initialize(), so a user who already logged in goes straight to
+    // the dashboard instead of being asked to log in on every launch.
+    bool loggedIn;
+    try {
+      loggedIn = supabase.auth.currentSession != null;
+    } catch (_) {
+      loggedIn = false; // Supabase not initialized (e.g. in widget tests).
+    }
     return MaterialApp(
       title: 'AnI Mart',
       debugShowCheckedModeBanner: false,
+      navigatorKey: appNavigatorKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6DBF99)),
         useMaterial3: true,
       ),
-      home: const WelcomeScreen(), // ✅ Fixed: was OnboardingPage (doesn't exist)
+      home: loggedIn ? const DashboardPage() : const WelcomeScreen(),
     );
   }
 }
@@ -187,40 +216,11 @@ class WelcomeScreen extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _Dot(active: true),
-                      const SizedBox(width: 6),
-                      _Dot(active: false),
-                      const SizedBox(width: 6),
-                      _Dot(active: false),
-                    ],
-                  ),
                 ],
               ),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _Dot extends StatelessWidget {
-  final bool active;
-  const _Dot({required this.active});
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      width: active ? 18 : 6,
-      height: 6,
-      decoration: BoxDecoration(
-        color: active ? const Color(0xFF91E6C1) : Colors.white.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(3),
       ),
     );
   }

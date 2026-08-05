@@ -1,11 +1,37 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'announcement_page.dart';
+import 'blocked_sellers_page.dart';
 import 'login.dart';
+import 'my_offers_page.dart';
+import 'main.dart';
+import 'product_detail.dart';
+import 'user_listings.dart';
+import 'seller.dart';
+import 'seller_analytics.dart';
+import 'offers_page.dart';
+import 'widgets/top_message.dart';
+import 'cloudinary_function.dart';
+import 'support_chat.dart';
+import 'services/location_service.dart';
+import 'services/marketplace_service.dart';
+import 'services/notification_service.dart';
+import 'services/subscription_service.dart';
+import 'seller_reviews.dart';
+import 'widgets/city_picker.dart';
+import 'widgets/notification_dot.dart';
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
+  /// When true, the "Become a Seller" sheet opens automatically after the
+  /// profile loads (used when a non-seller tries to create a listing).
+  const ProfilePage({super.key, this.openBecomeSeller = false});
+
+  final bool openBecomeSeller;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -13,9 +39,275 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   int _selectedIndex = 3;
+
+  // ── Signed-in user data (loaded from the `users` table) ───────────────────
+  bool _loadingProfile = true;
+  String _name = '';
+  String _email = '';
+  String _phone = '';
+  String _address = '';
+  String _houseNumber = '';
+  String _businessName = '';
+  // Shop details captured when the user becomes a seller. Shown in the
+  // "Details" section once `_isSeller` is true.
+  String _shopCategory = '';
+  String _shopDescription = '';
+
+  /// Seller's Facebook Messenger link (m.me/...), required to become a
+  /// seller — buyers contact sellers through it.
+  String _messengerLink = '';
+
+  /// Optional, opt-in public contact channels shown on the seller's profile
+  /// alongside Messenger. Any may be blank.
+  String _contactPhone = '';
+  String _whatsapp = '';
+  String _viber = '';
+  String _contactEmail = '';
+  String _facebook = '';
+  // App-facing name of the user's active subscription plan (from the
+  // `subscriptions` table managed by the admin website). 'Free' by default.
+  String _planName = 'Free';
+
+  // Whether that plan is billed yearly (drives the plans page's buttons).
+  bool _planIsYearly = false;
+  String _memberSince = '';
+  String _avatarUrl = '';
   bool _isSeller = false;
-  bool _isPremium = true; // Simulated: User has availed a subscription
-  int _salesCount = 1;    // Simulated: User has 1 sale (New Farmer)
+  int _salesCount = 0;
+  int _trustScore = 0;
+  SellerRating _reviewRating = SellerRating.empty;
+
+  // ── Listings owned by the signed-in user (from the `listings` table) ──────
+  List<Map<String, dynamic>> _myListings = [];
+  bool _loadingListings = true;
+
+  // Red dot on the announcements nav icon while unseen announcements exist.
+  bool _hasUnseenAnnouncements = false;
+
+  // Red dot on the Seller Dashboard's "Offers" action while pending offers
+  // newer than the seller's last visit to the Offers page exist. A notifier
+  // so the already-built dashboard bottom sheet updates when the async check
+  // completes.
+  final ValueNotifier<bool> _hasNewOffers = ValueNotifier(false);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+    _loadMyListings();
+    _loadReviewRating();
+    NotificationService.hasUnseenAnnouncements().then((v) {
+      if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
+    });
+    _refreshOffersBadge();
+  }
+
+  @override
+  void dispose() {
+    _hasNewOffers.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshOffersBadge() async {
+    final v = await NotificationService.hasNewOffers();
+    if (mounted) _hasNewOffers.value = v;
+  }
+
+  /// Loads the rating this user has received as a seller. When they have
+  /// reviews, the average drives the displayed Trust Score.
+  Future<void> _loadReviewRating() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    final rating = await MarketplaceService.fetchSellerRating(user.id);
+    if (!mounted) return;
+    setState(() {
+      _reviewRating = rating;
+      if (rating.hasTrustSignal) _trustScore = rating.trustPercent;
+    });
+  }
+
+  void _openMyReviews() {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SellerReviewsPage(sellerId: user.id, sellerName: _name),
+      ),
+    ).then((_) => _loadReviewRating());
+  }
+
+  Future<void> _loadMyListings() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _loadingListings = false);
+      return;
+    }
+    try {
+      final rows = await supabase
+          .from('listings')
+          .select()
+          .eq('seller_id', user.id)
+          .order('created_at', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _myListings =
+            (rows as List).map((r) => r as Map<String, dynamic>).toList();
+        _loadingListings = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load listings: $e');
+      if (mounted) setState(() => _loadingListings = false);
+    }
+  }
+
+  String _formatPrice(dynamic raw) {
+    final value = raw is num ? raw : (num.tryParse('$raw') ?? 0);
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toString();
+    return '₱$text';
+  }
+
+  void _openAllListings() {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => UserListingsPage(userId: user.id, userName: _name),
+      ),
+      // Listings may have been deleted/disabled there, so refresh on return.
+      // This keeps the "Seller" indicator in sync — it disappears once the
+      // user has no listings left.
+    ).then((_) => _loadMyListings());
+  }
+
+  String _relativeTime(dynamic isoDate) {
+    final dt = DateTime.tryParse('$isoDate');
+    if (dt == null) return '';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inDays >= 1) return '${diff.inDays} day${diff.inDays == 1 ? '' : 's'} ago';
+    if (diff.inHours >= 1) return '${diff.inHours} hour${diff.inHours == 1 ? '' : 's'} ago';
+    if (diff.inMinutes >= 1) return '${diff.inMinutes} min ago';
+    return 'Just now';
+  }
+
+  Future<void> _loadProfile() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _loadingProfile = false);
+      return;
+    }
+    try {
+      // Columns are named explicitly: users has column-level SELECT grants
+      // (lat/lng are revoked for privacy), and `select *` fails under
+      // column grants. New fields read here must also be granted in the DB.
+      final row = await supabase
+          .from('users')
+          .select('email, name, phone, address, house_number, business_name, '
+              'shop_category, shop_description, messenger_link, avatar_url, '
+              'is_seller, sales_count, trust_score, member_since, '
+              'contact_phone, whatsapp_number, viber_number, contact_email, '
+              'facebook_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (!mounted) return;
+      final data = row ?? <String, dynamic>{};
+      setState(() {
+        _email = (data['email'] as String?) ?? user.email ?? '';
+        _name = (data['name'] as String?)?.trim().isNotEmpty == true
+            ? data['name'] as String
+            : (_email.isNotEmpty ? _email.split('@').first : 'AniMart User');
+        _phone = (data['phone'] as String?) ?? '';
+        _address = (data['address'] as String?) ?? '';
+        _houseNumber = (data['house_number'] as String?) ?? '';
+        _businessName = (data['business_name'] as String?) ?? '';
+        // 'Aquatics' was renamed to 'Aquaculture'; normalise any row the DB
+        // migration hasn't touched yet so the picker still shows a match.
+        final rawCategory = (data['shop_category'] as String?) ?? '';
+        _shopCategory = rawCategory == 'Aquatics' ? 'Aquaculture' : rawCategory;
+        _shopDescription = (data['shop_description'] as String?) ?? '';
+        _messengerLink = (data['messenger_link'] as String?) ?? '';
+        _contactPhone = (data['contact_phone'] as String?) ?? '';
+        _whatsapp = (data['whatsapp_number'] as String?) ?? '';
+        _viber = (data['viber_number'] as String?) ?? '';
+        _contactEmail = (data['contact_email'] as String?) ?? '';
+        _facebook = (data['facebook_url'] as String?) ?? '';
+        _avatarUrl = (data['avatar_url'] as String?) ?? '';
+        _isSeller = (data['is_seller'] as bool?) ?? false;
+        _salesCount = (data['sales_count'] as int?) ?? 0;
+        // Completed deals are the real sales record; the users column is a
+        // legacy/admin-set fallback shown until this resolves.
+        MarketplaceService.completedSalesCount().then((c) {
+          if (mounted && c > 0) setState(() => _salesCount = c);
+        });
+        _trustScore = (data['trust_score'] as int?) ?? 0;
+        _memberSince = _formatMemberSince(
+            (data['member_since'] as String?) ?? user.createdAt);
+        _loadingProfile = false;
+      });
+
+      // A non-seller was sent here to register before they can post a
+      // listing — open the Become a Seller form for them right away.
+      if (widget.openBecomeSeller && !_isSeller && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showBecomeSeller();
+        });
+      }
+
+      // Resolve the active subscription plan (Free / Premium / Super Premium)
+      // and its billing cycle from the admin-managed `subscriptions` table.
+      final plan = await SubscriptionService.activePlan();
+      if (mounted) {
+        setState(() {
+          _planName = plan.label;
+          _planIsYearly = plan.isYearly;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load profile from users table: $e');
+      if (!mounted) return;
+      // Fall back to the auth user so the screen still renders.
+      setState(() {
+        _email = user.email ?? '';
+        _name = _email.isNotEmpty ? _email.split('@').first : 'AniMart User';
+        _memberSince = _formatMemberSince(user.createdAt);
+        _loadingProfile = false;
+      });
+    }
+  }
+
+  String _formatMemberSince(String? isoDate) {
+    if (isoDate == null) return '';
+    final dt = DateTime.tryParse(isoDate);
+    if (dt == null) return '';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return 'Member since ${months[dt.month - 1]} ${dt.year}';
+  }
+
+  String get _initial => _name.trim().isNotEmpty ? _name.trim()[0].toUpperCase() : 'U';
+
+  /// Whether the user has published at least one listing — drives the "Seller"
+  /// label shown under their name.
+  bool get _hasListings => _myListings.isNotEmpty;
+
+  /// Whether the active subscription is a paid tier (Premium / Super Premium).
+  /// Only these tiers earn the "Verified Seller" badge.
+  bool get _isPremiumTier =>
+      _planName == 'Premium' || _planName == 'Super Premium';
+
+  /// Whether the active subscription is the top tier. Sales analytics is a
+  /// Super Premium exclusive.
+  bool get _isSuperTier => _planName == 'Super Premium';
+
+  /// A free, non-seller account has nothing to show for Sales / Trust Score /
+  /// received reviews yet — so those stats are hidden and the plan is centered.
+  bool get _minimalStats => !_isSeller && !_isPremiumTier;
 
   // ── Bottom Nav ────────────────────────────────────────────────────────────
   void _onTabTapped(int index) {
@@ -68,12 +360,17 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
           ElevatedButton(
             onPressed: () {
-              Navigator.pop(context);
-              Navigator.pushAndRemoveUntil(
-                context,
+              final navigator = Navigator.of(context);
+              // Close the dialog and leave for the login screen immediately so
+              // the user is never stuck if the network sign-out call is slow.
+              navigator.pop();
+              navigator.pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const LoginPage()),
                 (route) => false,
               );
+              // Clear the Supabase session in the background; ignore network
+              // errors since the local session is cleared regardless.
+              supabase.auth.signOut().catchError((_) {});
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFE53E3E),
@@ -87,71 +384,327 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ── Edit Profile ──────────────────────────────────────────────────────────
-  void _showEditProfile() {
-    final nameCtrl = TextEditingController(text: 'John Smith');
-    final phoneCtrl = TextEditingController(text: '+63 991 888 8854');
-    final addressCtrl = TextEditingController(text: 'Purok 5, Laoag St., Quezon City');
-    final locationCtrl = TextEditingController(text: 'I-Dagupan Lane');
+  // ── Delete Account ────────────────────────────────────────────────────────
+  /// Permanent account deletion (App Store requirement). Type-to-confirm so
+  /// it can't be triggered by an accidental double tap; the server RPC
+  /// refuses while a reserved deal is in progress.
+  void _showDeleteAccountDialog() {
+    final confirmCtrl = TextEditingController();
+    bool deleting = false;
 
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-          child: Column(
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setLocal) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Delete Account',
+              style: TextStyle(
+                  fontWeight: FontWeight.bold, color: Color(0xFFE53E3E))),
+          content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+              const Text(
+                'This permanently deletes your account — your profile, '
+                'listings, offers, deals, reviews and favorites. This cannot '
+                'be undone.\n\nType DELETE to confirm.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF6B8578)),
               ),
-              const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Edit Profile',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-              ),
-              const SizedBox(height: 20),
-              _editField(nameCtrl, 'Full Name', Icons.person_outline),
               const SizedBox(height: 12),
-              _editField(phoneCtrl, 'Phone Number', Icons.phone_outlined, type: TextInputType.phone),
-              const SizedBox(height: 12),
-              _editField(locationCtrl, 'Location / Barangay', Icons.location_on_outlined),
-              const SizedBox(height: 12),
-              _editField(addressCtrl, 'Full Address', Icons.place_outlined),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      _snackBar('Profile updated successfully!', const Color(0xFF3AA876)),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6DBF99),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 0,
-                  ),
-                  child: const Text('Save Changes', style: TextStyle(fontWeight: FontWeight.w700)),
+              TextField(
+                controller: confirmCtrl,
+                onChanged: (_) => setLocal(() {}),
+                decoration: InputDecoration(
+                  hintText: 'DELETE',
+                  hintStyle:
+                      const TextStyle(fontSize: 13, color: Colors.black26),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
                 ),
               ),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: deleting ? null : () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Color(0xFF6B8578))),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE53E3E),
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: Colors.black12,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed:
+                  deleting || confirmCtrl.text.trim().toUpperCase() != 'DELETE'
+                      ? null
+                      : () async {
+                          setLocal(() => deleting = true);
+                          String? error;
+                          try {
+                            error = await supabase
+                                .rpc('delete_my_account') as String?;
+                          } catch (e) {
+                            error = 'Could not delete account: $e';
+                          }
+                          if (!dialogCtx.mounted) return;
+                          if (error != null) {
+                            setLocal(() => deleting = false);
+                            Navigator.pop(dialogCtx);
+                            if (mounted) showTopMessage(context, error);
+                            return;
+                          }
+                          // The account is gone server-side: clear the local
+                          // session and leave for the login screen.
+                          final navigator = Navigator.of(dialogCtx);
+                          navigator.pop();
+                          navigator.pushAndRemoveUntil(
+                            MaterialPageRoute(
+                                builder: (_) => const LoginPage()),
+                            (route) => false,
+                          );
+                          supabase.auth.signOut().catchError((_) {});
+                        },
+              child: deleting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.2, color: Colors.white),
+                    )
+                  : const Text('Delete forever'),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  // ── Edit Profile ──────────────────────────────────────────────────────────
+  // Opens a full-screen edit page (list-row layout) for the profile fields.
+  Future<void> _showEditProfile() async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _EditProfilePage(
+          initialName: _name,
+          initialPhone: _phone,
+          initialAddress: _address,
+          initialHouse: _houseNumber,
+          initialAvatarUrl: _avatarUrl,
+          email: _email,
+          memberSince: _memberSince,
+          isSeller: _isSeller,
+          initialBusinessName: _businessName,
+          initialShopCategory: _shopCategory,
+          initialShopDescription: _shopDescription,
+          initialMessengerLink: _messengerLink,
+          initialContactPhone: _contactPhone,
+          initialWhatsapp: _whatsapp,
+          initialViber: _viber,
+          initialContactEmail: _contactEmail,
+          initialFacebook: _facebook,
+          onSave: _saveProfile,
+          onAvatarChanged: (url) {
+            if (mounted) setState(() => _avatarUrl = url);
+          },
+        ),
+      ),
+    );
+    if (saved == true && mounted) {
+      _showMessage('Profile updated successfully!', const Color(0xFF3AA876));
+    }
+  }
+
+  /// Persists the edited profile fields to the `users` table.
+  /// Returns null on success, or an error message describing why it failed.
+  Future<String?> _saveProfile({
+    required String name,
+    required String phone,
+    required String address,
+    required String houseNumber,
+    required String businessName,
+    required String shopCategory,
+    required String shopDescription,
+    required String messengerLink,
+    String contactPhone = '',
+    String whatsapp = '',
+    String viber = '',
+    String contactEmail = '',
+    String facebook = '',
+    PhCity? location,
+  }) async {
+    final user = supabase.auth.currentUser;
+    if (user == null || supabase.auth.currentSession == null) {
+      return 'You are not signed in. Please log in again.';
+    }
+
+    // Sellers must keep a valid Messenger contact (same rule as the
+    // Become a Seller and Shop Settings forms).
+    String? normalizedMessenger;
+    if (_isSeller) {
+      normalizedMessenger = _normalizeMessengerLink(messengerLink);
+      if (normalizedMessenger == null) {
+        return 'Please put a valid Messenger link (e.g. m.me/yourname).';
+      }
+    }
+
+    try {
+      // Update only the editable columns of the user's existing row, keyed by
+      // the auth user id. We deliberately don't touch columns like `plan`
+      // (which has a CHECK constraint) so editing the profile can't break them.
+      final row = await supabase
+          .from('users')
+          .update({
+            'name': name,
+            'phone': phone,
+            'address': address,
+            'house_number': houseNumber,
+            'business_name': businessName,
+            'shop_category': shopCategory,
+            'shop_description': shopDescription,
+            if (normalizedMessenger != null) 'messenger_link': normalizedMessenger,
+            // Optional public contact channels shown on the seller profile.
+            // Empty strings are stored as null so the profile treats them as
+            // "not provided" and hides the button.
+            'contact_phone': contactPhone.trim().isEmpty ? null : contactPhone.trim(),
+            'whatsapp_number': whatsapp.trim().isEmpty ? null : whatsapp.trim(),
+            'viber_number': viber.trim().isEmpty ? null : viber.trim(),
+            'contact_email':
+                contactEmail.trim().isEmpty ? null : contactEmail.trim(),
+            'facebook_url': _normalizeFacebookLink(facebook),
+            // Coordinates power "Explore near you" distances.
+            if (location != null) 'location_name': location.label,
+            if (location != null) 'latitude': location.lat,
+            if (location != null) 'longitude': location.lng,
+          })
+          .eq('id', user.id)
+          // Explicit columns: `select *` fails under users' column grants.
+          .select('name, phone, address, house_number, business_name, '
+              'shop_category, shop_description, messenger_link, '
+              'contact_phone, whatsapp_number, viber_number, contact_email, '
+              'facebook_url')
+          .maybeSingle();
+
+      if (row == null) {
+        return 'Your account has no profile record yet. Please contact support.';
+      }
+
+      // Re-base everything this user has posted onto their new location so
+      // their listings show (and are ranked by) where they now live.
+      if (location != null) {
+        try {
+          await supabase
+              .from('listings')
+              .update({'location': location.label})
+              .eq('seller_id', user.id);
+        } catch (e) {
+          debugPrint('Could not re-base listings location: $e');
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _name = (row['name'] as String?)?.trim().isNotEmpty == true
+              ? row['name'] as String
+              : name;
+          _phone = (row['phone'] as String?) ?? phone;
+          _address = (row['address'] as String?) ?? address;
+          _houseNumber = (row['house_number'] as String?) ?? houseNumber;
+          _businessName = (row['business_name'] as String?) ?? businessName;
+          _shopCategory = (row['shop_category'] as String?) ?? shopCategory;
+          _shopDescription = (row['shop_description'] as String?) ?? shopDescription;
+          if (normalizedMessenger != null) {
+            _messengerLink =
+                (row['messenger_link'] as String?) ?? normalizedMessenger;
+          }
+          _contactPhone = (row['contact_phone'] as String?) ?? '';
+          _whatsapp = (row['whatsapp_number'] as String?) ?? '';
+          _viber = (row['viber_number'] as String?) ?? '';
+          _contactEmail = (row['contact_email'] as String?) ?? '';
+          _facebook = (row['facebook_url'] as String?) ?? '';
+        });
+      }
+      return null;
+    } on PostgrestException catch (e) {
+      debugPrint('Profile update PostgrestException: ${e.message}');
+      return e.message;
+    } catch (e) {
+      debugPrint('Profile update error: $e');
+      return e.toString();
+    }
+  }
+
+  /// Persists the shop details to the `users` table when a user becomes a
+  /// seller. Returns null on success, or an error message describing the
+  /// failure. State is updated optimistically by the caller, so on failure we
+  /// surface the message but keep the entered values on screen.
+  ///
+  /// The optional contact channels are only written when non-null (Shop
+  /// Settings passes them; Become a Seller doesn't, so it can't wipe values
+  /// a seller already saved). A non-null empty string clears the channel.
+  Future<String?> _saveSellerDetails({
+    required String businessName,
+    required String shopDescription,
+    required String shopCategory,
+    String? messengerLink,
+    String? contactPhone,
+    String? whatsapp,
+    String? viber,
+    String? contactEmail,
+    String? facebook,
+  }) async {
+    final user = supabase.auth.currentUser;
+    if (user == null || supabase.auth.currentSession == null) {
+      return 'You are not signed in. Please log in again.';
+    }
+    try {
+      final row = await supabase
+          .from('users')
+          .update({
+            'is_seller': true,
+            'business_name': businessName,
+            'shop_description': shopDescription,
+            'shop_category': shopCategory,
+            if (messengerLink != null) 'messenger_link': messengerLink,
+            // Empty strings are stored as null so the profile treats them
+            // as "not provided" and hides the button.
+            if (contactPhone != null)
+              'contact_phone':
+                  contactPhone.trim().isEmpty ? null : contactPhone.trim(),
+            if (whatsapp != null)
+              'whatsapp_number':
+                  whatsapp.trim().isEmpty ? null : whatsapp.trim(),
+            if (viber != null)
+              'viber_number': viber.trim().isEmpty ? null : viber.trim(),
+            if (contactEmail != null)
+              'contact_email':
+                  contactEmail.trim().isEmpty ? null : contactEmail.trim(),
+            if (facebook != null)
+              'facebook_url': _normalizeFacebookLink(facebook),
+          })
+          .eq('id', user.id)
+          // Only checked for null; `select *` fails under column grants.
+          .select('id')
+          .maybeSingle();
+
+      if (row == null) {
+        return 'Your account has no profile record yet. Please contact support.';
+      }
+      return null;
+    } on PostgrestException catch (e) {
+      debugPrint('Seller details update PostgrestException: ${e.message}');
+      return e.message;
+    } catch (e) {
+      debugPrint('Seller details update error: $e');
+      return e.toString();
+    }
   }
 
   Widget _editField(TextEditingController ctrl, String hint, IconData icon,
@@ -159,104 +712,40 @@ class _ProfilePageState extends State<ProfilePage> {
     return TextField(
       controller: ctrl,
       keyboardType: type,
-      style: const TextStyle(fontSize: 14),
+      style: const TextStyle(fontSize: 14, color: Color(0xFF1A2E22)),
+      cursorColor: const Color(0xFF3AA876),
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Colors.black38, fontSize: 13),
         prefixIcon: Icon(icon, size: 18, color: const Color(0xFF6DBF99)),
         filled: true,
         fillColor: const Color(0xFFF4FAF7),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFDCEFE6)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF6DBF99), width: 1.5),
+        ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFDCEFE6)),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      ),
-    );
-  }
-
-  // ── Send Message ──────────────────────────────────────────────────────────
-  void _showSendMessage() {
-    final msgCtrl = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
-              ),
-              const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Send a Message',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-              ),
-              const SizedBox(height: 6),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Send a message to admin or support.',
-                    style: TextStyle(fontSize: 13, color: Colors.black38)),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: msgCtrl,
-                maxLines: 4,
-                style: const TextStyle(fontSize: 14),
-                decoration: InputDecoration(
-                  hintText: 'Type your message here...',
-                  hintStyle: const TextStyle(color: Colors.black38, fontSize: 13),
-                  filled: true,
-                  fillColor: const Color(0xFFF4FAF7),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.all(16),
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    if (msgCtrl.text.trim().isEmpty) return;
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      _snackBar('Message sent!', const Color(0xFF2196F3)),
-                    );
-                  },
-                  icon: const Icon(Icons.send_rounded, size: 16),
-                  label: const Text('Send Message', style: TextStyle(fontWeight: FontWeight.w700)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2196F3),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 0,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       ),
     );
   }
 
   // ── Customer Service ──────────────────────────────────────────────────────
-  void _showCustomerService() {
+  Future<void> _showCustomerService() async {
+    // Contact details are configured by the super admin in app_settings
+    // (support_phone / support_email); a row is hidden until its value is
+    // set, so no placeholder contact info is ever shown.
+    final contacts = await SubscriptionService.fetchSupportContacts();
+    if (!mounted) return;
+    final supportPhone = contacts['support_phone'] ?? '';
+    final supportEmail = contacts['support_email'] ?? '';
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -264,49 +753,107 @@ class _ProfilePageState extends State<ProfilePage> {
       builder: (ctx) => Container(
         decoration: const BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         ),
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+        padding: EdgeInsets.fromLTRB(
+            20, 12, 20, 24 + MediaQuery.of(ctx).padding.bottom),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                width: 44, height: 5,
+                decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(3)),
               ),
-              const SizedBox(height: 20),
-              const CircleAvatar(
-                radius: 28,
-                backgroundColor: Color(0xFFE8F8F1),
-                child: Icon(Icons.support_agent, color: Color(0xFF3AA876), size: 30),
+              const SizedBox(height: 22),
+              Container(
+                width: 66, height: 66,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF3AA876), Color(0xFF2E8B63)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF3AA876).withOpacity(0.32),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: const Icon(Icons.support_agent_rounded,
+                    color: Colors.white, size: 34),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
               const Text('Customer Service',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                  style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF1A2E22))),
               const SizedBox(height: 6),
               const Text(
-                'We\'re here to help! Reach us through any of the channels below.',
+                'We\'re here to help! Reach us through any of the\nchannels below.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: Colors.black45, height: 1.5),
+                style: TextStyle(fontSize: 13, color: Colors.black45, height: 1.45),
               ),
-              const SizedBox(height: 20),
-              _serviceRow(Icons.phone_rounded, 'Call Us', '+63 912 345 6789', const Color(0xFF3AA876)),
-              const SizedBox(height: 10),
-              _serviceRow(Icons.email_outlined, 'Email Us', 'support@animart.ph', const Color(0xFF2196F3)),
-              const SizedBox(height: 10),
-              _serviceRow(Icons.chat_bubble_outline, 'Live Chat', 'Available 8AM – 5PM', const Color(0xFFFFB300)),
-              const SizedBox(height: 20),
+              const SizedBox(height: 22),
+              if (supportPhone.isNotEmpty) ...[
+                _serviceRow(
+                  icon: Icons.phone_rounded,
+                  title: 'Call Us',
+                  subtitle: supportPhone,
+                  color: const Color(0xFF3AA876),
+                  actionLabel: 'Copy',
+                  onTap: () => _copyContact('Phone number', supportPhone),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (supportEmail.isNotEmpty) ...[
+                _serviceRow(
+                  icon: Icons.email_outlined,
+                  title: 'Email Us',
+                  subtitle: supportEmail,
+                  color: const Color(0xFF2196F3),
+                  actionLabel: 'Copy',
+                  onTap: () => _copyContact('Email', supportEmail),
+                ),
+                const SizedBox(height: 12),
+              ],
+              _serviceRow(
+                icon: Icons.chat_bubble_outline_rounded,
+                title: 'Live Chat',
+                subtitle: 'Message our support team in the app',
+                color: const Color(0xFFFFB300),
+                actionLabel: 'Open',
+                actionIcon: Icons.arrow_forward_rounded,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SupportChatPage()),
+                  );
+                },
+              ),
+              const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,
-                child: OutlinedButton(
+                child: TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    side: const BorderSide(color: Colors.black12),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    backgroundColor: const Color(0xFFF2F4F3),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
-                  child: const Text('Close', style: TextStyle(color: Colors.black54)),
+                  child: const Text('Close',
+                      style: TextStyle(
+                          color: Color(0xFF1A2E22),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15)),
                 ),
               ),
             ],
@@ -316,37 +863,141 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _serviceRow(IconData icon, String title, String subtitle, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.2)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
-            child: Icon(icon, color: color, size: 18),
+  Future<void> _copyContact(String label, String value) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+    showTopMessage(context, '$label copied to clipboard',
+        isError: false, icon: Icons.copy_rounded);
+  }
+
+  Widget _serviceRow({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+    required String actionLabel,
+    IconData actionIcon = Icons.copy_rounded,
+    bool online = false,
+  }) {
+    return Material(
+      color: color.withOpacity(0.06),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(0.18)),
           ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
-              Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.black45)),
+              Container(
+                width: 46, height: 46,
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(13)),
+                child: Icon(icon, color: color, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(title,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14.5,
+                                  color: Color(0xFF1A2E22))),
+                        ),
+                        if (online) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFF3AA876).withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(10)),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: const [
+                                _Dot(),
+                                SizedBox(width: 5),
+                                Text('Online',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: Color(0xFF3AA876))),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Colors.black54)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                decoration: BoxDecoration(
+                    color: color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(actionIcon, size: 14, color: color),
+                    const SizedBox(width: 5),
+                    Text(actionLabel,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: color)),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
 
   // ── Rate Us ───────────────────────────────────────────────────────────────
+
+  /// Persists the user's app rating to `app_reviews` (one row per user —
+  /// re-submitting updates it). The admin website's Reviews page reads this
+  /// table. Returns true on success.
+  Future<bool> _submitAppRating(int rating, String comment) async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return false;
+    try {
+      await supabase.from('app_reviews').upsert({
+        'reviewer_id': userId,
+        'rating': rating,
+        'comment': comment.isEmpty ? null : comment,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'reviewer_id');
+      return true;
+    } catch (e) {
+      debugPrint('Failed to submit app rating: $e');
+      return false;
+    }
+  }
+
   void _showRateUs() {
     int selectedStars = 0;
+    bool submitting = false;
     final feedbackCtrl = TextEditingController();
     showModalBottomSheet(
       context: context,
@@ -421,13 +1072,22 @@ class _ProfilePageState extends State<ProfilePage> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: selectedStars == 0
+                    onPressed: selectedStars == 0 || submitting
                         ? null
-                        : () {
-                            Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              _snackBar('Thanks for your rating! ⭐', const Color(0xFFFFB300)),
-                            );
+                        : () async {
+                            setLocal(() => submitting = true);
+                            final ok = await _submitAppRating(
+                                selectedStars, feedbackCtrl.text.trim());
+                            if (!ctx.mounted) return;
+                            if (ok) {
+                              Navigator.pop(ctx);
+                              _showMessage('Thanks for your rating! ⭐',
+                                  const Color(0xFFFFB300));
+                            } else {
+                              setLocal(() => submitting = false);
+                              showTopMessage(ctx,
+                                  'Could not submit your rating. Please try again.');
+                            }
                           },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFFB300),
@@ -437,7 +1097,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
                     ),
-                    child: const Text('Submit Rating', style: TextStyle(fontWeight: FontWeight.w700)),
+                    child: submitting
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Submit Rating',
+                            style: TextStyle(fontWeight: FontWeight.w700)),
                   ),
                 ),
               ],
@@ -448,387 +1116,54 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // ── Plan selection dialog ─────────────────────────────────────────────────
+  // ── Premium Subscription page ─────────────────────────────────────────────
 
-  void _showPlanDialog() {
-    String selectedPlan = 'free';
-
-    final List<Map<String, String>> plans = [
-      {
-        'id': 'free',
-        'label': 'Free',
-        'price': '₱0 / mo',
-        'desc': 'Basic browsing, view listings',
-      },
-      {
-        'id': 'premium',
-        'label': 'Premium',
-        'price': '₱199 / mo',
-        'desc': 'Post listings, buyer messaging',
-      },
-      {
-        'id': 'superpremium',
-        'label': 'Super Premium',
-        'price': '₱499 / mo',
-        'desc': 'All features + priority support',
-      },
-    ];
-
-    showDialog(
-      context: context,
-      barrierDismissible: false, // must tap X or Continue to dismiss
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setDialog) {
-            return Dialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // ── X Button ────────────────────────────────────
-                    Align(
-                      alignment: Alignment.topRight,
-                      child: GestureDetector(
-                        onTap: () => Navigator.pop(ctx),
-                        child: Container(
-                          width: 30,
-                          height: 30,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.grey.shade100,
-                            border: Border.all(color: Colors.grey.shade300),
-                          ),
-                          child: const Icon(
-                            Icons.close,
-                            size: 16,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 4),
-
-                    // ── Crown Icon ──────────────────────────────────
-                    Container(
-                      width: 52,
-                      height: 52,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFFE1F5EE),
-                      ),
-                      child: const Icon(
-                        Icons.workspace_premium,
-                        color: Color(0xFF1D9E75),
-                        size: 26,
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    // ── Title ───────────────────────────────────────
-                    const Text(
-                      'Choose your plan',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Select the plan that fits your needs',
-                      style: TextStyle(fontSize: 13, color: Colors.black54),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // ── Plan Cards ──────────────────────────────────
-                    ...plans.map((plan) {
-                      final isSelected = selectedPlan == plan['id'];
-                      return GestureDetector(
-                        onTap: () =>
-                            setDialog(() => selectedPlan = plan['id']!),
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
-                          ),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: isSelected
-                                  ? const Color(0xFF6DBF99)
-                                  : Colors.grey.shade200,
-                              width: isSelected ? 2 : 1,
-                            ),
-                            color: isSelected
-                                ? const Color(0xFFE8F8F1)
-                                : Colors.white,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                plan['id'] == 'free'
-                                    ? Icons.person_outline
-                                    : plan['id'] == 'premium'
-                                        ? Icons.star_outline
-                                        : Icons.workspace_premium,
-                                color: const Color(0xFF6DBF99),
-                                size: 20,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      plan['label']!,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.black87,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      plan['desc']!,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.black45,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Text(
-                                plan['price']!,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFF1D9E75),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }),
-
-                    const SizedBox(height: 6),
-
-                    // ── Continue Button ─────────────────────────────
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6DBF99),
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                        ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 10),
-
-                    const Text(
-                      'You can change your plan anytime in settings.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11, color: Colors.black45),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  // ── View Comments (listing card) ──────────────────────────────────────────
-  void _showListingComments() {
-    final List<Map<String, String>> comments = [
-      {'user': 'Maria Santos', 'text': 'How much per kilo?', 'time': '2 days ago'},
-      {'user': 'Pedro Reyes', 'text': 'Still available?', 'time': '1 day ago'},
-    ];
-    final commentCtrl = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx2, setLocal) => Container(
-          height: MediaQuery.of(context).size.height * 0.7,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 12),
-                width: 40, height: 4,
-                decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Comments (${comments.length})',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                    GestureDetector(
-                      onTap: () => Navigator.pop(ctx),
-                      child: const Icon(Icons.close, color: Colors.black45, size: 20),
-                    ),
-                  ],
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: Divider(height: 18, thickness: 0.5),
-              ),
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  itemCount: comments.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
-                  itemBuilder: (_, i) {
-                    final c = comments[i];
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CircleAvatar(
-                          radius: 16,
-                          backgroundColor: const Color(0xFF6DBF99).withOpacity(0.2),
-                          child: Text(c['user']![0],
-                              style: const TextStyle(color: Color(0xFF3AA876), fontWeight: FontWeight.bold, fontSize: 12)),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF4FAF7),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(c['user']!,
-                                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: Color(0xFF1A2E22))),
-                                    const SizedBox(height: 2),
-                                    Text(c['text']!,
-                                        style: const TextStyle(fontSize: 13, color: Color(0xFF3D5247), height: 1.4)),
-                                  ],
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(left: 4, top: 3),
-                                child: Text(c['time']!,
-                                    style: const TextStyle(fontSize: 10, color: Colors.black38)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-              Container(
-                padding: EdgeInsets.only(
-                    left: 16, right: 16, top: 10,
-                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  border: Border(top: BorderSide(color: Colors.black.withOpacity(0.07))),
-                ),
-                child: Row(
-                  children: [
-                    const CircleAvatar(
-                      radius: 16,
-                      backgroundColor: Color(0xFF6DBF99),
-                      child: Text('J', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4FAF7),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.3)),
-                        ),
-                        child: TextField(
-                          controller: commentCtrl,
-                          style: const TextStyle(fontSize: 13),
-                          maxLines: null,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) {
-                            if (commentCtrl.text.trim().isEmpty) return;
-                            setLocal(() {
-                              comments.add({'user': 'John Smith', 'text': commentCtrl.text.trim(), 'time': 'Just now'});
-                            });
-                            commentCtrl.clear();
-                          },
-                          decoration: const InputDecoration(
-                            hintText: 'Write a comment...',
-                            hintStyle: TextStyle(color: Colors.black38, fontSize: 13),
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () {
-                        if (commentCtrl.text.trim().isEmpty) return;
-                        setLocal(() {
-                          comments.add({'user': 'John Smith', 'text': commentCtrl.text.trim(), 'time': 'Just now'});
-                        });
-                        commentCtrl.clear();
-                      },
-                      child: Container(
-                        width: 38, height: 38,
-                        decoration: const BoxDecoration(color: Color(0xFF6DBF99), shape: BoxShape.circle),
-                        child: const Icon(Icons.send_rounded, color: Colors.white, size: 16),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+  void _openPlansPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => PremiumSubscriptionPage(
+              currentPlan: _planName, currentPlanIsYearly: _planIsYearly)),
     );
   }
 
   // ── Become a Seller ────────────────────────────────────────────────────────
+  /// Validates and normalises a Facebook Messenger link. Accepts
+  /// m.me/<name> or messenger.com/t/<name>, with or without https:// and
+  /// www. — returns the canonical https:// URL, or null when invalid.
+  /// Normalizes the optional Facebook contact link. Blank means "not
+  /// provided" (stored as null so the profile hides the button). Accepts a
+  /// full URL, "facebook.com/name", "fb.com/name", or a bare page/username,
+  /// and always stores a https://facebook.com/... URL.
+  static String? _normalizeFacebookLink(String input) {
+    var v = input.trim();
+    if (v.isEmpty) return null;
+    v = v
+        .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'^www\.', caseSensitive: false), '');
+    final lower = v.toLowerCase();
+    if (lower.startsWith('fb.com/')) {
+      v = 'facebook.com/${v.substring('fb.com/'.length)}';
+    } else if (!lower.startsWith('facebook.com/')) {
+      v = 'facebook.com/$v';
+    }
+    return 'https://$v';
+  }
+
+  static String? _normalizeMessengerLink(String input) {
+    var v = input.trim();
+    if (v.isEmpty) return null;
+    v = v
+        .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'^www\.', caseSensitive: false), '');
+    final lower = v.toLowerCase();
+    final valid = (lower.startsWith('m.me/') && v.length > 'm.me/'.length) ||
+        (lower.startsWith('messenger.com/t/') &&
+            v.length > 'messenger.com/t/'.length);
+    if (!valid) return null;
+    return 'https://$v';
+  }
+
   void _showBecomeSeller() {
     if (_isSeller) {
       _showSellerDashboard();
@@ -837,9 +1172,16 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final shopNameCtrl = TextEditingController();
     final shopDescCtrl = TextEditingController();
-    final bankCtrl = TextEditingController();
+    final messengerCtrl = TextEditingController();
     String? selectedCategory;
-    const categories = ['Poultry', 'Livestock', 'Aquatics', 'Mixed / All'];
+    const categories = [
+      'Poultry',
+      'Livestock',
+      'Aquaculture',
+      'Ornamental Fish',
+      'Hatching & Breeding Products',
+      'Mixed / All',
+    ];
 
     showModalBottomSheet(
       context: context,
@@ -883,7 +1225,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         children: [
                           Text('Become a Seller',
                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
-                          Text('Set up your shop and start selling',
+                          Text('Start selling your animals & products',
                               style: TextStyle(fontSize: 12, color: Colors.black45)),
                         ],
                       ),
@@ -908,8 +1250,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         _BenefitRow(icon: Icons.storefront_outlined, text: 'List your animals & products'),
                         SizedBox(height: 4),
                         _BenefitRow(icon: Icons.people_outline, text: 'Reach thousands of buyers'),
-                        SizedBox(height: 4),
-                        _BenefitRow(icon: Icons.payments_outlined, text: 'Secure & easy payments'),
                         SizedBox(height: 4),
                         _BenefitRow(icon: Icons.analytics_outlined, text: 'Track your sales & listings'),
                       ],
@@ -990,24 +1330,58 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  _editField(bankCtrl, 'GCash / Bank Number for Payments', Icons.account_balance_outlined),
+                  // Buyers contact sellers through Messenger, so a valid
+                  // link is required before becoming a seller.
+                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
+                      Icons.link_outlined),
                   const SizedBox(height: 20),
 
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: () {
+                      onPressed: () async {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            _snackBar('Please fill in all required fields.', Colors.redAccent),
-                          );
+                          _showMessage(
+                              'Please fill in all required fields.', Colors.redAccent);
                           return;
                         }
+                        final messengerLink =
+                            _normalizeMessengerLink(messengerCtrl.text);
+                        if (messengerLink == null) {
+                          _showMessage(
+                              'Please put your Messenger link (e.g. m.me/yourname) before becoming a seller.',
+                              Colors.redAccent);
+                          return;
+                        }
+                        final businessName = shopNameCtrl.text.trim();
+                        final shopDescription = shopDescCtrl.text.trim();
+                        final shopCategory = selectedCategory ?? '';
+
                         Navigator.pop(ctx);
-                        setState(() => _isSeller = true);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          _snackBar('🎉 You are now a Seller! Welcome aboard.', const Color(0xFF3AA876)),
+                        // Optimistically reflect the new seller state, then
+                        // persist to the database.
+                        setState(() {
+                          _isSeller = true;
+                          _businessName = businessName;
+                          _shopDescription = shopDescription;
+                          _shopCategory = shopCategory;
+                          _messengerLink = messengerLink;
+                        });
+                        final error = await _saveSellerDetails(
+                          businessName: businessName,
+                          shopDescription: shopDescription,
+                          shopCategory: shopCategory,
+                          messengerLink: messengerLink,
                         );
+                        if (!mounted) return;
+                        if (error != null) {
+                          _showMessage(
+                              'Saved on this device, but syncing failed: $error',
+                              Colors.redAccent);
+                        } else {
+                          _showMessage('🎉 You are now a Seller! Welcome aboard.',
+                              const Color(0xFF3AA876));
+                        }
                       },
                       icon: const Icon(Icons.storefront_rounded, size: 18),
                       label: const Text('Submit & Become a Seller',
@@ -1032,6 +1406,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // ── Seller Dashboard (after becoming seller) ───────────────────────────────
   void _showSellerDashboard() {
+    // Re-check for new offers so the "Offers" action's red dot is current.
+    _refreshOffersBadge();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1075,9 +1451,9 @@ class _ProfilePageState extends State<ProfilePage> {
                     // Stats row
                     Row(
                       children: [
-                        _dashStat('1', 'Listings', const Color(0xFF3AA876)),
+                        _dashStat('${_myListings.length}', 'Listings', const Color(0xFF3AA876)),
                         const SizedBox(width: 12),
-                        _dashStat('1', 'Sales', const Color(0xFF2196F3)),
+                        _dashStat('$_salesCount', 'Sales', const Color(0xFF2196F3)),
                         const SizedBox(width: 12),
                         _dashStat('₱0', 'Earnings', const Color(0xFFFFB300)),
                       ],
@@ -1087,17 +1463,324 @@ class _ProfilePageState extends State<ProfilePage> {
                     const Text('Quick Actions',
                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
                     const SizedBox(height: 10),
-                    _dashAction(Icons.add_circle_outline, 'Add New Listing', 'Post a new animal or product', const Color(0xFF3AA876)),
+                    _dashAction(Icons.add_circle_outline, 'Add New Listing', 'Post a new animal or product', const Color(0xFF3AA876),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openSeller(initialTab: 1);
+                    }),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.bar_chart_rounded, 'View Sales', 'Track your orders and earnings', const Color(0xFF2196F3)),
+                    _dashAction(Icons.inventory_2_outlined, 'Listings', 'View and manage your listings', const Color(0xFF2196F3),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openSeller(initialTab: 0);
+                    }),
+                    if (_isSuperTier) ...[
+                      const SizedBox(height: 8),
+                      // Sales analytics page — a Super Premium exclusive.
+                      _dashAction(Icons.insights_rounded, 'View Analytics', 'Your sales & advanced metrics', const Color(0xFF8E5BE8),
+                          onTap: () {
+                        Navigator.pop(ctx);
+                        showSellerAnalytics(context, _planName);
+                      }),
+                    ],
                     const SizedBox(height: 8),
-                    _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300)),
+                    // Offers from potential buyers, grouped under each of the
+                    // seller's listing posts. The red dot flags offers that
+                    // arrived since the seller last opened the page.
+                    ValueListenableBuilder<bool>(
+                      valueListenable: _hasNewOffers,
+                      builder: (_, hasNewOffers, __) => _dashAction(
+                          Icons.pan_tool_outlined, 'Offers', 'Buyer offers on your listings', const Color(0xFFE86B5B),
+                          showDot: hasNewOffers,
+                          onTap: () {
+                        Navigator.pop(ctx);
+                        // Opening the page stamps the watermark, so clear the
+                        // dot right away.
+                        _hasNewOffers.value = false;
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const OffersPage()));
+                      }),
+                    ),
                     const SizedBox(height: 8),
-                    _dashAction(Icons.settings_outlined, 'Shop Settings', 'Update your shop info', Colors.black38),
+                    _dashAction(Icons.reviews_outlined, 'My Reviews', 'See buyer feedback', const Color(0xFFFFB300),
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _openMyReviews();
+                    }),
+                    const SizedBox(height: 8),
+                    _dashAction(Icons.settings_outlined, 'Shop Settings', 'Update your shop info', Colors.black38,
+                        onTap: () {
+                      Navigator.pop(ctx);
+                      _showShopSettings();
+                    }),
                   ],
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Opens the seller listings page on the given tab (0 = My Listings,
+  /// 1 = Create Listing) and refreshes this page's listings on return.
+  Future<void> _openSeller({int initialTab = 0}) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SellerPage(initialTab: initialTab)),
+    );
+    if (mounted) _loadMyListings();
+  }
+
+  /// Shop Settings — edit and persist the seller's shop details.
+  void _showShopSettings() {
+    final shopNameCtrl = TextEditingController(text: _businessName);
+    final shopDescCtrl = TextEditingController(text: _shopDescription);
+    final messengerCtrl = TextEditingController(text: _messengerLink);
+    final contactPhoneCtrl = TextEditingController(text: _contactPhone);
+    final whatsappCtrl = TextEditingController(text: _whatsapp);
+    final viberCtrl = TextEditingController(text: _viber);
+    final contactEmailCtrl = TextEditingController(text: _contactEmail);
+    final facebookCtrl = TextEditingController(text: _facebook);
+    String? selectedCategory = _shopCategory.isNotEmpty ? _shopCategory : null;
+    const categories = [
+      'Poultry',
+      'Livestock',
+      'Aquaculture',
+      'Ornamental Fish',
+      'Hatching & Breeding Products',
+      'Mixed / All',
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (ctx2, setLocal) => Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40, height: 4,
+                      decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Container(
+                        width: 44, height: 44,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE8F8F1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.settings_outlined, color: Color(0xFF3AA876), size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Shop Settings',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                          Text('Update your shop info',
+                              style: TextStyle(fontSize: 12, color: Colors.black45)),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  _editField(shopNameCtrl, 'Shop / Farm Name', Icons.store_outlined),
+                  const SizedBox(height: 10),
+                  _editField(shopDescCtrl, 'Shop Description', Icons.description_outlined),
+                  const SizedBox(height: 10),
+
+                  // Category picker
+                  GestureDetector(
+                    onTap: () {
+                      showModalBottomSheet(
+                        context: ctx,
+                        shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                        builder: (_) => Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Center(
+                                child: Container(
+                                  width: 40, height: 4,
+                                  decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              const Text('Select Category',
+                                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                              const SizedBox(height: 12),
+                              ...categories.map((cat) => ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text(cat, style: const TextStyle(fontSize: 14)),
+                                    trailing: selectedCategory == cat
+                                        ? const Icon(Icons.check_circle_rounded, color: Color(0xFF6DBF99))
+                                        : null,
+                                    onTap: () {
+                                      setLocal(() => selectedCategory = cat);
+                                      Navigator.pop(context);
+                                    },
+                                  )),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF4FAF7),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.category_outlined, size: 18, color: Color(0xFF6DBF99)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              selectedCategory ?? 'Select Category',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: selectedCategory != null ? Colors.black87 : Colors.black38,
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.black38, size: 20),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
+                      Icons.link_outlined),
+                  const SizedBox(height: 18),
+
+                  // Optional contact channels — same set as the Edit Profile
+                  // screen; blank hides the button on the seller profile.
+                  const Text('Contact options (optional)',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF3AA876))),
+                  const SizedBox(height: 4),
+                  const Text(
+                      'Shown as buttons on your public seller profile. '
+                      'Leave any blank to hide it.',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.black45, height: 1.3)),
+                  const SizedBox(height: 10),
+                  _editField(contactPhoneCtrl, 'Public number (call & SMS)',
+                      Icons.call_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(whatsappCtrl, 'WhatsApp number',
+                      Icons.chat_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(viberCtrl, 'Viber number',
+                      Icons.message_outlined, type: TextInputType.phone),
+                  const SizedBox(height: 10),
+                  _editField(contactEmailCtrl, 'Public contact email',
+                      Icons.email_outlined, type: TextInputType.emailAddress),
+                  const SizedBox(height: 10),
+                  _editField(facebookCtrl, 'facebook.com/yourpage',
+                      Icons.facebook, type: TextInputType.url),
+                  const SizedBox(height: 20),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
+                          _showMessage(
+                              'Please fill in all required fields.', Colors.redAccent);
+                          return;
+                        }
+                        final messengerLink =
+                            _normalizeMessengerLink(messengerCtrl.text);
+                        if (messengerLink == null) {
+                          _showMessage(
+                              'Please put a valid Messenger link (e.g. m.me/yourname).',
+                              Colors.redAccent);
+                          return;
+                        }
+                        final businessName = shopNameCtrl.text.trim();
+                        final shopDescription = shopDescCtrl.text.trim();
+                        final shopCategory = selectedCategory ?? '';
+
+                        final contactPhone = contactPhoneCtrl.text.trim();
+                        final whatsapp = whatsappCtrl.text.trim();
+                        final viber = viberCtrl.text.trim();
+                        final contactEmail = contactEmailCtrl.text.trim();
+                        final facebook = facebookCtrl.text.trim();
+
+                        Navigator.pop(ctx);
+                        setState(() {
+                          _businessName = businessName;
+                          _shopDescription = shopDescription;
+                          _shopCategory = shopCategory;
+                          _messengerLink = messengerLink;
+                          _contactPhone = contactPhone;
+                          _whatsapp = whatsapp;
+                          _viber = viber;
+                          _contactEmail = contactEmail;
+                          _facebook = _normalizeFacebookLink(facebook) ?? '';
+                        });
+                        final error = await _saveSellerDetails(
+                          businessName: businessName,
+                          shopDescription: shopDescription,
+                          shopCategory: shopCategory,
+                          messengerLink: messengerLink,
+                          contactPhone: contactPhone,
+                          whatsapp: whatsapp,
+                          viber: viber,
+                          contactEmail: contactEmail,
+                          facebook: facebook,
+                        );
+                        if (!mounted) return;
+                        if (error != null) {
+                          _showMessage(
+                              'Saved on this device, but syncing failed: $error',
+                              Colors.redAccent);
+                        } else {
+                          _showMessage('Shop details updated.', const Color(0xFF3AA876));
+                        }
+                      },
+                      icon: const Icon(Icons.check_rounded, size: 18),
+                      label: const Text('Save Changes',
+                          style: TextStyle(fontWeight: FontWeight.w700)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3AA876),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -1124,44 +1807,57 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _dashAction(IconData icon, String title, String subtitle, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
+  Widget _dashAction(IconData icon, String title, String subtitle, Color color,
+      {required VoidCallback onTap, bool showDot = false}) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.15)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 38, height: 38,
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, color: color, size: 20),
+        child: Ink(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withOpacity(0.15)),
           ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
-              Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+              NotificationDot(
+                show: showDot,
+                child: Container(
+                  width: 38, height: 38,
+                  decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color)),
+                  Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+                ],
+              ),
+              const Spacer(),
+              const Icon(Icons.chevron_right_rounded, color: Colors.black26, size: 20),
             ],
           ),
-          const Spacer(),
-          const Icon(Icons.chevron_right_rounded, color: Colors.black26, size: 20),
-        ],
+        ),
       ),
     );
   }
 
-  // ── Snackbar helper ───────────────────────────────────────────────────────
-  SnackBar _snackBar(String msg, Color color) => SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.all(16),
-      );
+  // ── Top message helper ────────────────────────────────────────────────────
+  void _showMessage(String msg, Color color) {
+    showTopMessage(
+      context,
+      msg,
+      isError: color == Colors.redAccent,
+      backgroundColor: color,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1174,7 +1870,7 @@ class _ProfilePageState extends State<ProfilePage> {
             // ── Header ──────────────────────────────────────────────
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.only(top: 50, bottom: 20, left: 16, right: 16),
+              padding: const EdgeInsets.only(top: 44, bottom: 16, left: 16, right: 16),
               decoration: const BoxDecoration(
                 color: Color(0xFF6DBF99),
                 borderRadius: BorderRadius.only(
@@ -1185,17 +1881,26 @@ class _ProfilePageState extends State<ProfilePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  GestureDetector(
-                    onTap: () { if (Navigator.canPop(context)) Navigator.pop(context); },
-                    child: const Icon(Icons.arrow_back, color: Colors.white, size: 24),
+                  // Back arrow + centered title on a single row.
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: GestureDetector(
+                          onTap: () {
+                            if (Navigator.canPop(context)) Navigator.pop(context);
+                          },
+                          child: const Icon(Icons.arrow_back,
+                              color: Colors.white, size: 24),
+                        ),
+                      ),
+                      const Text('PROFILE',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                              color: Colors.white, letterSpacing: 1.5)),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  const Center(
-                    child: Text('PROFILE',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                            color: Colors.white, letterSpacing: 1.5)),
-                  ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 14),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1208,10 +1913,18 @@ class _ProfilePageState extends State<ProfilePage> {
                               color: const Color(0xFF4A9B73),
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.white.withOpacity(0.6), width: 2),
+                              image: _avatarUrl.isNotEmpty
+                                  ? DecorationImage(
+                                      image: NetworkImage(_avatarUrl),
+                                      fit: BoxFit.cover,
+                                    )
+                                  : null,
                             ),
-                            child: const Icon(Icons.person, color: Colors.white, size: 40),
+                            child: _avatarUrl.isNotEmpty
+                                ? null
+                                : const Icon(Icons.person, color: Colors.white, size: 40),
                           ),
-                          if (_isSeller)
+                          if (_hasListings)
                             Positioned(
                               bottom: 0, right: 0,
                               child: Container(
@@ -1232,90 +1945,47 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 4,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Text('John Smith',
-                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                                    if (_isPremium)
-                                      const Padding(
-                                        padding: EdgeInsets.only(left: 4),
-                                        child: Icon(Icons.verified, color: Colors.blue, size: 18),
-                                      ),
-                                  ],
-                                ),
-                                if (_isSeller) ...[
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: _salesCount >= 3 ? const Color(0xFFFFB300) : const Color(0xFF4CAF50),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(_salesCount >= 3 ? 'Trusted Seller' : 'New Farmer',
-                                        style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                            // Tapping the name (with its ">" indicator) opens Edit Profile.
+                            GestureDetector(
+                              onTap: _showEditProfile,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(_loadingProfile ? 'Loading…' : _name,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                                   ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.chevron_right, color: Colors.white, size: 22),
                                 ],
-                                if (_isPremium) ...[
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF2196F3),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text('Verified Seller',
-                                        style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  ),
-                                ],
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF2196F3),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: const Text(
-                                    'Trust Score: 98%',
-                                    style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
-                            const SizedBox(height: 4),
-                            _infoRow(Icons.location_on_outlined, 'I-Dagupan Lane'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.phone_outlined, '+63 991 888 8854'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.place_outlined, 'Purok 5, Laoag St., Quezon City'),
-                            const SizedBox(height: 2),
-                            _infoRow(Icons.calendar_month_outlined, 'Member since Jan 2024'),
-                            if (_isSeller) ...[
-                              const SizedBox(height: 2),
-                              _infoRow(Icons.workspace_premium_outlined, 'Breeder since 2020'),
+                            if (_isSeller && _isPremiumTier) ...[
+                              const SizedBox(height: 5),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  // "Verified Seller" is only for sellers on a
+                                  // paid tier (Premium / Super Premium).
+                                  if (_isSeller && _isPremiumTier)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF2196F3),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Text('Verified Seller',
+                                          style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                                    ),
+                                ],
+                              ),
                             ],
                           ],
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Column(
-                        children: [
-                          _headerButton(
-                            icon: Icons.edit,
-                            label: 'Edit Profile',
-                            color: const Color(0xFF4CAF50),
-                            onTap: _showEditProfile,
-                          ),
-                          const SizedBox(height: 6),
-                          _headerButton(
-                            icon: Icons.messenger_outline,
-                            label: 'Send me a\nMessage',
-                            color: const Color(0xFF2196F3),
-                            onTap: _showSendMessage,
-                          ),
-                        ],
                       ),
                     ],
                   ),
@@ -1359,25 +2029,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _isSeller ? 'Seller Dashboard' : 'Become a Seller',
-                              style: const TextStyle(
-                                  color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                            Text(
-                              _isSeller
-                                  ? 'Manage your listings & earnings'
-                                  : 'Start selling your animals & products',
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            ),
-                          ],
+                        child: Text(
+                          _isSeller ? 'Seller Dashboard' : 'Become a Seller',
+                          style: const TextStyle(
+                              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
                         ),
                       ),
+                      const SizedBox(width: 10),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.2),
                           borderRadius: BorderRadius.circular(20),
@@ -1385,13 +2045,21 @@ class _ProfilePageState extends State<ProfilePage> {
                         child: Text(
                           _isSeller ? 'Open' : 'Get Started',
                           style: const TextStyle(
-                              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── Premium Plan Action (relocated just above Account Stats) ──
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _premiumSubscriptionButton(),
             ),
 
             const SizedBox(height: 16),
@@ -1421,12 +2089,133 @@ class _ProfilePageState extends State<ProfilePage> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       child: Row(
                         children: [
-                          _statItem('1', 'Listings'),
-                          Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('1', 'Sales', valueColor: const Color(0xFF3AA876)),
-                          Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
-                          _statItem('98%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
+                          // Paid tiers also show how they're billed.
+                          _statItem(
+                              _planName,
+                              _isPremiumTier
+                                  ? (_planIsYearly
+                                      ? 'Yearly Plan'
+                                      : 'Monthly Plan')
+                                  : 'Plan'),
+                          // Sales / Trust Score only mean something for sellers.
+                          // A free, non-seller account centers the plan instead.
+                          if (!_minimalStats) ...[
+                            Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
+                            _statItem('$_salesCount', 'Sales', valueColor: const Color(0xFF3AA876)),
+                            Container(width: 1, height: 40, color: const Color(0xFFE0E0E0)),
+                            _statItem('$_trustScore%', 'Trust Score', valueColor: const Color(0xFF2196F3)),
+                          ],
                         ],
+                      ),
+                    ),
+                    // ── My Reviews (rating received as a seller) ─────────
+                    // Hidden for free, non-seller accounts — they can't have
+                    // received reviews yet, so "No reviews yet" is just noise.
+                    if (!_minimalStats) ...[
+                      const Divider(height: 1, thickness: 0.5),
+                      InkWell(
+                        onTap: _openMyReviews,
+                        child: Padding(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.star_rounded,
+                                  color: Color(0xFFFFB300), size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _reviewRating.hasReviews
+                                      ? '${_reviewRating.average.toStringAsFixed(1)} · ${_reviewRating.count} review${_reviewRating.count == 1 ? '' : 's'}'
+                                      : 'No reviews yet',
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF1A2E22)),
+                                ),
+                              ),
+                              const Text('My Reviews',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF3AA876),
+                                      fontWeight: FontWeight.w600)),
+                              const Icon(Icons.chevron_right,
+                                  size: 18, color: Color(0xFF3AA876)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    const Divider(height: 1, thickness: 0.5),
+                    // ── My Offers (offers made as a buyer + deal states) ─
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const MyOffersPage()),
+                      ),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Icon(Icons.pan_tool_outlined,
+                                color: Color(0xFF6DBF99), size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Offers you\'ve made on listings',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A2E22)),
+                              ),
+                            ),
+                            Text('My Offers',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                            Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF3AA876)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1, thickness: 0.5),
+                    // ── Blocked Sellers (view + unblock) ─────────────────
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const BlockedSellersPage()),
+                      ),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Icon(Icons.block_outlined,
+                                color: Color(0xFFE57373), size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Sellers you\'ve blocked',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A2E22)),
+                              ),
+                            ),
+                            Text('Blocked Sellers',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF3AA876),
+                                    fontWeight: FontWeight.w600)),
+                            Icon(Icons.chevron_right,
+                                size: 18, color: Color(0xFF3AA876)),
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -1436,29 +2225,120 @@ class _ProfilePageState extends State<ProfilePage> {
 
             const SizedBox(height: 16),
 
-            // ── Premium Plan Action ─────────────────────────────────
+            // ── Details (relocated just below Account Stats) ────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _actionButton(
-                icon: Icons.workspace_premium,
-                label: 'Premium Subscription',
-                iconColor: const Color(0xFF1D9E75),
-                onTap: _showPlanDialog,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 3)),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Details',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                    const SizedBox(height: 10),
+                    _infoRow(Icons.place_outlined,
+                        _address.isNotEmpty ? _address : 'Add your address'),
+                    const SizedBox(height: 8),
+                    _infoRow(Icons.phone_outlined,
+                        _phone.isNotEmpty ? _phone : 'Add your phone number'),
+                    if (_email.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _infoRow(Icons.email_outlined, _email),
+                    ],
+                    if (_memberSince.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _infoRow(Icons.calendar_month_outlined, _memberSince),
+                    ],
+                    // ── Shop details (shown once the user is a seller) ──
+                    if (_isSeller) ...[
+                      const SizedBox(height: 14),
+                      const Divider(height: 1, thickness: 0.5),
+                      const SizedBox(height: 14),
+                      const Text('Shop',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                      const SizedBox(height: 10),
+                      if (_businessName.isNotEmpty) ...[
+                        _infoRow(Icons.storefront_outlined, _businessName),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_shopCategory.isNotEmpty) ...[
+                        _infoRow(Icons.category_outlined, _shopCategory),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_shopDescription.isNotEmpty)
+                        _infoRow(Icons.description_outlined, _shopDescription),
+                    ],
+                  ],
+                ),
               ),
             ),
 
             const SizedBox(height: 16),
 
-            // ── My Listing ──────────────────────────────────────────
+            // ── My Listings ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('My Listing',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('My Listings (${_myListings.length})',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF1A2E22))),
+                      if (_myListings.isNotEmpty)
+                        GestureDetector(
+                          onTap: _openAllListings,
+                          child: const Row(
+                            children: [
+                              Text('See All',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF3AA876))),
+                              Icon(Icons.chevron_right, size: 18, color: Color(0xFF3AA876)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                   const SizedBox(height: 10),
-                  _listingCard(),
+                  if (_loadingListings)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: CircularProgressIndicator(color: Color(0xFF6DBF99)),
+                      ),
+                    )
+                  else if (_myListings.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 28),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.2)),
+                      ),
+                      child: const Column(
+                        children: [
+                          Icon(Icons.inventory_2_outlined, size: 40, color: Colors.black26),
+                          SizedBox(height: 8),
+                          Text('No listings yet.',
+                              style: TextStyle(fontSize: 13, color: Colors.black45)),
+                        ],
+                      ),
+                    )
+                  else
+                    // Show only the latest listing; the rest are on "See All".
+                    _listingCard(_myListings.first),
                 ],
               ),
             ),
@@ -1514,6 +2394,22 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
 
+            const SizedBox(height: 8),
+
+            // ── Delete Account ───────────────────────────────────────
+            Center(
+              child: TextButton.icon(
+                onPressed: _showDeleteAccountDialog,
+                icon: const Icon(Icons.delete_forever_outlined,
+                    size: 17, color: Colors.black38),
+                label: const Text('Delete account',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: Colors.black38,
+                        fontWeight: FontWeight.w600)),
+              ),
+            ),
+
             const SizedBox(height: 100),
           ],
         ),
@@ -1528,14 +2424,20 @@ class _ProfilePageState extends State<ProfilePage> {
         showSelectedLabels: true,
         showUnselectedLabels: true,
         type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
               icon: Icon(Icons.shopping_cart_outlined), activeIcon: Icon(Icons.shopping_cart), label: 'Explore'),
           BottomNavigationBarItem(
-              icon: Icon(Icons.notifications_outlined), activeIcon: Icon(Icons.notifications), label: 'Announcements'),
-          BottomNavigationBarItem(
+              icon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications_outlined)),
+              activeIcon: NotificationDot(
+                  show: _hasUnseenAnnouncements,
+                  child: const Icon(Icons.notifications)),
+              label: 'Announcements'),
+          const BottomNavigationBarItem(
               icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profile'),
         ],
       ),
@@ -1546,38 +2448,14 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _infoRow(IconData icon, String text) {
     return Row(
       children: [
-        Icon(icon, size: 11, color: Colors.white70),
-        const SizedBox(width: 4),
+        Icon(icon, size: 15, color: const Color(0xFF6B8578)),
+        const SizedBox(width: 8),
         Flexible(
           child: Text(text,
-              style: const TextStyle(fontSize: 11, color: Colors.white70),
+              style: const TextStyle(fontSize: 13, color: Color(0xFF3D5247)),
               overflow: TextOverflow.ellipsis),
         ),
       ],
-    );
-  }
-
-  Widget _headerButton({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(10)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: Colors.white, size: 13),
-            const SizedBox(width: 4),
-            Text(label, textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
-          ],
-        ),
-      ),
     );
   }
 
@@ -1585,8 +2463,13 @@ class _ProfilePageState extends State<ProfilePage> {
     return Expanded(
       child: Column(
         children: [
-          Text(value,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: valueColor)),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(value,
+                maxLines: 1,
+                style: TextStyle(
+                    fontSize: 22, fontWeight: FontWeight.bold, color: valueColor)),
+          ),
           const SizedBox(height: 2),
           Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF6B8578))),
         ],
@@ -1594,9 +2477,43 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _listingCard() {
+  Widget _listingCard(Map<String, dynamic> row) {
+    final title = (row['title'] as String?) ?? 'Untitled';
+    final price = _formatPrice(row['price']);
+    final imageUrl = (row['image_url'] as String?)?.trim() ?? '';
+    final status = ((row['status'] as String?) ?? 'active');
+    final created = _relativeTime(row['created_at']);
+
     return GestureDetector(
-      onTap: () {},
+      onTap: () async {
+        final result = await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProductDetailPage(
+              name: title,
+              price: price,
+              image: imageUrl.isNotEmpty ? imageUrl : 'images/chicken.png',
+              images: (row['image_urls'] as List?)
+                      ?.map((e) => '$e')
+                      .where((e) => e.trim().isNotEmpty)
+                      .toList() ??
+                  const [],
+              description: (row['description'] as String?) ?? '',
+              condition: (row['condition'] as String?) ?? '',
+              sellerName: _name,
+              location: (row['location'] as String?) ?? '',
+              breed: (row['breed'] as String?) ?? '',
+              age: (row['age'] as String?) ?? '',
+              weight: (row['weight'] as String?) ?? '',
+              createdAt: '${row['created_at'] ?? ''}',
+              listingId: '${row['id'] ?? ''}',
+              sellerId: '${row['seller_id'] ?? ''}',
+              status: status,
+            ),
+          ),
+        );
+        if (result == 'deleted' || result == 'updated') _loadMyListings();
+      },
       child: Container(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -1610,36 +2527,33 @@ class _ProfilePageState extends State<ProfilePage> {
           children: [
             ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              child: Image.asset(
-                'images/turkey.png',
-                width: double.infinity, height: 140, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                  width: double.infinity, height: 140,
-                  color: const Color(0xFFE8F8F1),
-                  child: const Icon(Icons.image_not_supported_outlined, color: Colors.black26, size: 40),
-                ),
-              ),
+              child: _listingImage(imageUrl),
             ),
             Padding(
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  const CircleAvatar(
+                  CircleAvatar(
                     radius: 18,
-                    backgroundColor: Color(0xFF5CC898),
-                    child: Text('J', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                    backgroundColor: const Color(0xFF5CC898),
+                    child: Text(_initial, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                   ),
                   const SizedBox(width: 10),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('John Smith',
-                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1A2E22))),
-                        SizedBox(height: 2),
-                        Text('13 days', style: TextStyle(fontSize: 11, color: Colors.black38)),
-                        SizedBox(height: 2),
-                        Text('Good morning', style: TextStyle(fontSize: 11, color: Color(0xFF6B8578))),
+                        Text(title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF1A2E22))),
+                        const SizedBox(height: 2),
+                        Text(price,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF3AA876))),
+                        if (created.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(created, style: const TextStyle(fontSize: 11, color: Colors.black38)),
+                        ],
                       ],
                     ),
                   ),
@@ -1650,30 +2564,106 @@ class _ProfilePageState extends State<ProfilePage> {
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: const Color(0xFFC2EDD9)),
                     ),
-                    child: const Text('Active',
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF27803F))),
+                    child: Text(status[0].toUpperCase() + status.substring(1),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF27803F))),
                   ),
                 ],
               ),
             ),
-            GestureDetector(
-              onTap: _showListingComments,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Renders a listing image from a network URL or bundled asset.
+  Widget _listingImage(String path) {
+    Widget placeholder() => Container(
+          width: double.infinity, height: 140,
+          color: const Color(0xFFE8F8F1),
+          child: const Icon(Icons.image_not_supported_outlined, color: Colors.black26, size: 40),
+        );
+    if (path.isEmpty) return placeholder();
+    return path.startsWith('http')
+        ? Image.network(path,
+            width: double.infinity, height: 140, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => placeholder())
+        : Image.asset(path,
+            width: double.infinity, height: 140, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => placeholder());
+  }
+
+  // ── Premium Subscription button (navigates to the plans page) ─────────────
+  Widget _premiumSubscriptionButton() {
+    // The label follows the active plan: Premium members are nudged to
+    // upgrade, Super Premium members just review their subscription.
+    final String title;
+    final String subtitle;
+    if (_isSuperTier) {
+      title = 'View Subscription';
+      subtitle = "You're on Super Premium — view your plan";
+    } else if (_isPremiumTier) {
+      title = 'Upgrade to Super Premium';
+      subtitle = 'Maximum visibility & control — view plans';
+    } else {
+      title = 'Premium Subscription';
+      subtitle = 'Unlock more features — view plans';
+    }
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _openPlansPage,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFE8F8F1), Color(0xFFD3F0E4)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF6DBF99).withOpacity(0.45)),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF1D9E75).withOpacity(0.12),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
                 decoration: const BoxDecoration(
-                  border: Border(top: BorderSide(color: Color(0xFFE8F8F1), width: 1)),
+                  shape: BoxShape.circle,
+                  color: Colors.white,
                 ),
-                child: const Row(
+                child: const Icon(Icons.workspace_premium,
+                    color: Color(0xFF1D9E75), size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.mode_comment_outlined, size: 14, color: Color(0xFF3AA876)),
-                    SizedBox(width: 6),
-                    Text('View Comments',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF3AA876), fontWeight: FontWeight.w500)),
+                    Text(title,
+                        style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A2E22))),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Color(0xFF3D5247))),
                   ],
                 ),
               ),
-            ),
-          ],
+              const Icon(Icons.chevron_right, color: Color(0xFF1D9E75), size: 22),
+            ],
+          ),
         ),
       ),
     );
@@ -1725,6 +2715,2233 @@ class _BenefitRow extends StatelessWidget {
         const SizedBox(width: 8),
         Text(text, style: const TextStyle(fontSize: 12, color: Color(0xFF3D5247))),
       ],
+    );
+  }
+}
+
+// ── Premium Subscription page ──────────────────────────────────────────────
+/// Full-screen plan-selection page reached from the profile's
+/// "Premium Subscription" button (and from the dashboard's plan popup).
+/// Paid plans use the pay-first flow: pay via GCash, attach the receipt,
+/// and only then is the request submitted for admin approval.
+class PremiumSubscriptionPage extends StatefulWidget {
+  /// App-facing label of the user's active plan ('Free' / 'Premium' /
+  /// 'Super Premium'); decides which plan buttons are shown, disabled or
+  /// relabelled ("Current Plan" / "Upgrade Plan").
+  final String currentPlan;
+
+  /// Whether the active plan is already billed yearly — if so, the Yearly
+  /// toggle no longer offers "Upgrade to Yearly Plan" on that plan's card.
+  final bool currentPlanIsYearly;
+
+  const PremiumSubscriptionPage(
+      {super.key, this.currentPlan = 'Free', this.currentPlanIsYearly = false});
+
+  @override
+  State<PremiumSubscriptionPage> createState() =>
+      _PremiumSubscriptionPageState();
+}
+
+class _PremiumSubscriptionPageState extends State<PremiumSubscriptionPage> {
+  // Brand palette (matches the rest of the app).
+  static const Color _green = Color(0xFF1D9E75);
+  static const Color _greenMid = Color(0xFF3AA876);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _muted = Color(0xFF7C8B83);
+
+  bool _yearly = false;
+  String _selectedPlan = 'premium';
+
+  /// Whether the user has a request awaiting admin approval — shows the
+  /// pending banner so they know the next step.
+  bool _hasPendingRequest = false;
+
+  /// Active GCash accounts + instructions the super admin configured.
+  PaymentDetails _payment = const PaymentDetails();
+
+  /// Amount due for the pending request (its stored price), for the sheet.
+  double? _pendingAmount;
+
+  /// Storage path of the receipt attached to the pending request; null for
+  /// legacy requests submitted before receipts were required.
+  String? _pendingReceiptPath;
+
+  /// GCash reference number submitted with the pending request ('' when the
+  /// request predates the field).
+  String _pendingReferenceNumber = '';
+
+  /// Free-tier benefit list; the active-listing cap comes from the `prices`
+  /// row's `listing_capacity` column.
+  static List<_Benefit> _freeBenefits(int capacity) => [
+        _Benefit('Up to $capacity active listings'),
+        const _Benefit('Email support'),
+        const _Benefit('Verified seller badge', included: false),
+        const _Benefit('Standard analytics dashboard', included: false),
+        const _Benefit('Priority listing placement', included: false),
+        const _Benefit('Featured on homepage', included: false),
+      ];
+
+  // Fallbacks (shown until the `prices` rows load, or if loading fails).
+  // Benefit lists mirror the admin website's plan cards.
+  List<_PlanData> _plans = [
+    _PlanData(
+      id: 'free',
+      label: 'Free',
+      tagline: 'For new sellers starting out',
+      icon: Icons.person_outline,
+      monthly: 0,
+      benefits: _freeBenefits(2),
+    ),
+    const _PlanData(
+      id: 'premium',
+      label: 'Premium',
+      tagline: 'For serious livestock traders',
+      icon: Icons.star_rounded,
+      monthly: 699,
+      popular: true,
+      benefits: [
+        _Benefit('Unlimited active listings'),
+        _Benefit('Verified seller badge'),
+        _Benefit('Basic analytics report'),
+        _Benefit('Priority listing placement'),
+        _Benefit('Chat support'),
+      ],
+    ),
+    const _PlanData(
+      id: 'superpremium',
+      label: 'Super Premium',
+      tagline: 'Maximum visibility & control',
+      icon: Icons.workspace_premium,
+      monthly: 1299,
+      benefits: [
+        _Benefit('Unlimited active listings'),
+        _Benefit('Verified + Super Premium badge'),
+        _Benefit('Full analytics suite'),
+        _Benefit('Top listing placement'),
+        _Benefit('Featured on homepage banner'),
+        _Benefit('Chat support'),
+      ],
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPrices();
+    _loadPaymentState();
+  }
+
+  /// Loads the GCash payment details and whether a request is already
+  /// pending (plus its amount), so the page can tell the user how to pay.
+  Future<void> _loadPaymentState() async {
+    final results = await Future.wait([
+      SubscriptionService.currentSubscription(),
+      SubscriptionService.fetchPaymentDetails(),
+    ]);
+    if (!mounted) return;
+    final sub = results[0] as Map<String, dynamic>?;
+    final pending = sub != null && '${sub['status']}' == 'pending';
+    setState(() {
+      _hasPendingRequest = pending;
+      _pendingAmount = pending ? (sub['price'] as num?)?.toDouble() : null;
+      _pendingReceiptPath = pending
+          ? ((sub['receipt_url'] as String?)?.trim().isNotEmpty == true
+              ? (sub['receipt_url'] as String).trim()
+              : null)
+          : null;
+      _pendingReferenceNumber =
+          pending ? ((sub['reference_number'] as String?)?.trim() ?? '') : '';
+      _payment = results[1] as PaymentDetails;
+    });
+  }
+
+  bool get _hasPaymentInfo =>
+      _payment.hasGcash || _payment.instructions.isNotEmpty;
+
+  /// Opens the "Pay with GCash" sheet.
+  ///
+  /// With [checkoutPlan] this is the pay-first checkout for that plan: the
+  /// user sees every GCash account and the amount due, pays outside the app,
+  /// MUST attach their receipt screenshot, and only then is the request
+  /// submitted (no receipt → no request). Without it, the sheet re-opens in
+  /// read-only mode from the pending banner, showing the same payment info
+  /// plus the already-submitted receipt.
+  Future<void> _showPaymentSheet(
+      {double? amount, _PlanData? checkoutPlan}) async {
+    if (!_hasPaymentInfo) return;
+
+    final submittedPath = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _GcashPaymentSheet(
+        payment: _payment,
+        amount: amount ?? _pendingAmount,
+        plan: checkoutPlan == null
+            ? null
+            : SubscriptionService.planById(checkoutPlan.id),
+        yearly: _yearly,
+        monthlyPrice: checkoutPlan?.effectiveMonthly,
+        receiptPath: _pendingReceiptPath,
+        referenceNumber: _pendingReferenceNumber,
+      ),
+    );
+    if (!mounted || submittedPath == null) return;
+
+    // Checkout submitted successfully — reflect the new pending request.
+    setState(() {
+      _hasPendingRequest = true;
+      _pendingAmount = amount;
+      _pendingReceiptPath = submittedPath;
+    });
+    // Re-fetch the pending row so the reference number (and anything else
+    // stored with it) shows on the info sheet.
+    _loadPaymentState();
+    showTopMessage(
+      context,
+      'Receipt received — your request is pending admin approval.',
+      isError: false,
+    );
+  }
+
+  /// Overrides price / tagline / POPULAR ribbon / free-tier listing capacity
+  /// with the live `prices` rows the admin website manages.
+  Future<void> _loadPrices() async {
+    try {
+      final rows = await supabase
+          .from('prices')
+          .select(
+              'plan, tagline, price, discount_percent, promo_label, promo_active, promo_deadline, is_popular, listing_capacity')
+          .order('sort_order');
+      if (!mounted || rows.isEmpty) return;
+
+      const idByPlan = {
+        'Free': 'free',
+        'Premium': 'premium',
+        'Super Premium': 'superpremium',
+      };
+      final byId = <String, Map<String, dynamic>>{};
+      for (final row in rows) {
+        final id = idByPlan[(row['plan'] as String?)?.trim()];
+        if (id != null) byId[id] = row;
+      }
+
+      setState(() {
+        _plans = _plans.map((plan) {
+          final row = byId[plan.id];
+          if (row == null) return plan;
+
+          final base = (row['price'] as num?)?.toDouble() ?? plan.monthly;
+          // Admin-set discount, honoured until its deadline passes.
+          final discount = (row['discount_percent'] as num?)?.toDouble() ?? 0;
+          final deadline = DateTime.tryParse('${row['promo_deadline'] ?? ''}');
+          final promoLive =
+              deadline == null || deadline.isAfter(DateTime.now());
+          final promoActive = (row['promo_active'] as bool?) ?? false;
+          final promoLabel = (row['promo_label'] as String?)?.trim();
+
+          final capacity = (row['listing_capacity'] as num?)?.toInt();
+          return plan.copyWith(
+            tagline: (row['tagline'] as String?)?.trim().isNotEmpty == true
+                ? (row['tagline'] as String).trim()
+                : null,
+            monthly: base,
+            discountPercent: promoLive ? discount : 0,
+            popular: (row['is_popular'] as bool?) ?? false,
+            promoLabel: (promoActive && promoLive && promoLabel?.isNotEmpty == true)
+                ? promoLabel
+                : null,
+            benefits: plan.id == 'free' && capacity != null
+                ? _freeBenefits(capacity)
+                : null,
+          );
+        }).toList();
+      });
+    } catch (e) {
+      debugPrint('Failed to load prices: $e'); // fall back to defaults
+    }
+  }
+
+  /// Card id ('free' | 'premium' | 'superpremium') of the user's active plan.
+  String get _currentPlanId {
+    switch (widget.currentPlan) {
+      case 'Super Premium':
+        return 'superpremium';
+      case 'Premium':
+        return 'premium';
+      default:
+        return 'free';
+    }
+  }
+
+  /// Tier order used to hide the buttons of plans below the active one.
+  static int _planRank(String id) {
+    switch (id) {
+      case 'superpremium':
+        return 2;
+      case 'premium':
+        return 1;
+      default:
+        return 0;
+    }
+  }
+
+  String _peso(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toStringAsFixed(2);
+    return '₱$text';
+  }
+
+  String _priceLabel(_PlanData plan) {
+    if (plan.monthly == 0) return '₱0';
+    return _peso(_yearly ? plan.effectiveMonthly * 10 : plan.effectiveMonthly);
+  }
+
+  /// The pre-discount price, struck through next to the discounted one.
+  String _basePriceLabel(_PlanData plan) =>
+      _peso(_yearly ? plan.monthly * 10 : plan.monthly);
+
+  /// Small pill badge shown beside the plan name (POPULAR / -X% OFF / promo).
+  Widget _planChip(String text,
+      {required Color background, required Color textColor}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+          color: textColor,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4FAF7),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // ── Back button (upper left) ─────────────────────────────
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
+                child: IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back, color: _dark),
+                  tooltip: 'Back',
+                ),
+              ),
+            ),
+
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+                child: Column(
+                  children: [
+                    // ── Heading ─────────────────────────────────────
+                    const Text(
+                      'Simple pricing, no hidden fees',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: _dark,
+                        height: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '7-day free trial. No credit card required.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, color: _muted),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // ── Pending request: how-to-pay banner ──────────
+                    if (_hasPendingRequest) ...[
+                      GestureDetector(
+                        onTap: () => _showPaymentSheet(),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFF8E1),
+                            borderRadius: BorderRadius.circular(14),
+                            border:
+                                Border.all(color: const Color(0xFFFDE08D)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.hourglass_top_rounded,
+                                  color: Color(0xFFB28704), size: 20),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                        'Your request is pending admin '
+                                        'approval.',
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFFB28704))),
+                                    if (_hasPaymentInfo)
+                                      Text(
+                                          _pendingReceiptPath != null
+                                              ? 'We\'re verifying your '
+                                                  'payment. Tap to view your '
+                                                  'receipt.'
+                                              : 'Haven\'t paid yet? Tap to '
+                                                  'see how to pay with GCash.',
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              color: Color(0xFF8A6D1B))),
+                                  ],
+                                ),
+                              ),
+                              if (_hasPaymentInfo)
+                                const Icon(Icons.chevron_right,
+                                    color: Color(0xFFB28704), size: 20),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    // ── Billing toggle ──────────────────────────────
+                    _billingToggle(),
+
+                    const SizedBox(height: 24),
+
+                    // ── Plan Cards ──────────────────────────────────
+                    ..._plans.map(_planCard),
+
+                    const SizedBox(height: 8),
+                    const Text(
+                      'You can change your plan anytime in settings.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11.5, color: _muted),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Bill Monthly / Bill Yearly pill toggle ────────────────────────────────
+  Widget _billingToggle() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: const Color(0xFFE2EFE9)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _toggleChip('Monthly', !_yearly, () => _setYearly(false)),
+          _toggleChip('Yearly', _yearly, () => _setYearly(true)),
+        ],
+      ),
+    );
+  }
+
+  /// Switches the billing cycle. Members on a paid *monthly* plan get a
+  /// heads-up that the plan buttons now upgrade them to yearly billing;
+  /// members already billed yearly don't.
+  void _setYearly(bool yearly) {
+    if (yearly == _yearly) return;
+    setState(() => _yearly = yearly);
+    if (yearly && _currentPlanId != 'free' && !widget.currentPlanIsYearly) {
+      showTopMessage(context, 'You are upgrading to a yearly plan.',
+          isError: false);
+    }
+  }
+
+  Widget _toggleChip(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+        decoration: BoxDecoration(
+          color: active ? _green : Colors.transparent,
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: active ? Colors.white : _muted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── One plan card ─────────────────────────────────────────────────────────
+  Widget _planCard(_PlanData plan) {
+    final featured = plan.popular;
+    final selected = _selectedPlan == plan.id;
+    final onColor = featured ? Colors.white : _dark;
+    final subColor = featured ? Colors.white70 : _muted;
+
+    // Button state relative to the user's active plan: the active paid plan
+    // shows a disabled "Current Plan"; plans below it lose their button
+    // entirely; the next tier up becomes "Upgrade Plan". With the Yearly
+    // billing toggle on, every visible paid-plan button instead offers the
+    // yearly upgrade — except the active plan's own card when it is already
+    // billed yearly (that stays "Current Plan").
+    final isCurrentPaid =
+        plan.id == _currentPlanId && _currentPlanId != 'free';
+    final hideButton = _planRank(plan.id) < _planRank(_currentPlanId);
+    final alreadyYearly = isCurrentPaid && widget.currentPlanIsYearly;
+    final yearlyUpgrade = _yearly && plan.monthly != 0 && !alreadyYearly;
+    final String buttonLabel;
+    if (yearlyUpgrade) {
+      buttonLabel = 'Upgrade to Yearly Plan';
+    } else if (isCurrentPaid) {
+      buttonLabel = 'Current Plan';
+    } else if (plan.id == 'superpremium' && _currentPlanId == 'premium') {
+      buttonLabel = 'Upgrade Plan';
+    } else {
+      buttonLabel = plan.monthly == 0 ? 'Get Started' : 'Choose Plan';
+    }
+
+    return GestureDetector(
+      onTap: () => setState(() => _selectedPlan = plan.id),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: featured
+              ? const LinearGradient(
+                  colors: [_greenMid, _green],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          color: featured ? null : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected && !featured
+                ? _green
+                : const Color(0xFFE7F0EB),
+            width: selected && !featured ? 1.6 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: featured
+                  ? _green.withOpacity(0.30)
+                  : Colors.black.withOpacity(0.04),
+              blurRadius: featured ? 22 : 12,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row: name + price badge
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: featured
+                        ? Colors.white.withOpacity(0.18)
+                        : const Color(0xFFE8F8F1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(plan.icon,
+                      color: featured ? Colors.white : _green, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Wrap (not Row) so the chips can never be clipped off
+                      // the card edge on narrow screens.
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            plan.label,
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: onColor,
+                            ),
+                          ),
+                          if (featured)
+                            _planChip('POPULAR',
+                                background: Colors.white, textColor: _green),
+                          // Discount chip, e.g. "-15% OFF".
+                          if (plan.discounted)
+                            _planChip(
+                              '-${plan.discountPercent == plan.discountPercent.roundToDouble() ? plan.discountPercent.toInt() : plan.discountPercent}% OFF',
+                              background: const Color(0xFFF43F5E),
+                              textColor: Colors.white,
+                            ),
+                          // Admin-set promo badge (e.g. "HOLIDAY SALE").
+                          if (plan.promoLabel != null)
+                            _planChip(plan.promoLabel!.toUpperCase(),
+                                background: const Color(0xFFFFB300),
+                                textColor: Colors.white),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        plan.tagline,
+                        style: TextStyle(fontSize: 12, color: subColor),
+                      ),
+                    ],
+                  ),
+                ),
+                // Price badge
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: featured
+                        ? Colors.white
+                        : const Color(0xFFE8F8F1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Original price, struck through when discounted.
+                      if (plan.discounted)
+                        Text(
+                          _basePriceLabel(plan),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF9AAAA2),
+                            decoration: TextDecoration.lineThrough,
+                            decorationColor: Color(0xFF9AAAA2),
+                          ),
+                        ),
+                      Text(
+                        _priceLabel(plan),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: _green,
+                        ),
+                      ),
+                      if (plan.monthly != 0)
+                        Text(
+                          _yearly ? '/ year' : '/ month',
+                          style: const TextStyle(
+                              fontSize: 10, color: Color(0xFF7C8B83)),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 18),
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: featured
+                  ? Colors.white.withOpacity(0.20)
+                  : const Color(0xFFEEF4F1),
+            ),
+            const SizedBox(height: 16),
+
+            // Benefit checklist (per tier, mirrors the admin website's cards)
+            ...plan.benefits.map((b) {
+              final on = b.included;
+              final iconColor = featured
+                  ? (on ? Colors.white : Colors.white38)
+                  : (on ? _green : const Color(0xFFC4D3CC));
+              final textColor = featured
+                  ? (on ? Colors.white : Colors.white54)
+                  : (on ? _dark : const Color(0xFFB2C0B9));
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      on ? Icons.check_circle : Icons.cancel,
+                      size: 18,
+                      color: iconColor,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        b.text,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: textColor,
+                          decoration:
+                              on ? null : TextDecoration.lineThrough,
+                          decorationColor: textColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+
+            // Purchase button — hidden for plans below the active tier.
+            if (!hideButton) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: ElevatedButton(
+                  onPressed: isCurrentPaid && !yearlyUpgrade
+                      ? null
+                      : () => _choosePlan(plan),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: featured ? Colors.white : _green,
+                    foregroundColor: featured ? _green : Colors.white,
+                    disabledBackgroundColor:
+                        (featured ? Colors.white : _green).withOpacity(0.6),
+                    disabledForegroundColor: featured ? _green : Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                  ),
+                  child: Text(
+                    buttonLabel,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _choosePlan(_PlanData plan) async {
+    setState(() => _selectedPlan = plan.id);
+    final appPlan = SubscriptionService.planById(plan.id);
+
+    // Free needs no admin approval.
+    if (appPlan.isFree) {
+      showTopMessage(context, "You're on the Free plan.", isError: false);
+      Navigator.pop(context);
+      return;
+    }
+
+    if (_hasPendingRequest) {
+      showTopMessage(
+          context, 'You already have a request awaiting admin approval.');
+      return;
+    }
+    if (!_hasPaymentInfo) {
+      showTopMessage(context,
+          'GCash payment details aren\'t set up yet. Please try again later.');
+      return;
+    }
+
+    // Pay-first: the checkout sheet collects the payment + receipt and
+    // submits the request itself — nothing is inserted until the user has
+    // paid and attached their receipt. The sheet shows the same live
+    // per-month price the card showed (admin-set base with any promo
+    // applied) so the admin sees — and the user pays — the advertised amount.
+    final due = double.parse(
+        (_yearly ? plan.effectiveMonthly * 10 : plan.effectiveMonthly)
+            .toStringAsFixed(2));
+    await _showPaymentSheet(amount: due, checkoutPlan: plan);
+  }
+}
+
+// One line of a plan's benefit checklist. Excluded benefits render greyed
+// out with a strikethrough (mirrors the admin website's plan cards).
+class _Benefit {
+  final String text;
+  final bool included;
+  const _Benefit(this.text, {this.included = true});
+}
+
+// Description of a subscription plan rendered by [PremiumSubscriptionPage].
+// Price / tagline / POPULAR ribbon / listing capacity come from the `prices`
+// table (editable on the admin website); these values are the fallbacks.
+class _PlanData {
+  final String id;
+  final String label;
+  final String tagline;
+  final IconData icon;
+
+  /// Base monthly price before any discount.
+  final double monthly;
+
+  /// Live admin-set discount (0 = none); the card shows a "-X% OFF" chip and
+  /// strikes through the base price when this is > 0.
+  final double discountPercent;
+  final List<_Benefit> benefits;
+  final bool popular;
+  final String? promoLabel;
+
+  const _PlanData({
+    required this.id,
+    required this.label,
+    required this.tagline,
+    required this.icon,
+    required this.monthly,
+    required this.benefits,
+    this.discountPercent = 0,
+    this.popular = false,
+    this.promoLabel,
+  });
+
+  bool get discounted => discountPercent > 0 && monthly > 0;
+
+  /// Monthly price with the discount applied.
+  double get effectiveMonthly =>
+      discounted ? monthly * (1 - discountPercent / 100) : monthly;
+
+  _PlanData copyWith({
+    String? tagline,
+    double? monthly,
+    double? discountPercent,
+    List<_Benefit>? benefits,
+    bool? popular,
+    String? promoLabel,
+  }) {
+    return _PlanData(
+      id: id,
+      label: label,
+      tagline: tagline ?? this.tagline,
+      icon: icon,
+      monthly: monthly ?? this.monthly,
+      discountPercent: discountPercent ?? this.discountPercent,
+      benefits: benefits ?? this.benefits,
+      popular: popular ?? this.popular,
+      promoLabel: promoLabel ?? this.promoLabel,
+    );
+  }
+}
+
+// ── "Pay with GCash" bottom sheet ───────────────────────────────────────────
+/// Bottom sheet listing EVERY active admin-configured GCash account (primary
+/// first), the amount due and the global payment instructions.
+///
+/// Two modes:
+///  * Checkout ([plan] non-null) — the pay-first flow: the user pays outside
+///    the app, MUST attach their GCash receipt screenshot (uploaded to the
+///    private `payment-receipts` bucket), and only then is the
+///    `subscriptions` request inserted with `receipt_url` = the object path.
+///    Pops with that path on success. If the insert fails after a successful
+///    upload, the uploaded path is kept so retrying doesn't re-upload.
+///  * Info ([plan] null) — read-only view from the pending banner: the same
+///    payment details plus the already-submitted receipt (via a signed URL),
+///    or a "no receipt" note for legacy requests made before receipts.
+class _GcashPaymentSheet extends StatefulWidget {
+  final PaymentDetails payment;
+
+  /// Amount due, shown at the top when > 0.
+  final double? amount;
+
+  /// Checkout mode: the plan being requested. Null = info mode.
+  final AppPlan? plan;
+
+  /// Billing cycle of the checkout request.
+  final bool yearly;
+
+  /// Live per-month price the user was shown (promo applied).
+  final double? monthlyPrice;
+
+  /// Info mode: receipt path of the pending request (null = legacy request
+  /// with no receipt).
+  final String? receiptPath;
+
+  /// Info mode: GCash reference number submitted with the pending request
+  /// ('' when the request predates the field).
+  final String referenceNumber;
+
+  const _GcashPaymentSheet({
+    required this.payment,
+    this.amount,
+    this.plan,
+    this.yearly = false,
+    this.monthlyPrice,
+    this.receiptPath,
+    this.referenceNumber = '',
+  });
+
+  @override
+  State<_GcashPaymentSheet> createState() => _GcashPaymentSheetState();
+}
+
+class _GcashPaymentSheetState extends State<_GcashPaymentSheet> {
+  static const Color _green = Color(0xFF1D9E75);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _muted = Color(0xFF7C8B83);
+  static const Color _border = Color(0xFFE2EFE9);
+
+  /// The receipt image the user attached (checkout mode only).
+  Uint8List? _receiptBytes;
+  String _receiptName = '';
+
+  /// GCash reference number the user typed (checkout mode only).
+  final TextEditingController _referenceCtrl = TextEditingController();
+
+  /// Path of the already-uploaded receipt: kept after a failed request
+  /// insert so retrying the submit reuses it instead of re-uploading.
+  String? _uploadedPath;
+
+  bool _submitting = false;
+
+  bool get _checkout => widget.plan != null;
+
+  @override
+  void dispose() {
+    _referenceCtrl.dispose();
+    super.dispose();
+  }
+
+  String _peso(double value) {
+    final text = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toStringAsFixed(2);
+    return '₱$text';
+  }
+
+  Future<void> _pickReceipt(ImageSource source) async {
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (picked == null) return; // user cancelled
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > SubscriptionService.maxReceiptBytes) {
+        showTopMessage(context, 'Receipt image is too large — max 5 MB.');
+        return;
+      }
+      setState(() {
+        _receiptBytes = bytes;
+        _receiptName = picked.name;
+        _uploadedPath = null; // a newly picked image needs a fresh upload
+      });
+    } catch (e) {
+      if (mounted) showTopMessage(context, 'Could not pick the image: $e');
+    }
+  }
+
+  /// Pay-first submit: upload the receipt to the private bucket (once),
+  /// THEN insert the subscription request. No receipt → no request.
+  Future<void> _submit() async {
+    final plan = widget.plan;
+    if (plan == null) return;
+    if (_referenceCtrl.text.trim().isEmpty) {
+      showTopMessage(context,
+          'Please enter the reference number from your GCash receipt.');
+      return;
+    }
+    if (_receiptBytes == null) {
+      showTopMessage(context,
+          'Please attach your GCash receipt screenshot before submitting.');
+      return;
+    }
+    setState(() => _submitting = true);
+
+    // Step 1 — upload (skipped when retrying after a failed insert).
+    var path = _uploadedPath;
+    if (path == null) {
+      try {
+        path = await SubscriptionService.uploadReceipt(
+            _receiptBytes!, _receiptName);
+        _uploadedPath = path;
+      } on ReceiptUploadException catch (e) {
+        if (!mounted) return;
+        setState(() => _submitting = false);
+        showTopMessage(context, e.message);
+        return;
+      }
+      if (!mounted) return;
+    }
+
+    // Step 2 — insert the request with the receipt's storage path.
+    final error = await SubscriptionService.requestPlan(
+      plan,
+      receiptPath: path,
+      referenceNumber: _referenceCtrl.text,
+      yearly: widget.yearly,
+      monthlyPrice: widget.monthlyPrice,
+    );
+    if (!mounted) return;
+    setState(() => _submitting = false);
+    if (error == null) {
+      Navigator.pop(context, path);
+    } else {
+      // The receipt is already uploaded — the user can retry the submit
+      // without re-uploading it.
+      showTopMessage(context, error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final payment = widget.payment;
+    final due = widget.amount;
+    return Container(
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.9),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.black12,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Row(
+              children: [
+                Icon(Icons.payments_outlined, color: _green, size: 24),
+                SizedBox(width: 10),
+                Text('Pay with GCash',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // ── Amount due ─────────────────────────────────────────────
+            if (due != null && due > 0) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4FAF7),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  children: [
+                    const Text('Amount to send',
+                        style: TextStyle(fontSize: 12, color: _muted)),
+                    const SizedBox(height: 2),
+                    Text(_peso(due),
+                        style: const TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            color: _green)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Exact-amount warning: the admin verifies the receipt against
+              // this amount and will not accept an over- or underpayment.
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFDE08D)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: Color(0xFFB28704), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Send the exact amount of ${_peso(due)}. If your '
+                        'payment doesn\'t match this amount, the admin will '
+                        'not accept your plan request.',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF8A6D1B),
+                            height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // ── Every active GCash account (primary first) ─────────────
+            for (var i = 0; i < payment.accounts.length; i++)
+              _accountCard(payment.accounts[i], primary: i == 0),
+
+            // ── Global instructions ────────────────────────────────────
+            if (payment.instructions.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(payment.instructions,
+                  style: const TextStyle(
+                      fontSize: 13, color: Color(0xFF3D5247), height: 1.5)),
+            ],
+
+            const SizedBox(height: 16),
+            if (_checkout) ..._checkoutSection() else ..._infoSection(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// One GCash account: number (copyable) + account name + its QR code.
+  Widget _accountCard(PaymentAccount account, {required bool primary}) {
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        border: Border.all(color: _border),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Text('GCash number',
+                            style: TextStyle(fontSize: 12, color: _muted)),
+                        if (primary) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE8F8F1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('PRIMARY',
+                                style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: _green)),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(account.number,
+                        style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: _dark)),
+                    if (account.name.isNotEmpty)
+                      Text(account.name,
+                          style:
+                              const TextStyle(fontSize: 12.5, color: _muted)),
+                  ],
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: account.number));
+                  showTopMessage(context, 'GCash number copied!',
+                      isError: false);
+                },
+                icon: const Icon(Icons.copy_rounded, size: 16, color: _green),
+                label: const Text('Copy',
+                    style: TextStyle(
+                        color: _green, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          if (account.hasQr) ...[
+            const SizedBox(height: 10),
+            const Text('Or scan this QR code in the GCash app',
+                style: TextStyle(fontSize: 12.5, color: _muted)),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                account.qrUrl,
+                height: 200,
+                fit: BoxFit.contain,
+                loadingBuilder: (c, child, progress) => progress == null
+                    ? child
+                    : const SizedBox(
+                        height: 200,
+                        child: Center(
+                            child:
+                                CircularProgressIndicator(color: _green))),
+                errorBuilder: (c, e, s) => const SizedBox(
+                  height: 80,
+                  child: Center(
+                    child: Text('QR code unavailable',
+                        style: TextStyle(fontSize: 12, color: _muted)),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Checkout mode: mandatory reference number + receipt attach + submit.
+  /// No receipt → the submit button stays disabled and nothing is inserted.
+  List<Widget> _checkoutSection() {
+    final plan = widget.plan!;
+    return [
+      // ── GCash reference number (required) ──────────────────────────
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.tag_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('GCash reference number',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Copy the reference number from your GCash receipt and enter '
+              'it in the field provided below.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _referenceCtrl,
+              enabled: !_submitting,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w600, color: _dark),
+              decoration: InputDecoration(
+                hintText: 'e.g. 0012 345 678901',
+                hintStyle:
+                    const TextStyle(fontSize: 13, color: Color(0xFFB2C0B9)),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 12),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _green, width: 1.4),
+                ),
+                disabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _border),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.receipt_long_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('Attach your GCash receipt',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Pay first, then attach a screenshot of your GCash receipt. '
+              'Your request is only submitted once a receipt is attached.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.4),
+            ),
+            if (_receiptBytes != null) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.memory(_receiptBytes!,
+                    height: 160, fit: BoxFit.contain),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.check_circle, color: _green, size: 14),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(_receiptName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(fontSize: 11.5, color: _muted)),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => _pickReceipt(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library_outlined,
+                        size: 16, color: _green),
+                    label: Text(
+                        _receiptBytes == null ? 'Gallery' : 'Replace',
+                        style: const TextStyle(
+                            color: _green, fontWeight: FontWeight.w700)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: _border),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => _pickReceipt(ImageSource.camera),
+                    icon: const Icon(Icons.photo_camera_outlined,
+                        size: 16, color: _green),
+                    label: const Text('Camera',
+                        style: TextStyle(
+                            color: _green, fontWeight: FontWeight.w700)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: _border),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      SizedBox(
+        height: 48,
+        child: ElevatedButton.icon(
+          onPressed:
+              _submitting || _receiptBytes == null ? null : _submit,
+          icon: _submitting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2.4, color: Colors.white),
+                )
+              : const Icon(Icons.send_rounded, size: 18),
+          label: Text(
+              _submitting
+                  ? 'Submitting…'
+                  : 'Submit ${plan.label}${widget.yearly ? ' (Yearly)' : ''} '
+                      'request',
+              style: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w700)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _green,
+            foregroundColor: Colors.white,
+            disabledBackgroundColor: _green.withOpacity(0.5),
+            disabledForegroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: _submitting ? null : () => Navigator.pop(context),
+        child: const Text('Cancel',
+            style: TextStyle(color: _muted, fontSize: 13)),
+      ),
+    ];
+  }
+
+  /// Info mode: the submitted receipt (signed URL — the bucket is private),
+  /// or a "no receipt" note for legacy requests, plus a support shortcut.
+  List<Widget> _infoSection() {
+    return [
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: _border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.receipt_long_rounded, color: _green, size: 18),
+                SizedBox(width: 8),
+                Text('Your submitted receipt',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: _dark)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (widget.referenceNumber.isNotEmpty) ...[
+              Row(
+                children: [
+                  const Text('Reference number: ',
+                      style: TextStyle(fontSize: 12.5, color: _muted)),
+                  Expanded(
+                    child: Text(widget.referenceNumber,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                            color: _dark)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            if ((widget.receiptPath ?? '').isEmpty)
+              const Text(
+                'No receipt is attached to this request. If you haven\'t '
+                'paid yet, send the amount above and contact support with '
+                'your GCash reference number.',
+                style: TextStyle(fontSize: 12.5, color: _muted, height: 1.4),
+              )
+            else
+              FutureBuilder<String?>(
+                future:
+                    SubscriptionService.receiptSignedUrl(widget.receiptPath),
+                builder: (c, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const SizedBox(
+                      height: 120,
+                      child: Center(
+                          child: CircularProgressIndicator(color: _green)),
+                    );
+                  }
+                  final url = snap.data;
+                  if (url == null) {
+                    return const Text('Receipt preview unavailable.',
+                        style: TextStyle(fontSize: 12.5, color: _muted));
+                  }
+                  return Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        url,
+                        height: 200,
+                        fit: BoxFit.contain,
+                        errorBuilder: (c, e, s) => const Text(
+                            'Receipt preview unavailable.',
+                            style:
+                                TextStyle(fontSize: 12.5, color: _muted)),
+                      ),
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      SizedBox(
+        height: 48,
+        child: ElevatedButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SupportChatPage()),
+            );
+          },
+          icon: const Icon(Icons.support_agent_rounded, size: 18),
+          label: const Text('Contact Support',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _green,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child:
+            const Text('Close', style: TextStyle(color: _muted, fontSize: 13)),
+      ),
+    ];
+  }
+}
+
+/// Full-screen "Edit Profile" page.
+///
+/// Layout is modeled on a social-app style edit screen: a centered avatar with
+/// an "Edit picture or avatar" action on top, followed by label/value rows
+/// separated by thin dividers. It edits the same fields as the old popup
+/// (name, phone, address, house number) and persists them via [onSave].
+class _EditProfilePage extends StatefulWidget {
+  final String initialName;
+  final String initialPhone;
+  final String initialAddress;
+  final String initialHouse;
+  final String initialAvatarUrl;
+  // Details extras (read-only) + shop details (editable, seller-only).
+  final String email;
+  final String memberSince;
+  final bool isSeller;
+  final String initialBusinessName;
+  final String initialShopCategory;
+  final String initialShopDescription;
+  final String initialMessengerLink;
+  final String initialContactPhone;
+  final String initialWhatsapp;
+  final String initialViber;
+  final String initialContactEmail;
+  final String initialFacebook;
+  final Future<String?> Function({
+    required String name,
+    required String phone,
+    required String address,
+    required String houseNumber,
+    required String businessName,
+    required String shopCategory,
+    required String shopDescription,
+    required String messengerLink,
+    String contactPhone,
+    String whatsapp,
+    String viber,
+    String contactEmail,
+    String facebook,
+    PhCity? location,
+  }) onSave;
+  final ValueChanged<String> onAvatarChanged;
+
+  const _EditProfilePage({
+    required this.initialName,
+    required this.initialPhone,
+    required this.initialAddress,
+    required this.initialHouse,
+    required this.initialAvatarUrl,
+    required this.email,
+    required this.memberSince,
+    required this.isSeller,
+    required this.initialBusinessName,
+    required this.initialShopCategory,
+    required this.initialShopDescription,
+    required this.initialMessengerLink,
+    required this.initialContactPhone,
+    required this.initialWhatsapp,
+    required this.initialViber,
+    required this.initialContactEmail,
+    required this.initialFacebook,
+    required this.onSave,
+    required this.onAvatarChanged,
+  });
+
+  @override
+  State<_EditProfilePage> createState() => _EditProfilePageState();
+}
+
+class _EditProfilePageState extends State<_EditProfilePage> {
+  static const Color _accent = Color(0xFF3AA876);
+  static const Color _dark = Color(0xFF1A2E22);
+  static const Color _line = Color(0xFFEAF2EE);
+
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _houseCtrl;
+  late final TextEditingController _businessCtrl;
+  late final TextEditingController _shopDescCtrl;
+  late final TextEditingController _messengerCtrl;
+  late final TextEditingController _contactPhoneCtrl;
+  late final TextEditingController _whatsappCtrl;
+  late final TextEditingController _viberCtrl;
+  late final TextEditingController _contactEmailCtrl;
+  late final TextEditingController _facebookCtrl;
+  late String _shopCategory;
+  late String _avatarUrl;
+  // Address is picked from the PH city/municipality gazetteer, not typed.
+  late String _address;
+  PhCity? _pickedCity;
+  bool _isSaving = false;
+  bool _uploadingAvatar = false;
+
+  static const List<String> _categories = [
+    'Poultry',
+    'Livestock',
+    'Aquaculture',
+    'Ornamental Fish',
+    'Hatching & Breeding Products',
+    'Mixed / All',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.initialName);
+    _phoneCtrl = TextEditingController(text: widget.initialPhone);
+    _address = widget.initialAddress;
+    _houseCtrl = TextEditingController(text: widget.initialHouse);
+    _businessCtrl = TextEditingController(text: widget.initialBusinessName);
+    _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
+    _messengerCtrl = TextEditingController(text: widget.initialMessengerLink);
+    _contactPhoneCtrl = TextEditingController(text: widget.initialContactPhone);
+    _whatsappCtrl = TextEditingController(text: widget.initialWhatsapp);
+    _viberCtrl = TextEditingController(text: widget.initialViber);
+    _contactEmailCtrl = TextEditingController(text: widget.initialContactEmail);
+    _facebookCtrl = TextEditingController(text: widget.initialFacebook);
+    _shopCategory = widget.initialShopCategory;
+    _avatarUrl = widget.initialAvatarUrl;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _houseCtrl.dispose();
+    _businessCtrl.dispose();
+    _shopDescCtrl.dispose();
+    _messengerCtrl.dispose();
+    _contactPhoneCtrl.dispose();
+    _whatsappCtrl.dispose();
+    _viberCtrl.dispose();
+    _contactEmailCtrl.dispose();
+    _facebookCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_isSaving) return;
+    setState(() => _isSaving = true);
+    final error = await widget.onSave(
+      name: _nameCtrl.text.trim(),
+      phone: _phoneCtrl.text.trim(),
+      address: _address.trim(),
+      location: _pickedCity,
+      houseNumber: _houseCtrl.text.trim(),
+      businessName: _businessCtrl.text.trim(),
+      shopCategory: _shopCategory,
+      shopDescription: _shopDescCtrl.text.trim(),
+      messengerLink: _messengerCtrl.text.trim(),
+      contactPhone: _contactPhoneCtrl.text.trim(),
+      whatsapp: _whatsappCtrl.text.trim(),
+      viber: _viberCtrl.text.trim(),
+      contactEmail: _contactEmailCtrl.text.trim(),
+      facebook: _facebookCtrl.text.trim(),
+    );
+    if (!mounted) return;
+    if (error == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() => _isSaving = false);
+      showTopMessage(context, 'Save failed: $error');
+    }
+  }
+
+  // Lets the user pick a photo source, then uploads and saves it as the avatar.
+  Future<void> _changeAvatar() async {
+    if (_uploadingAvatar) return;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCEFE6),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined, color: _accent),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: _accent),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    await _uploadAvatar(source);
+  }
+
+  /// Opens the crop editor so the user can frame their photo as a square
+  /// before upload. Returns null if they cancel.
+  Future<CroppedFile?> _cropToSquare(String sourcePath) async {
+    return ImageCropper().cropImage(
+      sourcePath: sourcePath,
+      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+      compressFormat: ImageCompressFormat.jpg,
+      compressQuality: 90,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Adjust photo',
+          toolbarColor: _accent,
+          toolbarWidgetColor: Colors.white,
+          backgroundColor: Colors.black,
+          activeControlsWidgetColor: _accent,
+          initAspectRatio: CropAspectRatioPreset.square,
+          lockAspectRatio: true,
+          cropStyle: CropStyle.circle,
+          aspectRatioPresets: const [CropAspectRatioPreset.square],
+        ),
+        IOSUiSettings(
+          title: 'Adjust photo',
+          aspectRatioLockEnabled: true,
+          resetAspectRatioEnabled: false,
+          cropStyle: CropStyle.circle,
+          aspectRatioPresets: const [CropAspectRatioPreset.square],
+        ),
+        WebUiSettings(
+          context: context,
+          presentStyle: WebPresentStyle.dialog,
+        ),
+      ],
+    );
+  }
+
+  Future<void> _uploadAvatar(ImageSource source) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      showTopMessage(context, 'You are not signed in. Please log in again.');
+      return;
+    }
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1080,
+        maxHeight: 1080,
+        imageQuality: 90,
+      );
+      if (picked == null) return; // user cancelled
+      if (!mounted) return;
+
+      // Let the user crop/adjust to a square before uploading.
+      final cropped = await _cropToSquare(picked.path);
+      if (cropped == null) return; // user cancelled the crop
+
+      setState(() => _uploadingAvatar = true);
+      final bytes = await cropped.readAsBytes();
+
+      // Upload the new profile picture to Cloudinary (folder `user_profile`).
+      final url = await uploadToCloudinary(
+        bytes,
+        '${user.id}.jpg',
+        folder: 'user_profile',
+      );
+      if (url == null) {
+        throw Exception('Image upload failed.');
+      }
+
+      // Remove the previous picture from Cloudinary so it's truly replaced.
+      // Runs while the DB still references the old URL (best-effort).
+      await deleteCurrentAvatarImage();
+
+      // Persist the new URL on the user's row.
+      await supabase
+          .from('users')
+          .update({'avatar_url': url}).eq('id', user.id);
+
+      if (!mounted) return;
+      setState(() {
+        _avatarUrl = url;
+        _uploadingAvatar = false;
+      });
+      widget.onAvatarChanged(url);
+      showTopMessage(context, 'Profile picture updated!',
+          isError: false, backgroundColor: _accent);
+    } catch (e) {
+      debugPrint('Avatar upload failed: $e');
+      if (!mounted) return;
+      setState(() => _uploadingAvatar = false);
+      showTopMessage(context, 'Could not update picture: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        elevation: 0,
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: _dark),
+          onPressed: _isSaving ? null : () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'Edit Profile',
+          style: TextStyle(color: _dark, fontWeight: FontWeight.bold, fontSize: 18),
+        ),
+        actions: [
+          _isSaving
+              ? const Padding(
+                  padding: EdgeInsets.only(right: 20),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2.5, color: _accent),
+                    ),
+                  ),
+                )
+              : TextButton(
+                  onPressed: _save,
+                  child: const Text(
+                    'Save',
+                    style: TextStyle(color: _accent, fontWeight: FontWeight.w700, fontSize: 15),
+                  ),
+                ),
+        ],
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: _line),
+        ),
+      ),
+      body: ListView(
+        children: [
+          const SizedBox(height: 26),
+          // ── Avatar + edit action ───────────────────────────────────────
+          Center(
+            child: Column(
+              children: [
+                GestureDetector(
+                  onTap: _uploadingAvatar ? null : _changeAvatar,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 96,
+                        height: 96,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF4A9B73),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: _line, width: 2),
+                          image: _avatarUrl.isNotEmpty
+                              ? DecorationImage(
+                                  image: NetworkImage(_avatarUrl),
+                                  fit: BoxFit.cover,
+                                )
+                              : null,
+                        ),
+                        child: _avatarUrl.isNotEmpty
+                            ? null
+                            : const Icon(Icons.person, color: Colors.white, size: 48),
+                      ),
+                      // Loading overlay while uploading.
+                      if (_uploadingAvatar)
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withOpacity(0.35),
+                            ),
+                            child: const Center(
+                              child: SizedBox(
+                                width: 26,
+                                height: 26,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2.5, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ),
+                      // Camera badge.
+                      Positioned(
+                        right: -2,
+                        bottom: -2,
+                        child: Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: _accent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2.5),
+                          ),
+                          child: const Icon(Icons.photo_camera,
+                              color: Colors.white, size: 16),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: _uploadingAvatar ? null : _changeAvatar,
+                  child: const Text(
+                    'Edit picture or avatar',
+                    style: TextStyle(color: _accent, fontWeight: FontWeight.w600, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          _sectionHeader('Details'),
+          _row('Name', _nameCtrl, 'Your full name'),
+          _row('Phone', _phoneCtrl, 'Your phone number',
+              type: TextInputType.phone,
+              formatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ]),
+          _addressRow(),
+          if (widget.email.isNotEmpty) _readonlyRow('Email', widget.email),
+          if (widget.memberSince.isNotEmpty)
+            _readonlyRow('Member', widget.memberSince),
+          // ── Shop details (sellers only) ──
+          if (widget.isSeller) ...[
+            _sectionHeader('Shop'),
+            _row('Shop Name', _businessCtrl, 'Shop / Farm name'),
+            _categoryRow(),
+            _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
+            _row('Messenger', _messengerCtrl, 'm.me/yourname',
+                type: TextInputType.url),
+            _sectionHeader('Contact options (optional)'),
+            _hintText(
+                'Shown as buttons on your public seller profile. Leave any '
+                'blank to hide it. Buyers use these to reach you.'),
+            _row('Phone', _contactPhoneCtrl, 'Public number (call & SMS)',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('WhatsApp', _whatsappCtrl, 'WhatsApp number',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('Viber', _viberCtrl, 'Viber number',
+                type: TextInputType.phone,
+                formatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(13),
+                ]),
+            _row('Email', _contactEmailCtrl, 'Public contact email',
+                type: TextInputType.emailAddress),
+            _row('Facebook', _facebookCtrl, 'facebook.com/yourpage',
+                type: TextInputType.url),
+          ],
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  // Section heading row (e.g. "Details", "Shop").
+  Widget _sectionHeader(String label) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFF7FBF9),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: Text(
+        label,
+        style: const TextStyle(
+            fontSize: 13, fontWeight: FontWeight.bold, color: _accent),
+      ),
+    );
+  }
+
+  // A small explanatory caption under a section header.
+  Widget _hintText(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: 12, color: Colors.black45, height: 1.3),
+      ),
+    );
+  }
+
+  // A read-only label/value row for fields that can't be edited here.
+  Widget _readonlyRow(String label, String value) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _line)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 104,
+            child: Text(label,
+                style: const TextStyle(
+                    fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(fontSize: 16, color: Colors.black45)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Tappable address row that opens the searchable PH city/municipality
+  // picker instead of a free-text box.
+  Widget _addressRow() {
+    return InkWell(
+      onTap: _pickAddress,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: _line)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 104,
+              child: Text('Address',
+                  style: TextStyle(
+                      fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+            ),
+            Expanded(
+              child: Text(
+                _address.isNotEmpty ? _address : 'Select your city/municipality',
+                style: TextStyle(
+                    fontSize: 16,
+                    color: _address.isNotEmpty ? _dark : Colors.black38),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down,
+                color: Colors.black38, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAddress() async {
+    final city = await showCityPicker(
+      context,
+      selectedLabel: _address,
+      title: 'Your Address',
+      subtitle: 'Search and select your city or municipality — your listings '
+          'and "near you" distances are based on it.',
+    );
+    if (city == null || !mounted) return;
+    setState(() {
+      _pickedCity = city;
+      _address = city.label;
+    });
+  }
+
+  // Tappable category row that opens a picker.
+  Widget _categoryRow() {
+    return InkWell(
+      onTap: _pickCategory,
+      child: Container(
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: _line)),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 104,
+              child: Text('Category',
+                  style: TextStyle(
+                      fontSize: 16, color: _dark, fontWeight: FontWeight.w500)),
+            ),
+            Expanded(
+              child: Text(
+                _shopCategory.isNotEmpty ? _shopCategory : 'Select category',
+                style: TextStyle(
+                    fontSize: 16,
+                    color: _shopCategory.isNotEmpty ? _dark : Colors.black38),
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down_rounded,
+                color: Colors.black38, size: 22),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickCategory() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                  color: const Color(0xFFDCEFE6),
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 8),
+            ..._categories.map((c) => ListTile(
+                  title: Text(c),
+                  trailing: _shopCategory == c
+                      ? const Icon(Icons.check_circle_rounded, color: _accent)
+                      : null,
+                  onTap: () => Navigator.pop(ctx, c),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) setState(() => _shopCategory = picked);
+  }
+
+  // A single label/value row: fixed-width label on the left, inline editable
+  // text field on the right, with a thin divider beneath.
+  Widget _row(String label, TextEditingController ctrl, String hint,
+      {TextInputType type = TextInputType.text,
+      int maxLines = 1,
+      List<TextInputFormatter>? formatters}) {
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _line)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: SizedBox(
+              width: 104,
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 16, color: _dark, fontWeight: FontWeight.w500),
+              ),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: ctrl,
+              keyboardType: type,
+              inputFormatters: formatters,
+              maxLines: maxLines,
+              style: const TextStyle(fontSize: 16, color: _dark),
+              cursorColor: _accent,
+              decoration: InputDecoration(
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                border: InputBorder.none,
+                hintText: hint,
+                hintStyle: const TextStyle(color: Colors.black38, fontSize: 16),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Small status dot used in the Customer Service sheet.
+class _Dot extends StatelessWidget {
+  const _Dot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 7,
+      height: 7,
+      decoration: const BoxDecoration(
+        color: Color(0xFF3AA876),
+        shape: BoxShape.circle,
+      ),
     );
   }
 }

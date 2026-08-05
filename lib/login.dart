@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'signup.dart';
 import 'dashboard.dart';
+import 'current_user.dart';
+import 'forgot_password.dart';
+import 'main.dart';
+import 'widgets/top_message.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -13,10 +18,7 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
-
-  // Hardcoded test account
-  final String _validEmail = 'user@animart.com';
-  final String _validPassword = 'animart123';
+  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -25,27 +27,85 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void _handleLogin() {
+  Future<void> _handleLogin() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
     if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in all fields.'), backgroundColor: Colors.redAccent),
-      );
+      showTopMessage(context, 'Please fill in all fields.');
       return;
     }
 
-    // Logic for redirection
-    if (email == _validEmail && password == _validPassword) {
+    setState(() => _isLoading = true);
+    try {
+      final response = await supabase.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+
+      // Administrator accounts are not permitted to sign in to the mobile app.
+      // If this account exists in the admins table, deny access and sign out.
+      final authId = response.user?.id;
+      if (authId != null) {
+        final adminRow = await supabase
+            .from('admins')
+            .select('id')
+            .eq('id', authId)
+            .maybeSingle();
+        if (adminRow != null) {
+          await supabase.auth.signOut();
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Access denied. This is an administrator account and cannot be '
+            'used to sign in here. Please use a proper user account.',
+            duration: const Duration(seconds: 4),
+          );
+          return;
+        }
+      }
+
+      // Copy the valid-ID details and sign-up location onto the user's row
+      // now that a session exists. Best-effort — never blocks login.
+      await backfillValidIdFromMetadata();
+      await backfillLocationFromMetadata();
+
+      // Admin-approval gate: accounts must be approved (is_verified = true) on
+      // the admin website before they can use the app. Until then, deny access
+      // and sign out so no session is left hanging.
+      if (authId != null) {
+        final profile = await supabase
+            .from('users')
+            .select('is_verified')
+            .eq('id', authId)
+            .maybeSingle();
+        final isVerified = (profile?['is_verified'] as bool?) ?? false;
+        if (!isVerified) {
+          await supabase.auth.signOut();
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Your account is awaiting admin approval. You\'ll be able to log in '
+            'once it has been reviewed and approved.',
+            duration: const Duration(seconds: 4),
+          );
+          return;
+        }
+      }
+
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const DashboardPage()),
       );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invalid email or password.'), backgroundColor: Colors.redAccent),
-      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, e.message);
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -83,12 +143,12 @@ class _LoginPageState extends State<LoginPage> {
 
               const SizedBox(height: 36),
 
-              // Email / Contact Number field
+              // Email field (login is by email only)
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
                 decoration: InputDecoration(
-                  hintText: 'Email or Contact Number',
+                  hintText: 'Email',
                   hintStyle: const TextStyle(
                     color: Colors.black45,
                     fontSize: 14,
@@ -152,13 +212,18 @@ class _LoginPageState extends State<LoginPage> {
               // Forgot Password
               GestureDetector(
                 onTap: () {
-                  // TODO: Navigate to Forgot Password page
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ForgotPasswordPage()),
+                  );
                 },
                 child: const Text(
                   'Forgot Password?',
                   style: TextStyle(
                     fontSize: 13,
-                    color: Colors.black54,
+                    color: Color(0xFF4CAF7D),
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -170,7 +235,7 @@ class _LoginPageState extends State<LoginPage> {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: _handleLogin,
+                  onPressed: _isLoading ? null : _handleLogin,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6DBF99),
                     shape: RoundedRectangleBorder(
@@ -178,15 +243,24 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     elevation: 0,
                   ),
-                  child: const Text(
-                    'LOG IN',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'LOG IN',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
                 ),
               ),
 

@@ -1,7 +1,15 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'cloudinary_function.dart';
+import 'legal.dart';
+import 'liveness_check.dart';
 import 'login.dart';
+import 'main.dart';
+import 'services/location_service.dart';
+import 'widgets/city_picker.dart';
+import 'widgets/top_message.dart';
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -16,8 +24,9 @@ class _SignUpPageState extends State<SignUpPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
 
-  // Step 2 - Address
-  final TextEditingController _addressController = TextEditingController();
+  // Step 2 - Address. The city/municipality comes from the searchable PH
+  // gazetteer picker (with coordinates), not a free-text box.
+  PhCity? _selectedCity;
   final TextEditingController _houseController = TextEditingController();
 
   // Step 3 - Security & ID
@@ -27,9 +36,15 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _obscureRetypePassword = true;
   bool _agreedToTerms = false;
 
-  // ID upload state
-  File? _validIdFile;
+  // ID upload state. Stored as in-memory bytes (not a dart:io File) so it
+  // works on every platform including Flutter Web.
+  Uint8List? _validIdBytes;
+  String? _validIdName;
   String? _selectedIdType;
+
+  // Face verification state — captured right after ID upload, instead of
+  // at final submit. Holds the 4 pose photos (center/right/left/down).
+  LivenessResult? _livenessResult;
 
   static const List<String> _idTypes = [
     'Philippine Passport',
@@ -49,6 +64,7 @@ class _SignUpPageState extends State<SignUpPage> {
   final ImagePicker _picker = ImagePicker();
 
   int _currentStep = 1;
+  bool _isSubmitting = false;
 
   static const Color mint = Color(0xFF91E6C1);
   static const Color dark = Color(0xFF1F2937);
@@ -58,7 +74,6 @@ class _SignUpPageState extends State<SignUpPage> {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
-    _addressController.dispose();
     _houseController.dispose();
     _passwordController.dispose();
     _retypePasswordController.dispose();
@@ -75,18 +90,17 @@ class _SignUpPageState extends State<SignUpPage> {
         maxHeight: 1200,
       );
       if (picked != null) {
-        setState(() => _validIdFile = File(picked.path));
+        final bytes = await picked.readAsBytes();
+        setState(() {
+          _validIdBytes = bytes;
+          _validIdName = picked.name;
+        });
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not access ${source == ImageSource.camera ? 'camera' : 'gallery'}. Please check permissions.'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            margin: const EdgeInsets.all(16),
-          ),
+        showTopMessage(
+          context,
+          'Could not access ${source == ImageSource.camera ? 'camera' : 'gallery'}. Please check permissions.',
         );
       }
     }
@@ -154,7 +168,7 @@ class _SignUpPageState extends State<SignUpPage> {
                   _pickImage(ImageSource.gallery);
                 },
               ),
-              if (_validIdFile != null) ...[
+              if (_validIdBytes != null) ...[
                 const SizedBox(height: 12),
                 _SourceTile(
                   icon: Icons.delete_outline_rounded,
@@ -163,7 +177,10 @@ class _SignUpPageState extends State<SignUpPage> {
                   color: const Color(0xFFFFD6D6),
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _validIdFile = null);
+                    setState(() {
+                      _validIdBytes = null;
+                      _validIdName = null;
+                    });
                   },
                 ),
               ],
@@ -217,7 +234,8 @@ class _SignUpPageState extends State<SignUpPage> {
                 child: ListView.separated(
                   controller: scrollCtrl,
                   itemCount: _idTypes.length,
-separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(0.08)),
+                  separatorBuilder: (_, __) =>
+                      Divider(height: 1, color: Colors.black.withOpacity(0.08)),
                   itemBuilder: (_, i) {
                     final idType = _idTypes[i];
                     final isSelected = _selectedIdType == idType;
@@ -250,52 +268,208 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     );
   }
 
+  // ── Face Verification ─────────────────────────────────────
+  /// Launches the face-liveness screen (center → right → left → down,
+  /// GCash-style) so we can confirm the person signing up is actually
+  /// present. Triggered right after the ID upload, not at final submit.
+  Future<void> _verifyFace() async {
+    final result = await Navigator.push<LivenessResult?>(
+      context,
+      MaterialPageRoute(builder: (_) => const LivenessCheckPage()),
+    );
+
+    if (result == null) {
+      if (mounted) {
+        _showSnack('Face verification was not completed. Please try again.');
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _livenessResult = result);
+      _showSnack('Face verified!', color: const Color(0xFF4CAF7D));
+    }
+  }
+
   // ── Validation per step ───────────────────────────────────
+
+  static final RegExp _emailRe =
+      RegExp(r'^[\w.+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$');
+
+  /// Accepts Philippine mobile numbers: 09XXXXXXXXX or +639XXXXXXXXX
+  /// (spaces and dashes are ignored).
+  static bool _isValidPhPhone(String input) {
+    final digits = input.replaceAll(RegExp(r'[\s\-()]'), '');
+    return RegExp(r'^(09\d{9}|\+639\d{9})$').hasMatch(digits);
+  }
+
   String? _validateCurrentStep() {
     switch (_currentStep) {
       case 1:
         if (_nameController.text.trim().isEmpty) return 'Please enter your name.';
-        if (_emailController.text.trim().isEmpty) return 'Please enter your email.';
-        if (_phoneController.text.trim().isEmpty) return 'Please enter your phone number.';
+        final email = _emailController.text.trim();
+        if (email.isEmpty) return 'Please enter your email.';
+        if (!_emailRe.hasMatch(email)) return 'Please enter a valid email address.';
+        final phone = _phoneController.text.trim();
+        if (phone.isEmpty) return 'Please enter your phone number.';
+        if (!_isValidPhPhone(phone)) {
+          return 'Please enter a valid PH mobile number (09XXXXXXXXX).';
+        }
         return null;
       case 2:
-        if (_addressController.text.trim().isEmpty) return 'Please enter your address.';
+        if (_selectedCity == null) return 'Please select your city/municipality.';
         if (_houseController.text.trim().isEmpty) return 'Please enter your house/street/unit/lot number.';
         return null;
       case 3:
-        if (_passwordController.text.isEmpty) return 'Please enter a password.';
-        if (_passwordController.text.length < 6) return 'Password must be at least 6 characters.';
+        final password = _passwordController.text;
+        if (password.isEmpty) return 'Please enter a password.';
+        if (password.length < 8) return 'Password must be at least 8 characters.';
+        if (!RegExp(r'[A-Za-z]').hasMatch(password) ||
+            !RegExp(r'[0-9]').hasMatch(password)) {
+          return 'Password must contain at least one letter and one number.';
+        }
         if (_retypePasswordController.text.isEmpty) return 'Please retype your password.';
-        if (_passwordController.text != _retypePasswordController.text) return 'Passwords do not match.';
+        if (password != _retypePasswordController.text) return 'Passwords do not match.';
         if (_selectedIdType == null) return 'Please select the type of your valid ID.';
-        if (_validIdFile == null) return 'Please upload a photo of your valid ID.';
+        if (_validIdBytes == null) return 'Please upload a photo of your valid ID.';
+        if (_livenessResult == null) return 'Please complete face verification.';
         if (!_agreedToTerms) return 'Please agree to the Terms and Conditions.';
         return null;
     }
     return null;
   }
 
-  void _onContinue() {
+  void _showSnack(String message, {Color color = Colors.redAccent}) {
+    showTopMessage(
+      context,
+      message,
+      isError: color == Colors.redAccent,
+      backgroundColor: color,
+    );
+  }
+
+  Future<void> _onContinue() async {
     final error = _validateCurrentStep();
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          margin: const EdgeInsets.all(16),
-        ),
-      );
+      _showSnack(error);
       return;
     }
     if (_currentStep < 3) {
       setState(() => _currentStep++);
     } else {
-      // TODO: Submit registration
-      // You have access to:
-      //   _validIdFile    → File to upload
-      //   _selectedIdType → String ID type chosen
+      // Face verification already happened earlier in step 3 (right after
+      // ID upload) — just submit using the stored result.
+      await _submitRegistration(_livenessResult!);
+    }
+  }
+
+  Future<void> _submitRegistration(LivenessResult liveness) async {
+    setState(() => _isSubmitting = true);
+    final name = _nameController.text.trim();
+    final email = _emailController.text.trim();
+    final phone = _phoneController.text.trim();
+    final city = _selectedCity;
+    final address = city?.label ?? '';
+    final houseNumber = _houseController.text.trim();
+    try {
+      // 1) Upload the valid-ID photo, main selfie, and all pose photos to
+      //    their own Cloudinary folders first (no auth needed), so their
+      //    URLs can travel in the sign-up metadata below.
+      String? validIdUrl;
+      if (_validIdBytes != null) {
+        try {
+          validIdUrl = await uploadToCloudinary(
+            _validIdBytes!,
+            _validIdName ?? 'valid_id_${DateTime.now().millisecondsSinceEpoch}.jpg',
+            folder: 'sign ups(animart)',
+          );
+        } catch (e) {
+          debugPrint('Valid ID upload failed: $e');
+        }
+      }
+
+      // Main selfie (final "down" pose) — kept for backward compatibility.
+      String? selfieUrl;
+      try {
+        selfieUrl = await uploadToCloudinary(
+          liveness.selfie,
+          'selfie_${DateTime.now().millisecondsSinceEpoch}.jpg',
+          folder: 'sign ups(animart)/selfies',
+        );
+      } catch (e) {
+        debugPrint('Selfie upload failed: $e');
+      }
+
+      // All 4 pose photos (center/right/left/down) for stronger verification.
+      final Map<String, String> verificationUrls = {};
+      for (final entry in liveness.poseImages.entries) {
+        try {
+          final url = await uploadToCloudinary(
+            entry.value,
+            '${entry.key}_${DateTime.now().millisecondsSinceEpoch}.jpg',
+            folder: 'sign ups(animart)/verification',
+          );
+          if (url != null) {
+            verificationUrls[entry.key] = url; // only assign non-null
+          }
+        } catch (e) {
+          debugPrint('${entry.key} pose upload failed: $e');
+        }
+      }
+
+      // 2) Create the Auth user. A database trigger creates the matching row
+      //    in `users` from this metadata (which bypasses RLS and works even
+      //    when email confirmation is on, so there's no client write here).
+      //    `valid_id_url` / `id_type` / `selfie_url` / `verification_photos`
+      //    are backfilled into that row on the user's first login, when a
+      //    session is guaranteed to exist.
+      final res = await supabase.auth.signUp(
+        email: email,
+        password: _passwordController.text,
+        data: {
+          'name': name,
+          'phone': phone,
+          'address': address,
+          'house_number': houseNumber,
+          'id_type': _selectedIdType,
+          'valid_id_url': validIdUrl,
+          'selfie_url': selfieUrl,
+          'verification_photos': verificationUrls, // {center,right,left,down}
+          // Coordinates for "Explore near you" — backfilled into the users
+          // row on first login (see backfillLocationFromMetadata).
+          'location_name': city?.label,
+          'latitude': city?.lat,
+          'longitude': city?.lng,
+        },
+      );
+
+      if (res.user == null) {
+        if (mounted) _showSnack('Could not create your account. Please try again.');
+        return;
+      }
+
+      if (!mounted) return;
+
+      if (res.session != null) {
+        // Email confirmation is disabled — user is signed in immediately.
+        _showSnack('Account created!', color: const Color(0xFF4CAF7D));
+      } else {
+        // Email confirmation is enabled — prompt the user to verify.
+        _showSnack(
+          'Account created! Please check your email to confirm, then log in.',
+          color: const Color(0xFF4CAF7D),
+        );
+      }
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginPage()),
+      );
+    } on AuthException catch (e) {
+      if (mounted) _showSnack(e.message);
+    } catch (e) {
+      if (mounted) _showSnack('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -387,7 +561,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
 
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: _onContinue,
+                        onPressed: _isSubmitting ? null : _onContinue,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: mint,
                           foregroundColor: dark,
@@ -397,13 +571,22 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                           ),
                           elevation: 0,
                         ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                        child: _isSubmitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: dark,
+                                ),
+                              )
+                            : Text(
+                                _currentStep < 3 ? 'Continue' : 'Create Account',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                       ),
                     ),
                   ],
@@ -457,14 +640,68 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
             const SizedBox(height: 14),
             _buildField(controller: _emailController, hint: 'Email', keyboardType: TextInputType.emailAddress),
             const SizedBox(height: 14),
-            _buildField(controller: _phoneController, hint: 'Phone', keyboardType: TextInputType.phone),
+            _buildField(
+              controller: _phoneController,
+              hint: 'Phone (09XXXXXXXXX)',
+              keyboardType: TextInputType.phone,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ],
+            ),
           ],
         );
 
       case 2:
         return Column(
           children: [
-            _buildField(controller: _addressController, hint: 'Address', keyboardType: TextInputType.streetAddress),
+            // Searchable city/municipality dropdown (all PH locations).
+            GestureDetector(
+              onTap: () async {
+                final city = await showCityPicker(
+                  context,
+                  selectedLabel: _selectedCity?.label,
+                  title: 'Your Address',
+                  subtitle: 'Search and select your city or municipality.',
+                );
+                if (city != null && mounted) {
+                  setState(() => _selectedCity = city);
+                }
+              },
+              child: Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.location_on_outlined,
+                        color: Colors.black45, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _selectedCity?.label ?? 'Select City / Municipality',
+                        style: TextStyle(
+                          color: _selectedCity != null
+                              ? Colors.black87
+                              : Colors.black45,
+                          fontSize: 14,
+                          fontWeight: _selectedCity != null
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.keyboard_arrow_down_rounded,
+                        color: Colors.black45, size: 20),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 14),
             _buildField(controller: _houseController, hint: 'House No./Street/Unit/Lot No.'),
           ],
@@ -532,12 +769,12 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                   borderRadius: BorderRadius.circular(20),
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: _validIdFile != null
+                child: _validIdBytes != null
                     ? Stack(
                         children: [
                           // Preview image
-                          Image.file(
-                            _validIdFile!,
+                          Image.memory(
+                            _validIdBytes!,
                             width: double.infinity,
                             height: 160,
                             fit: BoxFit.cover,
@@ -595,6 +832,77 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
               ),
             ),
 
+            const SizedBox(height: 14),
+
+            // ── Face Verification (right after ID upload) ────
+            GestureDetector(
+              onTap: _verifyFace,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: _livenessResult != null
+                      ? const Color(0xFFD4F5E4)
+                      : const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(20),
+                  border: _livenessResult != null
+                      ? Border.all(color: const Color(0xFF4CAF7D), width: 1.5)
+                      : null,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _livenessResult != null
+                          ? Icons.check_circle_rounded
+                          : Icons.face_retouching_natural_rounded,
+                      color: _livenessResult != null
+                          ? const Color(0xFF4CAF7D)
+                          : Colors.black45,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _livenessResult != null
+                                ? 'Face Verified'
+                                : 'Verify Your Face',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: _livenessResult != null
+                                  ? const Color(0xFF2D7A57)
+                                  : Colors.black87,
+                            ),
+                          ),
+                          Text(
+                            _livenessResult != null
+                                ? 'Tap to redo the scan'
+                                : 'Quick face scan to confirm it\'s really you',
+                            style: const TextStyle(fontSize: 11, color: Colors.black45),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_livenessResult == null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Text(
+                          'Required',
+                          style: TextStyle(fontSize: 11, color: Colors.black45),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
             const SizedBox(height: 16),
 
             // ── Terms Checkbox ────────────────────────────
@@ -608,20 +916,33 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                 ),
                 Expanded(
-                  child: RichText(
-                    text: const TextSpan(
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
-                      children: [
-                        TextSpan(text: 'I agree to the '),
-                        TextSpan(
-                          text: 'Terms and Conditions & Privacy Policy',
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'I agree to the ',
+                        style: TextStyle(fontSize: 12, color: Colors.black54),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const TermsAndPrivacyPage()),
+                          );
+                        },
+                        child: const Text(
+                          'Terms and Conditions & Privacy Policy',
                           style: TextStyle(
+                            fontSize: 12,
                             color: Color(0xFF4CAF7D),
                             fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.underline,
+                            decorationColor: Color(0xFF4CAF7D),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -638,10 +959,12 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     required TextEditingController controller,
     required String hint,
     TextInputType keyboardType = TextInputType.text,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Colors.black45, fontSize: 14),

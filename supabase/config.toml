@@ -1,0 +1,27 @@
+# Supabase CLI project config.
+# The project ref this links to (Project Settings → General → Reference ID).
+project_id = "kzhlhrhhfupgvpzjllce"
+
+[functions.delete-cloudinary-image]
+# Cloudinary deletion is signed by the app's signed-in user. Keep JWT
+# verification on so only authenticated users can invoke it.
+verify_jwt = true
+
+[functions.delete-avatar-image]
+# Deletes the caller's own previous profile picture. JWT verification on so
+# only authenticated users can invoke it; the function reads the caller's own
+# avatar_url, so it can only ever delete their own image.
+verify_jwt = true
+
+[functions.listing-page]
+# Public share page for a listing ("Copy Link" URLs). Must be reachable by
+# people without the app or an account, so JWT verification is off; it only
+# renders fields that are already public in the browse feed.
+verify_jwt = false
+
+[functions.send-plan-sale-push]
+# Broadcasts queued plan-sale pushes to all devices. Takes no meaningful
+# input (it drains the plan_sale_pushes queue that only the DB trigger can
+# write), so JWT verification stays on and the Database Webhook that invokes
+# it must send an Authorization: Bearer <anon key> header.
+verify_jwt = true
