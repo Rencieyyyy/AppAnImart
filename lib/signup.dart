@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'cloudinary_function.dart';
 import 'legal.dart';
+import 'liveness_check.dart';
 import 'login.dart';
 import 'main.dart';
 import 'services/location_service.dart';
@@ -40,6 +41,10 @@ class _SignUpPageState extends State<SignUpPage> {
   Uint8List? _validIdBytes;
   String? _validIdName;
   String? _selectedIdType;
+
+  // Face verification state — captured right after ID upload, instead of
+  // at final submit. Holds the 4 pose photos (center/right/left/down).
+  LivenessResult? _livenessResult;
 
   static const List<String> _idTypes = [
     'Philippine Passport',
@@ -229,7 +234,8 @@ class _SignUpPageState extends State<SignUpPage> {
                 child: ListView.separated(
                   controller: scrollCtrl,
                   itemCount: _idTypes.length,
-separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(0.08)),
+                  separatorBuilder: (_, __) =>
+                      Divider(height: 1, color: Colors.black.withOpacity(0.08)),
                   itemBuilder: (_, i) {
                     final idType = _idTypes[i];
                     final isSelected = _selectedIdType == idType;
@@ -260,6 +266,29 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         ),
       ),
     );
+  }
+
+  // ── Face Verification ─────────────────────────────────────
+  /// Launches the face-liveness screen (center → right → left → down,
+  /// GCash-style) so we can confirm the person signing up is actually
+  /// present. Triggered right after the ID upload, not at final submit.
+  Future<void> _verifyFace() async {
+    final result = await Navigator.push<LivenessResult?>(
+      context,
+      MaterialPageRoute(builder: (_) => const LivenessCheckPage()),
+    );
+
+    if (result == null) {
+      if (mounted) {
+        _showSnack('Face verification was not completed. Please try again.');
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _livenessResult = result);
+      _showSnack('Face verified!', color: const Color(0xFF4CAF7D));
+    }
   }
 
   // ── Validation per step ───────────────────────────────────
@@ -303,6 +332,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         if (password != _retypePasswordController.text) return 'Passwords do not match.';
         if (_selectedIdType == null) return 'Please select the type of your valid ID.';
         if (_validIdBytes == null) return 'Please upload a photo of your valid ID.';
+        if (_livenessResult == null) return 'Please complete face verification.';
         if (!_agreedToTerms) return 'Please agree to the Terms and Conditions.';
         return null;
     }
@@ -327,11 +357,13 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     if (_currentStep < 3) {
       setState(() => _currentStep++);
     } else {
-      await _submitRegistration();
+      // Face verification already happened earlier in step 3 (right after
+      // ID upload) — just submit using the stored result.
+      await _submitRegistration(_livenessResult!);
     }
   }
 
-  Future<void> _submitRegistration() async {
+  Future<void> _submitRegistration(LivenessResult liveness) async {
     setState(() => _isSubmitting = true);
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
@@ -340,8 +372,9 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
     final address = city?.label ?? '';
     final houseNumber = _houseController.text.trim();
     try {
-      // 1) Upload the valid-ID photo to its own Cloudinary folder first (no
-      //    auth needed), so its URL can travel in the sign-up metadata below.
+      // 1) Upload the valid-ID photo, main selfie, and all pose photos to
+      //    their own Cloudinary folders first (no auth needed), so their
+      //    URLs can travel in the sign-up metadata below.
       String? validIdUrl;
       if (_validIdBytes != null) {
         try {
@@ -355,11 +388,41 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
         }
       }
 
+      // Main selfie (final "down" pose) — kept for backward compatibility.
+      String? selfieUrl;
+      try {
+        selfieUrl = await uploadToCloudinary(
+          liveness.selfie,
+          'selfie_${DateTime.now().millisecondsSinceEpoch}.jpg',
+          folder: 'sign ups(animart)/selfies',
+        );
+      } catch (e) {
+        debugPrint('Selfie upload failed: $e');
+      }
+
+      // All 4 pose photos (center/right/left/down) for stronger verification.
+      final Map<String, String> verificationUrls = {};
+      for (final entry in liveness.poseImages.entries) {
+        try {
+          final url = await uploadToCloudinary(
+            entry.value,
+            '${entry.key}_${DateTime.now().millisecondsSinceEpoch}.jpg',
+            folder: 'sign ups(animart)/verification',
+          );
+          if (url != null) {
+            verificationUrls[entry.key] = url; // only assign non-null
+          }
+        } catch (e) {
+          debugPrint('${entry.key} pose upload failed: $e');
+        }
+      }
+
       // 2) Create the Auth user. A database trigger creates the matching row
       //    in `users` from this metadata (which bypasses RLS and works even
       //    when email confirmation is on, so there's no client write here).
-      //    `valid_id_url` / `id_type` are backfilled into that row on the
-      //    user's first login, when a session is guaranteed to exist.
+      //    `valid_id_url` / `id_type` / `selfie_url` / `verification_photos`
+      //    are backfilled into that row on the user's first login, when a
+      //    session is guaranteed to exist.
       final res = await supabase.auth.signUp(
         email: email,
         password: _passwordController.text,
@@ -370,6 +433,8 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
           'house_number': houseNumber,
           'id_type': _selectedIdType,
           'valid_id_url': validIdUrl,
+          'selfie_url': selfieUrl,
+          'verification_photos': verificationUrls, // {center,right,left,down}
           // Coordinates for "Explore near you" — backfilled into the users
           // row on first login (see backfillLocationFromMetadata).
           'location_name': city?.label,
@@ -516,7 +581,7 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                                 ),
                               )
                             : Text(
-                                _currentStep < 3 ? 'Continue' : 'Sign Up',
+                                _currentStep < 3 ? 'Continue' : 'Create Account',
                                 style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w700,
@@ -764,6 +829,77 @@ separatorBuilder: (_, __) => Divider(height: 1, color: Colors.black.withOpacity(
                           ],
                         ),
                       ),
+              ),
+            ),
+
+            const SizedBox(height: 14),
+
+            // ── Face Verification (right after ID upload) ────
+            GestureDetector(
+              onTap: _verifyFace,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: _livenessResult != null
+                      ? const Color(0xFFD4F5E4)
+                      : const Color(0xFFA8DFC8),
+                  borderRadius: BorderRadius.circular(20),
+                  border: _livenessResult != null
+                      ? Border.all(color: const Color(0xFF4CAF7D), width: 1.5)
+                      : null,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _livenessResult != null
+                          ? Icons.check_circle_rounded
+                          : Icons.face_retouching_natural_rounded,
+                      color: _livenessResult != null
+                          ? const Color(0xFF4CAF7D)
+                          : Colors.black45,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _livenessResult != null
+                                ? 'Face Verified'
+                                : 'Verify Your Face',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: _livenessResult != null
+                                  ? const Color(0xFF2D7A57)
+                                  : Colors.black87,
+                            ),
+                          ),
+                          Text(
+                            _livenessResult != null
+                                ? 'Tap to redo the scan'
+                                : 'Quick face scan to confirm it\'s really you',
+                            style: const TextStyle(fontSize: 11, color: Colors.black45),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_livenessResult == null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Text(
+                          'Required',
+                          style: TextStyle(fontSize: 11, color: Colors.black45),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
 

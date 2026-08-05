@@ -33,9 +33,9 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        
+
         // Enables support for large library sets
-        multiDexEnabled = true 
+        multiDexEnabled = true
     }
 
     buildTypes {
@@ -44,6 +44,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+// Silences the "unchecked/unsafe operations" notes and "obsolete source/target
+// value 8" warnings coming from third-party plugin Java sources
+// (google_mlkit_*, passkeys_doctor, etc.) that we don't control —
+// purely cosmetic, doesn't change behavior.
+tasks.withType<JavaCompile> {
+    options.compilerArgs.addAll(listOf("-Xlint:-options", "-nowarn"))
 }
 
 flutter {

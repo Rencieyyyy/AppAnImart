@@ -10,15 +10,15 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  image_picker: ^1.1.2  
+  image_picker: ^1.1.2
   supabase_flutter: ^2.15.0
   http: ^1.2.2
   image_cropper: ^12.2.1
-  # Push notifications (plan-sale alerts even when the app is closed).
   firebase_core: ^3.8.0
   firebase_messaging: ^15.1.5
-  # Opens the seller's Messenger link from a listing.
   url_launcher: ^6.3.1
+  camera: ^0.11.2+1
+  google_mlkit_face_detection: ^0.13.2
 
 dev_dependencies:
   flutter_test:
@@ -30,5 +30,3 @@ flutter:
   uses-material-design: true
   assets:
     - images/
-
-  
