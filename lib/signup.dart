@@ -407,7 +407,7 @@ class _SignUpPageState extends State<SignUpPage> {
           final url = await uploadToCloudinary(
             entry.value,
             '${entry.key}_${DateTime.now().millisecondsSinceEpoch}.jpg',
-            folder: 'sign ups(animart)/verification',
+            folder: 'liveness',
           );
           if (url != null) {
             verificationUrls[entry.key] = url; // only assign non-null
