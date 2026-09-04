@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:ani_mart/product_detail.dart';
 import 'cloudinary_function.dart';
+import 'friendly_error.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -170,7 +171,15 @@ class _UserListingsPageState extends State<UserListingsPage> {
             isError: false, backgroundColor: const Color(0xFF6DBF99));
       }
     } catch (e) {
-      if (mounted) showTopMessage(context, 'Could not delete listings: $e');
+      debugPrint('Bulk delete failed: $e');
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyError(e,
+                action: 'bulk_delete_listings',
+                fallback: 'Could not delete those listings. '
+                    'Please try again.'));
+      }
       await _loadListings();
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -206,7 +215,15 @@ class _UserListingsPageState extends State<UserListingsPage> {
         );
       }
     } catch (e) {
-      if (mounted) showTopMessage(context, 'Could not update listings: $e');
+      debugPrint('Bulk status update failed: $e');
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyError(e,
+                action: 'bulk_update_listing_status',
+                fallback: 'Could not update those listings. '
+                    'Please try again.'));
+      }
       await _loadListings();
     } finally {
       if (mounted) setState(() => _busy = false);

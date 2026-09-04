@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'friendly_error.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -110,7 +111,13 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         isError: false,
       );
     } on AuthException catch (e) {
-      if (mounted) showTopMessage(context, e.message);
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyAuthError(e,
+                action: 'send_reset_code',
+                fallback: 'Could not send the code. Please try again.'));
+      }
     } catch (_) {
       if (mounted) {
         showTopMessage(context, 'Could not send the code. Please try again.');
@@ -166,7 +173,14 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
       );
       Navigator.pop(context);
     } on AuthException catch (e) {
-      if (mounted) showTopMessage(context, e.message);
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyAuthError(e,
+                action: 'reset_password',
+                fallback:
+                    'Could not reset your password. Please try again.'));
+      }
     } catch (_) {
       if (mounted) {
         showTopMessage(

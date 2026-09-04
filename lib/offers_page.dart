@@ -101,7 +101,7 @@ class _OffersPageState extends State<OffersPage> {
       context,
       accept
           ? 'Offer accepted — ${offer.quantity} reserved for this buyer. '
-              'Message them on Messenger to arrange the sale. The listing '
+              'Message them in Chat to arrange the sale. The listing '
               'stays available while stock remains.'
           : 'Offer declined.',
       isError: false,

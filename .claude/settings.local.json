@@ -93,7 +93,8 @@
       "Read(//c/Users/emman/.supabase/**)",
       "Bash(git -C \"D:\\\\1-Projects\\\\ANIMART-2\\\\AppAnImart\" status --short)",
       "Bash(python -c \"import json,sys; d=[l for l in sys.stdin if l.strip\\(\\).startswith\\('{'\\)]; m=json.loads\\(d[0]\\)['migrations']; print\\('\\\\n'.join\\(f\\\\\"{x['local'] or '\\(none\\)':>16} | {x['remote'] or '\\(none\\)'}\\\\\" for x in m[-10:]\\)\\)\")",
-      "Bash(git -C \"D:\\\\1-Projects\\\\ANIMART-2\\\\AppAnImart\" diff --stat)"
+      "Bash(git -C \"D:\\\\1-Projects\\\\ANIMART-2\\\\AppAnImart\" diff --stat)",
+      "PowerShell($out = flutter analyze --no-pub 2>&1 | Out-String; \\($out -split \"`n\"\\) | Where-Object { $_ -match 'error |warning |issues found|No issues' } | Select-Object -First 20)"
     ]
   }
 }

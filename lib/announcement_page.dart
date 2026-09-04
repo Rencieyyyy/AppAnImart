@@ -1,11 +1,12 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dashboard.dart';
 import 'buyer.dart';
 import 'profile.dart';
+import 'friendly_error.dart';
 import 'main.dart';
 import 'services/notification_service.dart';
+import 'widgets/app_bottom_nav.dart';
 import 'widgets/top_message.dart';
 
 /// Lets horizontal lists be swiped with any pointer (mouse/trackpad included),
@@ -239,7 +240,9 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       debugPrint('Failed to load announcements: $e');
       if (!mounted) return;
       setState(() {
-        _loadError = e is PostgrestException ? e.message : e.toString();
+        _loadError = friendlyError(e,
+            action: 'load_announcements',
+            fallback: 'Please check your connection and try again.');
         _loading = false;
       });
     }
@@ -300,14 +303,14 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       case 0:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardPage()),
+          instantRoute(const DashboardPage()),
           (route) => false,
         );
         break;
       case 1:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const BuyerPage()),
+          instantRoute(const BuyerPage()),
           (route) => false,
         );
         break;
@@ -316,7 +319,7 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       case 3:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const ProfilePage()),
+          instantRoute(const ProfilePage()),
           (route) => false,
         );
         break;
@@ -1301,6 +1304,8 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
                           const Icon(Icons.cloud_off_rounded,
                               size: 52, color: Colors.black12),
                           const SizedBox(height: 12),
+                          // _loadError is always a plain-English sentence
+                          // (see friendly_error.dart).
                           Text(
                             'Could not load announcements.\n$_loadError',
                             textAlign: TextAlign.center,
@@ -1371,32 +1376,13 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
       ),
 
       // ── Bottom Nav ────────────────────────────────────────────────
-      bottomNavigationBar: BottomNavigationBar(
+      // Shared bar + zero-length route transitions (see instantRoute), so it
+      // stays visually fixed instead of sliding in with each tab.
+      bottomNavigationBar: AppBottomNav(
         currentIndex: _selectedIndex,
         onTap: _onTabTapped,
-        selectedItemColor: const Color(0xFF6DBF99),
-        unselectedItemColor: Colors.black45,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined),
-              activeIcon: Icon(Icons.home),
-              label: 'Home'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.shopping_cart_outlined),
-              activeIcon: Icon(Icons.shopping_cart),
-              label: 'Explore'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.notifications_outlined),
-              activeIcon: Icon(Icons.notifications),
-              label: 'Announcements'),
-          BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Profile'),
-        ],
+        // Opening this page clears the badge, so never dot its own tab.
+        hasUnseenAnnouncements: false,
       ),
     );
   }

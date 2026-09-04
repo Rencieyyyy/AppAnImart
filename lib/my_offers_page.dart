@@ -461,7 +461,7 @@ class _MyOffersPageState extends State<MyOffersPage> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          const Text('Arrange the sale with the seller on Messenger.',
+          const Text('Arrange the sale with the seller in Chat.',
               style: TextStyle(fontSize: 11, color: Colors.black45)),
           const SizedBox(height: 8),
           Wrap(

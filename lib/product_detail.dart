@@ -1,9 +1,11 @@
+import 'chat_thread_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'widgets/top_message.dart';
+import 'friendly_error.dart';
+import 'services/chat_service.dart';
 import 'main.dart';
 import 'cloudinary_function.dart';
 import 'services/marketplace_service.dart';
@@ -78,6 +80,15 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   /// Offers buyers have made on this listing — only loaded for the owner.
   List<Offer> _listingOffers = const [];
 
+  /// Whether the owner's offers list is showing. Null until they tap the
+  /// header, so it falls back to [_offersOpen]'s length-based default.
+  bool? _offersExpanded;
+
+  /// A long offer history buries the rest of the page, so anything past a
+  /// few rows starts collapsed; short lists stay open as before. The header
+  /// still shows how many need a reply, so nothing urgent hides behind it.
+  bool get _offersOpen => _offersExpanded ?? (_listingOffers.length <= 3);
+
   /// Owner-side: this listing's deals keyed by offer id.
   Map<String, TransactionInfo> _txByOffer = {};
 
@@ -87,9 +98,10 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   bool _isDescriptionExpanded = false;
   bool _offerSent = false;
 
-  /// Seller's Facebook Messenger link — the "Message Seller on Messenger"
-  /// button opens it; '' when the seller hasn't set one.
-  String _sellerMessengerLink = '';
+  /// Inline "Message seller" composer on the listing, prefilled with the
+  /// usual opener. Filled in once the seller's name is known.
+  final TextEditingController _quickMessageCtrl = TextEditingController();
+  bool _sendingQuickMessage = false;
 
   final PageController _imageController = PageController();
   int _currentImage = 0;
@@ -226,6 +238,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   @override
   void initState() {
     super.initState();
+    _quickMessageCtrl.text = _defaultQuickMessage;
     _loadMarketplaceState();
   }
 
@@ -253,7 +266,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     });
     _loadStock(listingId);
     _loadListingOffers(listingId);
-    _loadSellerMessengerLink(sellerId);
     _loadTransactions(listingId);
   }
 
@@ -370,9 +382,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
             ),
             const SizedBox(height: 6),
             const Text(
-              'Arrange payment and pickup/delivery with the seller on '
-              'Messenger. The seller marks the sale completed once you\'ve '
-              'received it.',
+              'Arrange payment and pickup/delivery with the seller in Chat. '
+              'The seller marks the sale completed once you\'ve received it.',
               style: TextStyle(fontSize: 12, color: Colors.black54),
             ),
             const SizedBox(height: 10),
@@ -399,28 +410,6 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         ),
       ),
     );
-  }
-
-  /// Loads the seller's Messenger link for the contact button.
-  ///
-  /// Reads `public_profiles` (not `users`): cross-user SELECT on the base
-  /// table is being locked down to own-row only, and the view projects just
-  /// the PII-safe columns.
-  Future<void> _loadSellerMessengerLink(String sellerId) async {
-    if (sellerId.isEmpty) return;
-    try {
-      final row = await supabase
-          .from('public_profiles')
-          .select('messenger_link')
-          .eq('id', sellerId)
-          .maybeSingle();
-      final link = (row?['messenger_link'] as String?)?.trim() ?? '';
-      if (mounted && link.isNotEmpty) {
-        setState(() => _sellerMessengerLink = link);
-      }
-    } catch (e) {
-      debugPrint('Failed to load messenger link: $e');
-    }
   }
 
   /// Owner-only: loads the offers buyers have made on this post.
@@ -610,6 +599,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   @override
   void dispose() {
     _imageController.dispose();
+    _quickMessageCtrl.dispose();
     super.dispose();
   }
 
@@ -806,10 +796,13 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       });
       _loadListingOffers(id);
       _showSnackBar('Listing marked as sold out.');
-    } on PostgrestException catch (e) {
-      if (mounted) _showSnackBar(e.message);
     } catch (e) {
-      if (mounted) _showSnackBar('Could not update listing. Please try again.');
+      debugPrint('Mark as sold failed: $e');
+      if (mounted) {
+        _showSnackBar(friendlyError(e,
+            action: 'mark_listing_sold',
+            fallback: 'Could not update this listing. Please try again.'));
+      }
     }
   }
 
@@ -1002,10 +995,15 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                                 if (relist) 'status': 'active',
                               }).eq('id', id);
                             } catch (e) {
+                              debugPrint('Listing edit failed: $e');
                               if (sheetCtx.mounted) {
                                 setSheet(() => saving = false);
-                                showTopMessage(sheetCtx,
-                                    'Could not save changes: $e');
+                                showTopMessage(
+                                    sheetCtx,
+                                    friendlyError(e,
+                                        action: 'edit_listing',
+                                        fallback: 'Could not save your '
+                                            'changes. Please try again.'));
                               }
                               return;
                             }
@@ -1305,21 +1303,177 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     );
   }
 
-  /// Opens the seller's Messenger link in the Messenger app / browser.
-  Future<void> _openMessenger() async {
+  /// Inline "Message seller" composer, prefilled with the question buyers
+  /// almost always open with. One tap on Send starts the private thread,
+  /// posts that message and drops them straight into the conversation — so
+  /// first contact costs a tap instead of a screen change plus typing.
+  Widget _buildMessageSellerCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE6EAE8)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF3AA876),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.chat_bubble,
+                    size: 13, color: Colors.white),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Message seller',
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A2E22)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFFF2F4F3),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _quickMessageCtrl,
+                    enabled: !_sendingQuickMessage,
+                    minLines: 1,
+                    maxLines: 3,
+                    textCapitalization: TextCapitalization.sentences,
+                    onSubmitted: (_) => _sendQuickMessage(),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: InputBorder.none,
+                      hintText: 'Ask the seller a question…',
+                      hintStyle:
+                          TextStyle(color: Colors.black38, fontSize: 13.5),
+                      contentPadding: EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    style: const TextStyle(
+                        fontSize: 13.5, color: Color(0xFF1A2E22)),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                SizedBox(
+                  height: 36,
+                  child: ElevatedButton(
+                    onPressed:
+                        _sendingQuickMessage ? null : _sendQuickMessage,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF3AA876),
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: const Color(0xFFB9D9CB),
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                    ),
+                    child: _sendingQuickMessage
+                        ? const SizedBox(
+                            width: 15,
+                            height: 15,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Send',
+                            style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Sends whatever is in the inline composer, then opens the thread. An
+  /// empty box just opens the chat without posting anything.
+  Future<void> _sendQuickMessage() async {
+    if (_sendingQuickMessage) return;
     if (_blockedGuard()) return;
-    final link = _sellerMessengerLink;
-    if (link.isEmpty) {
-      _showSnackBar("This seller hasn't added a Messenger link yet.");
+    if (supabase.auth.currentUser == null) {
+      _showSnackBar('Please log in to message the seller.');
       return;
     }
-    final uri = Uri.tryParse(link);
-    if (uri == null) {
-      _showSnackBar('Could not open Messenger.');
+    final sellerId = widget.sellerId?.trim() ?? '';
+    if (sellerId.isEmpty) {
+      _showSnackBar('This seller is unavailable right now.');
       return;
     }
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!ok && mounted) _showSnackBar('Could not open Messenger.');
+    if (sellerId == supabase.auth.currentUser?.id) {
+      _showSnackBar('This is your own listing.');
+      return;
+    }
+
+    final text = _quickMessageCtrl.text.trim();
+    setState(() => _sendingQuickMessage = true);
+    try {
+      final cid = await ChatService.startConversation(sellerId,
+          listingId: widget.listingId?.trim());
+      if (text.isNotEmpty) {
+        await ChatService.sendMessage(cid, body: text);
+      }
+      if (!mounted) return;
+      // Reset to the default opener so the card is ready for a follow-up.
+      _quickMessageCtrl.text = _defaultQuickMessage;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatThreadPage(
+            conversationId: cid,
+            otherUserId: sellerId,
+            otherName: _sellerName,
+            listingId: widget.listingId?.trim(),
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Quick message failed: $e');
+      if (!mounted) return;
+      _showSnackBar(friendlyError(e,
+          action: 'quick_message_seller',
+          fallback: 'Could not send your message. Please try again.'));
+    } finally {
+      if (mounted) setState(() => _sendingQuickMessage = false);
+    }
+  }
+
+  /// "Hi Cris, is this still available?" — first name only, and a plain
+  /// greeting when the seller's name isn't known yet.
+  String get _defaultQuickMessage {
+    final name = _sellerName.trim();
+    final first = name.isEmpty || name == 'Unknown'
+        ? ''
+        : name.split(RegExp(r'\s+')).first;
+    return first.isEmpty
+        ? 'Hi, is this still available?'
+        : 'Hi $first, is this still available?';
   }
 
   void _showMakeOfferDialog() {
@@ -1516,7 +1670,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => _SellerProfilePage(
+        builder: (context) => SellerProfilePage(
           sellerName: _sellerName,
           sellerJoined: info['sellerJoined'] ?? '2024',
           breederSince: info['breederSince'],
@@ -1737,30 +1891,13 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   child: _buildBlockedNotice(),
                 ),
 
-              // ── Message Seller on Messenger ──────────────────────
-              // Chat happens on Facebook Messenger via the seller's link
-              // (saved when they became a seller).
+              // ── Message Seller (in-app chat) ─────────────────────
+              // An inline composer rather than a button: the private thread
+              // opens with the buyer's question already sent.
               if (!_isOwner && !_isBlocked)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton.icon(
-                      onPressed: _openMessenger,
-                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                      label: const Text('Message Seller on Messenger',
-                          style: TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0084FF),
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
-                      ),
-                    ),
-                  ),
+                  child: _buildMessageSellerCard(),
                 ),
 
               // ── Buy at asking price (one-tap offer) ───────────────
@@ -2020,7 +2157,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   Widget _buildOffersSection() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      // Collapsed the card is just the header row, so it needs even padding.
+      padding: EdgeInsets.fromLTRB(12, 12, 12, _offersOpen ? 6 : 12),
       decoration: BoxDecoration(
         color: const Color(0xFFF7F7F7),
         borderRadius: BorderRadius.circular(14),
@@ -2028,23 +2166,57 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.pan_tool_outlined,
-                  color: Color(0xFF1D9E75), size: 18),
-              const SizedBox(width: 8),
-              Text(
-                'Offers (${_listingOffers.length})',
+          _buildOffersHeader(),
+          if (_offersOpen) ...[
+            const SizedBox(height: 4),
+            ..._listingOffers.map(_buildOfferRow),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Tappable header that shows/hides the offer rows. Collapsed, it still
+  /// reports how many offers are waiting on the seller.
+  Widget _buildOffersHeader() {
+    final pending =
+        _listingOffers.where((o) => o.status == 'pending').length;
+    final open = _offersOpen;
+    return InkWell(
+      onTap: () => setState(() => _offersExpanded = !open),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            const Icon(Icons.pan_tool_outlined,
+                color: Color(0xFF1D9E75), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Offers (${_listingOffers.length})'
+                '${!open && pending > 0 ? ' · $pending awaiting your reply' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                     color: Colors.black87),
               ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          ..._listingOffers.map(_buildOfferRow),
-        ],
+            ),
+            Text(open ? 'Hide' : 'Show',
+                style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1D9E75))),
+            AnimatedRotation(
+              turns: open ? 0.5 : 0,
+              duration: const Duration(milliseconds: 180),
+              child: const Icon(Icons.keyboard_arrow_down_rounded,
+                  color: Color(0xFF1D9E75), size: 22),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2252,7 +2424,14 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 /// How the seller's listing grid is ordered.
 enum _SellerSort { newest, priceLow, priceHigh }
 
-class _SellerProfilePage extends StatefulWidget {
+/// A seller's public profile: reputation, shop details, contact options and
+/// their listings.
+///
+/// Only [sellerId] and [sellerName] are needed — the rest are display hints
+/// from whichever screen opened it. The page refetches the reputation and
+/// shop details itself, and falls back to the profile's own location /
+/// member-since when the caller has none (e.g. opened from a chat thread).
+class SellerProfilePage extends StatefulWidget {
   final String sellerName;
   final String sellerJoined;
   final String? breederSince;
@@ -2260,24 +2439,34 @@ class _SellerProfilePage extends StatefulWidget {
   final String sellerId;
   final SellerRating rating;
 
-  const _SellerProfilePage({
+  const SellerProfilePage({
+    super.key,
     required this.sellerName,
-    required this.sellerJoined,
+    this.sellerJoined = '',
     this.breederSince,
-    required this.location,
+    this.location = '',
     required this.sellerId,
-    required this.rating,
+    this.rating = SellerRating.empty,
   });
 
   @override
-  State<_SellerProfilePage> createState() => _SellerProfilePageState();
+  State<SellerProfilePage> createState() => _SellerProfilePageState();
 }
 
-class _SellerProfilePageState extends State<_SellerProfilePage> {
+class _SellerProfilePageState extends State<SellerProfilePage> {
   String get sellerName => widget.sellerName;
-  String get sellerJoined => widget.sellerJoined;
+  /// Display extras: the caller's value wins, else what the profile row
+  /// carries (a chat thread knows neither).
+  String _fetchedJoined = '';
+  String _fetchedLocation = '';
+
+  String get sellerJoined => widget.sellerJoined.trim().isNotEmpty
+      ? widget.sellerJoined
+      : (_fetchedJoined.isNotEmpty ? _fetchedJoined : '—');
   String? get breederSince => widget.breederSince;
-  String get location => widget.location;
+  String get location => widget.location.trim().isNotEmpty
+      ? widget.location
+      : _fetchedLocation;
   String get sellerId => widget.sellerId;
 
   /// Freshly-loaded reputation; falls back to the value passed in from the
@@ -2288,7 +2477,6 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
 
   // The seller's avatar and their listings, loaded from Supabase.
   String _avatarUrl = '';
-  String _messengerLink = '';
 
   // Opt-in public contact channels the seller filled in (any may be empty).
   String _contactPhone = '';
@@ -2400,16 +2588,16 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
       // and are deliberately no longer read here.
       final row = await supabase
           .from('public_profiles')
-          .select('avatar_url, messenger_link, contact_phone, '
+          .select('avatar_url, location_name, member_since, contact_phone, '
               'whatsapp_number, viber_number, contact_email, facebook_url')
           .eq('id', sellerId)
           .maybeSingle();
       final url = (row?['avatar_url'] as String?)?.trim() ?? '';
-      final link = (row?['messenger_link'] as String?)?.trim() ?? '';
       if (!mounted) return;
       setState(() {
         if (url.isNotEmpty) _avatarUrl = url;
-        _messengerLink = link;
+        _fetchedLocation = (row?['location_name'] as String?)?.trim() ?? '';
+        _fetchedJoined = _yearOf(row?['member_since']);
         _contactPhone = (row?['contact_phone'] as String?)?.trim() ?? '';
         _whatsapp = (row?['whatsapp_number'] as String?)?.trim() ?? '';
         _viber = (row?['viber_number'] as String?)?.trim() ?? '';
@@ -2421,13 +2609,10 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     }
   }
 
-  /// Opens the seller's Messenger link.
-  Future<void> _openMessenger() async {
-    if (_messengerLink.isEmpty) {
-      _toast("This seller hasn't added a Messenger link yet.");
-      return;
-    }
-    await _launch(_messengerLink);
+  /// Year part of a `member_since` value, for "Member since 2024".
+  static String _yearOf(Object? value) {
+    final dt = DateTime.tryParse('${value ?? ''}');
+    return dt == null ? '' : '${dt.year}';
   }
 
   /// Launches [raw] (a full URL or a tel:/sms:/mailto:/viber: URI), toasting
@@ -3106,10 +3291,11 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     );
   }
 
-  /// A stacked list of every contact channel the seller has provided
-  /// (Messenger, WhatsApp, Viber, Text, Email). Channels the seller left blank
-  /// are simply not shown, so no row ever dead-ends. All rows live inside a
-  /// single bordered card, separated by thin dividers.
+  /// A stacked list of the ways a buyer can reach this seller: the in-app
+  /// chat first, then any optional channel they opted into (Facebook,
+  /// WhatsApp, Viber, Text, Email). Channels the seller left blank are simply
+  /// not shown, so no row ever dead-ends. All rows live inside a single
+  /// bordered card, separated by thin dividers.
   Widget _buildContactSection() {
     final phone = _effectivePhone;
     final wa = _whatsapp.trim();
@@ -3117,12 +3303,24 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
     final email = _effectiveEmail;
 
     final rows = <Widget>[];
-    if (_messengerLink.isNotEmpty) {
+    // In-app chat always comes first — it needs no setup from the seller and
+    // the thread stays private to the two of them.
+    if (widget.sellerId.trim().isNotEmpty &&
+        widget.sellerId.trim() != supabase.auth.currentUser?.id) {
       rows.add(_contactRow(
-        icon: Icons.chat_bubble,
-        color: const Color(0xFF0084FF),
-        label: 'Message on Messenger',
-        onTap: _openMessenger,
+        icon: Icons.chat_bubble_outline,
+        color: const Color(0xFF3AA876),
+        label: 'Message on AniMart',
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatThreadPage(
+              otherUserId: widget.sellerId.trim(),
+              otherName: sellerName,
+              otherAvatar: _avatarUrl,
+            ),
+          ),
+        ),
       ));
     }
     if (_facebook.isNotEmpty) {
@@ -3190,8 +3388,8 @@ class _SellerProfilePageState extends State<_SellerProfilePage> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    "This seller hasn't added contact details. Make an offer on "
-                    'one of their listings to reach them.',
+                    "This seller hasn't added any extra contact options. "
+                    'Open a listing and tap "Message Seller" to reach them.',
                     style: TextStyle(fontSize: 12.5, color: Colors.black54),
                   ),
                 ),

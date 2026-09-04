@@ -1,6 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart'
-    show PostgrestException, PostgrestFilterBuilder;
+    show PostgrestFilterBuilder;
 
+import '../friendly_error.dart';
 import '../main.dart';
 
 /// A seller's reputation: review scores plus their real deal history
@@ -469,7 +470,9 @@ class MarketplaceService {
       }, onConflict: 'seller_id,reviewer_id');
       return null;
     } catch (e) {
-      return 'Could not submit review: $e';
+      return friendlyError(e,
+          action: 'submit_review',
+          fallback: 'Could not send your review. Please try again.');
     }
   }
 
@@ -502,12 +505,13 @@ class MarketplaceService {
         'details': details.trim().isEmpty ? null : details.trim(),
       });
       return null;
-    } on PostgrestException catch (e) {
-      // Server-side guards (e.g. the daily report rate limit) raise clean,
-      // user-facing sentences — show them as-is.
-      return e.message;
     } catch (e) {
-      return 'Could not submit report: $e';
+      // Server-side guards (e.g. the daily report rate limit) raise clean,
+      // user-facing sentences; friendlyError passes those through and hides
+      // anything technical behind the fallback.
+      return friendlyError(e,
+          action: 'submit_report',
+          fallback: 'Could not send your report. Please try again.');
     }
   }
 
@@ -566,12 +570,12 @@ class MarketplaceService {
         });
       }
       return null;
-    } on PostgrestException catch (e) {
-      // Server-side guards (offer rate limit, listing-not-active) raise
-      // clean, user-facing sentences — show them as-is.
-      return e.message;
     } catch (e) {
-      return 'Could not send offer: $e';
+      // Server-side guards (offer rate limit, listing-not-active) raise
+      // clean, user-facing sentences; friendlyError passes those through.
+      return friendlyError(e,
+          action: 'submit_offer',
+          fallback: 'Could not send your offer. Please try again.');
     }
   }
 
@@ -596,7 +600,9 @@ class MarketplaceService {
           .eq('status', 'pending');
       return null;
     } catch (e) {
-      return 'Could not withdraw offer: $e';
+      return friendlyError(e,
+          action: 'withdraw_offer',
+          fallback: 'Could not withdraw your offer. Please try again.');
     }
   }
 
@@ -720,7 +726,9 @@ class MarketplaceService {
           .rpc('confirm_transaction_received', params: {'p_tx': txId});
       return result as String?;
     } catch (e) {
-      return 'Could not confirm receipt: $e';
+      return friendlyError(e,
+          action: 'confirm_transaction_received',
+          fallback: 'Could not confirm the item. Please try again.');
     }
   }
 
@@ -732,7 +740,9 @@ class MarketplaceService {
           .rpc('complete_transaction', params: {'p_tx': txId});
       return result as String?;
     } catch (e) {
-      return 'Could not complete transaction: $e';
+      return friendlyError(e,
+          action: 'complete_transaction',
+          fallback: 'Could not finish this deal. Please try again.');
     }
   }
 
@@ -747,7 +757,9 @@ class MarketplaceService {
       });
       return result as String?;
     } catch (e) {
-      return 'Could not cancel transaction: $e';
+      return friendlyError(e,
+          action: 'cancel_transaction',
+          fallback: 'Could not cancel this deal. Please try again.');
     }
   }
 
@@ -805,12 +817,12 @@ class MarketplaceService {
           .eq('id', offerId)
           .eq('seller_id', uid);
       return null;
-    } on PostgrestException catch (e) {
-      // The reserve trigger raises a readable message when a listing has no
-      // stock left to reserve — surface it as-is instead of a raw dump.
-      return e.message;
     } catch (e) {
-      return 'Could not update offer: $e';
+      // The reserve trigger raises a readable message when a listing has no
+      // stock left to reserve — friendlyError surfaces that as-is.
+      return friendlyError(e,
+          action: 'respond_to_offer',
+          fallback: 'Could not update this offer. Please try again.');
     }
   }
 

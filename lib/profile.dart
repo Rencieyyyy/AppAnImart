@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'dashboard.dart';
@@ -17,6 +16,7 @@ import 'seller_analytics.dart';
 import 'offers_page.dart';
 import 'widgets/top_message.dart';
 import 'cloudinary_function.dart';
+import 'friendly_error.dart';
 import 'support_chat.dart';
 import 'services/location_service.dart';
 import 'services/marketplace_service.dart';
@@ -24,6 +24,7 @@ import 'services/notification_service.dart';
 import 'services/subscription_service.dart';
 import 'seller_reviews.dart';
 import 'widgets/city_picker.dart';
+import 'widgets/app_bottom_nav.dart';
 import 'widgets/notification_dot.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -53,12 +54,8 @@ class _ProfilePageState extends State<ProfilePage> {
   String _shopCategory = '';
   String _shopDescription = '';
 
-  /// Seller's Facebook Messenger link (m.me/...), required to become a
-  /// seller — buyers contact sellers through it.
-  String _messengerLink = '';
-
   /// Optional, opt-in public contact channels shown on the seller's profile
-  /// alongside Messenger. Any may be blank.
+  /// alongside the in-app chat. Any may be blank.
   String _contactPhone = '';
   String _whatsapp = '';
   String _viber = '';
@@ -206,7 +203,7 @@ class _ProfilePageState extends State<ProfilePage> {
       final row = await supabase
           .from('users')
           .select('email, name, phone, address, house_number, business_name, '
-              'shop_category, shop_description, messenger_link, avatar_url, '
+              'shop_category, shop_description, avatar_url, '
               'is_seller, sales_count, trust_score, member_since, '
               'contact_phone, whatsapp_number, viber_number, contact_email, '
               'facebook_url')
@@ -229,7 +226,6 @@ class _ProfilePageState extends State<ProfilePage> {
         final rawCategory = (data['shop_category'] as String?) ?? '';
         _shopCategory = rawCategory == 'Aquatics' ? 'Aquaculture' : rawCategory;
         _shopDescription = (data['shop_description'] as String?) ?? '';
-        _messengerLink = (data['messenger_link'] as String?) ?? '';
         _contactPhone = (data['contact_phone'] as String?) ?? '';
         _whatsapp = (data['whatsapp_number'] as String?) ?? '';
         _viber = (data['viber_number'] as String?) ?? '';
@@ -316,21 +312,21 @@ class _ProfilePageState extends State<ProfilePage> {
       case 0:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const DashboardPage()),
+          instantRoute(const DashboardPage()),
           (route) => false,
         );
         break;
       case 1:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const BuyerPage()),
+          instantRoute(const BuyerPage()),
           (route) => false,
         );
         break;
       case 2:
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const AnnouncementPage()),
+          instantRoute(const AnnouncementPage()),
           (route) => false,
         );
         break;
@@ -451,7 +447,11 @@ class _ProfilePageState extends State<ProfilePage> {
                             error = await supabase
                                 .rpc('delete_my_account') as String?;
                           } catch (e) {
-                            error = 'Could not delete account: $e';
+                            debugPrint('Delete account failed: $e');
+                            error = friendlyError(e,
+                                action: 'delete_account',
+                                fallback: 'Could not delete your account. '
+                                    'Please try again.');
                           }
                           if (!dialogCtx.mounted) return;
                           if (error != null) {
@@ -504,7 +504,6 @@ class _ProfilePageState extends State<ProfilePage> {
           initialBusinessName: _businessName,
           initialShopCategory: _shopCategory,
           initialShopDescription: _shopDescription,
-          initialMessengerLink: _messengerLink,
           initialContactPhone: _contactPhone,
           initialWhatsapp: _whatsapp,
           initialViber: _viber,
@@ -532,7 +531,6 @@ class _ProfilePageState extends State<ProfilePage> {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
-    required String messengerLink,
     String contactPhone = '',
     String whatsapp = '',
     String viber = '',
@@ -543,16 +541,6 @@ class _ProfilePageState extends State<ProfilePage> {
     final user = supabase.auth.currentUser;
     if (user == null || supabase.auth.currentSession == null) {
       return 'You are not signed in. Please log in again.';
-    }
-
-    // Sellers must keep a valid Messenger contact (same rule as the
-    // Become a Seller and Shop Settings forms).
-    String? normalizedMessenger;
-    if (_isSeller) {
-      normalizedMessenger = _normalizeMessengerLink(messengerLink);
-      if (normalizedMessenger == null) {
-        return 'Please put a valid Messenger link (e.g. m.me/yourname).';
-      }
     }
 
     try {
@@ -569,7 +557,6 @@ class _ProfilePageState extends State<ProfilePage> {
             'business_name': businessName,
             'shop_category': shopCategory,
             'shop_description': shopDescription,
-            if (normalizedMessenger != null) 'messenger_link': normalizedMessenger,
             // Optional public contact channels shown on the seller profile.
             // Empty strings are stored as null so the profile treats them as
             // "not provided" and hides the button.
@@ -587,9 +574,8 @@ class _ProfilePageState extends State<ProfilePage> {
           .eq('id', user.id)
           // Explicit columns: `select *` fails under users' column grants.
           .select('name, phone, address, house_number, business_name, '
-              'shop_category, shop_description, messenger_link, '
-              'contact_phone, whatsapp_number, viber_number, contact_email, '
-              'facebook_url')
+              'shop_category, shop_description, contact_phone, '
+              'whatsapp_number, viber_number, contact_email, facebook_url')
           .maybeSingle();
 
       if (row == null) {
@@ -620,10 +606,6 @@ class _ProfilePageState extends State<ProfilePage> {
           _businessName = (row['business_name'] as String?) ?? businessName;
           _shopCategory = (row['shop_category'] as String?) ?? shopCategory;
           _shopDescription = (row['shop_description'] as String?) ?? shopDescription;
-          if (normalizedMessenger != null) {
-            _messengerLink =
-                (row['messenger_link'] as String?) ?? normalizedMessenger;
-          }
           _contactPhone = (row['contact_phone'] as String?) ?? '';
           _whatsapp = (row['whatsapp_number'] as String?) ?? '';
           _viber = (row['viber_number'] as String?) ?? '';
@@ -632,12 +614,11 @@ class _ProfilePageState extends State<ProfilePage> {
         });
       }
       return null;
-    } on PostgrestException catch (e) {
-      debugPrint('Profile update PostgrestException: ${e.message}');
-      return e.message;
     } catch (e) {
       debugPrint('Profile update error: $e');
-      return e.toString();
+      return friendlyError(e,
+          action: 'save_profile',
+          fallback: 'Could not save your profile. Please try again.');
     }
   }
 
@@ -649,11 +630,12 @@ class _ProfilePageState extends State<ProfilePage> {
   /// The optional contact channels are only written when non-null (Shop
   /// Settings passes them; Become a Seller doesn't, so it can't wipe values
   /// a seller already saved). A non-null empty string clears the channel.
+  /// None of them are required — buyers always reach a seller through the
+  /// in-app chat.
   Future<String?> _saveSellerDetails({
     required String businessName,
     required String shopDescription,
     required String shopCategory,
-    String? messengerLink,
     String? contactPhone,
     String? whatsapp,
     String? viber,
@@ -672,7 +654,6 @@ class _ProfilePageState extends State<ProfilePage> {
             'business_name': businessName,
             'shop_description': shopDescription,
             'shop_category': shopCategory,
-            if (messengerLink != null) 'messenger_link': messengerLink,
             // Empty strings are stored as null so the profile treats them
             // as "not provided" and hides the button.
             if (contactPhone != null)
@@ -698,12 +679,11 @@ class _ProfilePageState extends State<ProfilePage> {
         return 'Your account has no profile record yet. Please contact support.';
       }
       return null;
-    } on PostgrestException catch (e) {
-      debugPrint('Seller details update PostgrestException: ${e.message}');
-      return e.message;
     } catch (e) {
       debugPrint('Seller details update error: $e');
-      return e.toString();
+      return friendlyError(e,
+          action: 'save_shop_details',
+          fallback: 'Could not save your shop details. Please try again.');
     }
   }
 
@@ -1128,9 +1108,6 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── Become a Seller ────────────────────────────────────────────────────────
-  /// Validates and normalises a Facebook Messenger link. Accepts
-  /// m.me/<name> or messenger.com/t/<name>, with or without https:// and
-  /// www. — returns the canonical https:// URL, or null when invalid.
   /// Normalizes the optional Facebook contact link. Blank means "not
   /// provided" (stored as null so the profile hides the button). Accepts a
   /// full URL, "facebook.com/name", "fb.com/name", or a bare page/username,
@@ -1150,20 +1127,6 @@ class _ProfilePageState extends State<ProfilePage> {
     return 'https://$v';
   }
 
-  static String? _normalizeMessengerLink(String input) {
-    var v = input.trim();
-    if (v.isEmpty) return null;
-    v = v
-        .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
-        .replaceFirst(RegExp(r'^www\.', caseSensitive: false), '');
-    final lower = v.toLowerCase();
-    final valid = (lower.startsWith('m.me/') && v.length > 'm.me/'.length) ||
-        (lower.startsWith('messenger.com/t/') &&
-            v.length > 'messenger.com/t/'.length);
-    if (!valid) return null;
-    return 'https://$v';
-  }
-
   void _showBecomeSeller() {
     if (_isSeller) {
       _showSellerDashboard();
@@ -1172,7 +1135,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final shopNameCtrl = TextEditingController();
     final shopDescCtrl = TextEditingController();
-    final messengerCtrl = TextEditingController();
     String? selectedCategory;
     const categories = [
       'Poultry',
@@ -1329,11 +1291,6 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  // Buyers contact sellers through Messenger, so a valid
-                  // link is required before becoming a seller.
-                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
-                      Icons.link_outlined),
                   const SizedBox(height: 20),
 
                   SizedBox(
@@ -1343,14 +1300,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         if (shopNameCtrl.text.trim().isEmpty || selectedCategory == null) {
                           _showMessage(
                               'Please fill in all required fields.', Colors.redAccent);
-                          return;
-                        }
-                        final messengerLink =
-                            _normalizeMessengerLink(messengerCtrl.text);
-                        if (messengerLink == null) {
-                          _showMessage(
-                              'Please put your Messenger link (e.g. m.me/yourname) before becoming a seller.',
-                              Colors.redAccent);
                           return;
                         }
                         final businessName = shopNameCtrl.text.trim();
@@ -1365,18 +1314,19 @@ class _ProfilePageState extends State<ProfilePage> {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
-                          _messengerLink = messengerLink;
                         });
                         final error = await _saveSellerDetails(
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
-                          messengerLink: messengerLink,
                         );
                         if (!mounted) return;
                         if (error != null) {
+                          // Keep the returned sentence: it carries the "Ref:"
+                          // code when the failure couldn't be explained.
                           _showMessage(
-                              'Saved on this device, but syncing failed: $error',
+                              'Saved on this device, but not online yet. '
+                              '$error',
                               Colors.redAccent);
                         } else {
                           _showMessage('🎉 You are now a Seller! Welcome aboard.',
@@ -1539,7 +1489,6 @@ class _ProfilePageState extends State<ProfilePage> {
   void _showShopSettings() {
     final shopNameCtrl = TextEditingController(text: _businessName);
     final shopDescCtrl = TextEditingController(text: _shopDescription);
-    final messengerCtrl = TextEditingController(text: _messengerLink);
     final contactPhoneCtrl = TextEditingController(text: _contactPhone);
     final whatsappCtrl = TextEditingController(text: _whatsapp);
     final viberCtrl = TextEditingController(text: _viber);
@@ -1672,9 +1621,6 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  _editField(messengerCtrl, 'Messenger Link (e.g. m.me/yourname)',
-                      Icons.link_outlined),
                   const SizedBox(height: 18),
 
                   // Optional contact channels — same set as the Edit Profile
@@ -1716,14 +1662,6 @@ class _ProfilePageState extends State<ProfilePage> {
                               'Please fill in all required fields.', Colors.redAccent);
                           return;
                         }
-                        final messengerLink =
-                            _normalizeMessengerLink(messengerCtrl.text);
-                        if (messengerLink == null) {
-                          _showMessage(
-                              'Please put a valid Messenger link (e.g. m.me/yourname).',
-                              Colors.redAccent);
-                          return;
-                        }
                         final businessName = shopNameCtrl.text.trim();
                         final shopDescription = shopDescCtrl.text.trim();
                         final shopCategory = selectedCategory ?? '';
@@ -1739,7 +1677,6 @@ class _ProfilePageState extends State<ProfilePage> {
                           _businessName = businessName;
                           _shopDescription = shopDescription;
                           _shopCategory = shopCategory;
-                          _messengerLink = messengerLink;
                           _contactPhone = contactPhone;
                           _whatsapp = whatsapp;
                           _viber = viber;
@@ -1750,7 +1687,6 @@ class _ProfilePageState extends State<ProfilePage> {
                           businessName: businessName,
                           shopDescription: shopDescription,
                           shopCategory: shopCategory,
-                          messengerLink: messengerLink,
                           contactPhone: contactPhone,
                           whatsapp: whatsapp,
                           viber: viber,
@@ -1759,8 +1695,11 @@ class _ProfilePageState extends State<ProfilePage> {
                         );
                         if (!mounted) return;
                         if (error != null) {
+                          // Keep the returned sentence: it carries the "Ref:"
+                          // code when the failure couldn't be explained.
                           _showMessage(
-                              'Saved on this device, but syncing failed: $error',
+                              'Saved on this device, but not online yet. '
+                              '$error',
                               Colors.redAccent);
                         } else {
                           _showMessage('Shop details updated.', const Color(0xFF3AA876));
@@ -2416,30 +2355,12 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
 
       // ── Bottom Nav ─────────────────────────────────────────────────
-      bottomNavigationBar: BottomNavigationBar(
+      // Shared bar + zero-length route transitions (see instantRoute), so it
+      // stays visually fixed instead of sliding in with each tab.
+      bottomNavigationBar: AppBottomNav(
         currentIndex: _selectedIndex,
         onTap: _onTabTapped,
-        selectedItemColor: const Color(0xFF6DBF99),
-        unselectedItemColor: Colors.black45,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        type: BottomNavigationBarType.fixed,
-        items: [
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.shopping_cart_outlined), activeIcon: Icon(Icons.shopping_cart), label: 'Explore'),
-          BottomNavigationBarItem(
-              icon: NotificationDot(
-                  show: _hasUnseenAnnouncements,
-                  child: const Icon(Icons.notifications_outlined)),
-              activeIcon: NotificationDot(
-                  show: _hasUnseenAnnouncements,
-                  child: const Icon(Icons.notifications)),
-              label: 'Announcements'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profile'),
-        ],
+        hasUnseenAnnouncements: _hasUnseenAnnouncements,
       ),
     );
   }
@@ -3657,7 +3578,14 @@ class _GcashPaymentSheetState extends State<_GcashPaymentSheet> {
         _uploadedPath = null; // a newly picked image needs a fresh upload
       });
     } catch (e) {
-      if (mounted) showTopMessage(context, 'Could not pick the image: $e');
+      debugPrint('Receipt pick failed: $e');
+      if (mounted) {
+        showTopMessage(context,
+            friendlyError(e,
+                action: 'pick_receipt',
+                fallback: 'Could not open that image. '
+                    'Please try another one.'));
+      }
     }
   }
 
@@ -4262,7 +4190,6 @@ class _EditProfilePage extends StatefulWidget {
   final String initialBusinessName;
   final String initialShopCategory;
   final String initialShopDescription;
-  final String initialMessengerLink;
   final String initialContactPhone;
   final String initialWhatsapp;
   final String initialViber;
@@ -4276,7 +4203,6 @@ class _EditProfilePage extends StatefulWidget {
     required String businessName,
     required String shopCategory,
     required String shopDescription,
-    required String messengerLink,
     String contactPhone,
     String whatsapp,
     String viber,
@@ -4298,7 +4224,6 @@ class _EditProfilePage extends StatefulWidget {
     required this.initialBusinessName,
     required this.initialShopCategory,
     required this.initialShopDescription,
-    required this.initialMessengerLink,
     required this.initialContactPhone,
     required this.initialWhatsapp,
     required this.initialViber,
@@ -4322,7 +4247,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
   late final TextEditingController _houseCtrl;
   late final TextEditingController _businessCtrl;
   late final TextEditingController _shopDescCtrl;
-  late final TextEditingController _messengerCtrl;
   late final TextEditingController _contactPhoneCtrl;
   late final TextEditingController _whatsappCtrl;
   late final TextEditingController _viberCtrl;
@@ -4354,7 +4278,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl = TextEditingController(text: widget.initialHouse);
     _businessCtrl = TextEditingController(text: widget.initialBusinessName);
     _shopDescCtrl = TextEditingController(text: widget.initialShopDescription);
-    _messengerCtrl = TextEditingController(text: widget.initialMessengerLink);
     _contactPhoneCtrl = TextEditingController(text: widget.initialContactPhone);
     _whatsappCtrl = TextEditingController(text: widget.initialWhatsapp);
     _viberCtrl = TextEditingController(text: widget.initialViber);
@@ -4371,7 +4294,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
     _houseCtrl.dispose();
     _businessCtrl.dispose();
     _shopDescCtrl.dispose();
-    _messengerCtrl.dispose();
     _contactPhoneCtrl.dispose();
     _whatsappCtrl.dispose();
     _viberCtrl.dispose();
@@ -4392,7 +4314,6 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       businessName: _businessCtrl.text.trim(),
       shopCategory: _shopCategory,
       shopDescription: _shopDescCtrl.text.trim(),
-      messengerLink: _messengerCtrl.text.trim(),
       contactPhone: _contactPhoneCtrl.text.trim(),
       whatsapp: _whatsappCtrl.text.trim(),
       viber: _viberCtrl.text.trim(),
@@ -4404,7 +4325,7 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       Navigator.pop(context, true);
     } else {
       setState(() => _isSaving = false);
-      showTopMessage(context, 'Save failed: $error');
+      showTopMessage(context, error);
     }
   }
 
@@ -4538,7 +4459,11 @@ class _EditProfilePageState extends State<_EditProfilePage> {
       debugPrint('Avatar upload failed: $e');
       if (!mounted) return;
       setState(() => _uploadingAvatar = false);
-      showTopMessage(context, 'Could not update picture: $e');
+      showTopMessage(
+          context,
+          friendlyError(e,
+              action: 'update_avatar',
+              fallback: 'Could not update your picture. Please try again.'));
     }
   }
 
@@ -4680,12 +4605,11 @@ class _EditProfilePageState extends State<_EditProfilePage> {
             _row('Shop Name', _businessCtrl, 'Shop / Farm name'),
             _categoryRow(),
             _row('Description', _shopDescCtrl, 'What you sell', maxLines: 2),
-            _row('Messenger', _messengerCtrl, 'm.me/yourname',
-                type: TextInputType.url),
             _sectionHeader('Contact options (optional)'),
             _hintText(
-                'Shown as buttons on your public seller profile. Leave any '
-                'blank to hide it. Buyers use these to reach you.'),
+                'Extra ways to reach you, shown as buttons on your public '
+                'seller profile. All optional — buyers can always message you '
+                'in the app. Leave any blank to hide it.'),
             _row('Phone', _contactPhoneCtrl, 'Public number (call & SMS)',
                 type: TextInputType.phone,
                 formatters: [

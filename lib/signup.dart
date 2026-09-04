@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'cloudinary_function.dart';
+import 'friendly_error.dart';
 import 'legal.dart';
 import 'liveness_check.dart';
 import 'login.dart';
@@ -465,7 +466,11 @@ class _SignUpPageState extends State<SignUpPage> {
         MaterialPageRoute(builder: (context) => const LoginPage()),
       );
     } on AuthException catch (e) {
-      if (mounted) _showSnack(e.message);
+      if (mounted) {
+        _showSnack(friendlyAuthError(e,
+            action: 'signup',
+            fallback: 'Could not create your account. Please try again.'));
+      }
     } catch (e) {
       if (mounted) _showSnack('Something went wrong. Please try again.');
     } finally {

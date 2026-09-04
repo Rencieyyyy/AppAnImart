@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../friendly_error.dart';
 import '../main.dart';
 
 /// One purchasable plan as shown in the AniMart app.
@@ -364,10 +365,10 @@ class SubscriptionService {
             fileOptions: FileOptions(contentType: contentType),
           );
       return path;
-    } on StorageException catch (e) {
-      throw ReceiptUploadException('Receipt upload failed: ${e.message}');
     } catch (e) {
-      throw ReceiptUploadException('Receipt upload failed: $e');
+      throw ReceiptUploadException(friendlyError(e,
+          action: 'upload_receipt',
+          fallback: 'Could not upload your receipt. Please try again.'));
     }
   }
 
@@ -469,7 +470,9 @@ class SubscriptionService {
       });
       return null;
     } catch (e) {
-      return 'Could not submit request: $e';
+      return friendlyError(e,
+          action: 'request_plan',
+          fallback: 'Could not send your request. Please try again.');
     }
   }
 }

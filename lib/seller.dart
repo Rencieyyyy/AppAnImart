@@ -1,3 +1,4 @@
+import 'services/livestock_categories.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:ani_mart/product_detail.dart';
 import 'cloudinary_function.dart';
 import 'current_user.dart';
+import 'friendly_error.dart';
 import 'main.dart';
 import 'profile.dart';
 import 'services/location_service.dart';
@@ -56,44 +58,11 @@ class _SellerPageState extends State<SellerPage> {
   String _userName = '';
   String _avatarUrl = '';
 
-  final List<String> _categories = [
-    'Poultry',
-    'Small Livestock',
-    'Large Livestock',
-    'Aquaculture',
-    'Ornamental Fish',
-    'Hatching & Breeding Products',
-  ];
-
-  /// Type options shown in the second dropdown once a category is picked.
-  static const Map<String, List<String>> _subcategories = {
-    'Poultry': [
-      'Chicken', 'Gamefowl', 'Duck', 'Turkey', 'Peacock', 'Pigeon', 'Quail',
-      'Guinea Fowl', 'Ostrich', 'Dove', 'Goose',
-    ],
-    'Large Livestock': [
-      'Pig', 'Goat', 'Cattle', 'Water Buffalo', 'Sheep', 'Horse',
-    ],
-    'Small Livestock': [
-      'Rabbit', 'Guinea Pig', 'Hamster', 'Hedgehog',
-    ],
-    'Aquaculture': [
-      'Tilapia', 'Milkfish (Bangus)', 'Catfish (Hito)', 'Carp', 'Gourami',
-      'Eel', 'Mudfish', 'Mud Crab (Alimango)', 'Oyster', 'Mussel', 'Clam',
-      'Sea Cucumber', 'Seaweed Seedlings', 'Lobster', 'Prawn', 'Shrimp',
-    ],
-    'Ornamental Fish': [
-      'Koi', 'Goldfish', 'Betta', 'Guppy', 'Molly', 'Platy', 'Swordtail',
-      'Flowerhorn', 'Arowana', 'Discus', 'Angelfish', 'Oscar', 'Cichlids',
-      'Tetra', 'Stingray', 'Pleco', 'Dragon Fish', 'Aquarium Shrimp',
-      'Aquarium snails',
-    ],
-    'Hatching & Breeding Products': [
-      'Fertile chicken eggs', 'Fertile duck eggs', 'Fertile turkey eggs',
-      'Fertile quail eggs', 'Fertile goose eggs', 'Chicks', 'Ducklings',
-      'Turkey poults', 'Quail chicks',
-    ],
-  };
+  /// Categories and their types come from the shared taxonomy so Explore's
+  /// category board and this form can never drift apart.
+  final List<String> _categories = kLivestockCategories;
+  static const Map<String, List<String>> _subcategories =
+      kLivestockSubcategories;
 
   final List<String> _conditions  = ['Good', 'Excellent', 'Fair'];
 
@@ -328,8 +297,14 @@ class _SellerPageState extends State<SellerPage> {
         });
       }
     } catch (e) {
+      debugPrint('Image pick failed: $e');
       if (mounted) {
-        showTopMessage(context, 'Could not pick image: $e');
+        showTopMessage(
+            context,
+            friendlyError(e,
+                action: 'pick_listing_image',
+                fallback:
+                    'Could not open that photo. Please try another one.'));
       }
     }
   }
@@ -424,8 +399,13 @@ class _SellerPageState extends State<SellerPage> {
       await _loadMyListings();
     } catch (e) {
       if (!mounted) return;
+      debugPrint('Publish listing failed: $e');
       setState(() => _uploading = false);
-      showTopMessage(context, 'Could not publish listing: $e');
+      showTopMessage(
+          context,
+          friendlyError(e,
+              action: 'publish_listing',
+              fallback: 'Could not post your listing. Please try again.'));
       return;
     }
 
@@ -495,7 +475,14 @@ class _SellerPageState extends State<SellerPage> {
       await deleteListingImages('$id');
       await supabase.from('listings').delete().eq('id', id);
     } catch (e) {
-      if (mounted) showTopMessage(context, 'Could not delete listing: $e');
+      debugPrint('Delete listing failed: $e');
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyError(e,
+                action: 'delete_listing',
+                fallback: 'Could not delete that listing. Please try again.'));
+      }
       await _loadMyListings();
     }
   }

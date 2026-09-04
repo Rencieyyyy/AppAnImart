@@ -45,5 +45,8 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Saving a chat picture to the user's photo library (add-only). -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>AniMart saves pictures from your chats to your photo library.</string>
 </dict>
 </plist>

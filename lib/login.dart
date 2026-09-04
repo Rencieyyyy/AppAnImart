@@ -4,6 +4,7 @@ import 'signup.dart';
 import 'dashboard.dart';
 import 'current_user.dart';
 import 'forgot_password.dart';
+import 'friendly_error.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -100,7 +101,11 @@ class _LoginPageState extends State<LoginPage> {
       );
     } on AuthException catch (e) {
       if (!mounted) return;
-      showTopMessage(context, e.message);
+      showTopMessage(
+          context,
+          friendlyAuthError(e,
+              action: 'login',
+              fallback: 'Could not log you in. Please try again.'));
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Something went wrong. Please try again.');

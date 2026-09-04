@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'seller.dart';
 import 'seller_analytics.dart';
@@ -10,7 +12,9 @@ import 'main.dart';
 import 'services/marketplace_service.dart';
 import 'services/notification_service.dart';
 import 'services/subscription_service.dart';
-import 'widgets/notification_dot.dart';
+import 'chats_page.dart';
+import 'services/chat_service.dart';
+import 'widgets/app_bottom_nav.dart';
 import 'widgets/top_message.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
@@ -117,6 +121,12 @@ class _DashboardPageState extends State<DashboardPage> {
   // Red dot on the announcements nav icon while unseen announcements exist.
   bool _hasUnseenAnnouncements = false;
 
+  // Unread messages across every chat — the badge on the header's chat icon.
+  int _unreadChats = 0;
+
+  // Realtime nudge so the badge updates the moment a message lands.
+  StreamSubscription? _chatSub;
+
   // ── Show plan popup on first load ─────────────────────────────────────────
 
   @override
@@ -130,6 +140,14 @@ class _DashboardPageState extends State<DashboardPage> {
     NotificationService.hasUnseenAnnouncements().then((v) {
       if (mounted && v) setState(() => _hasUnseenAnnouncements = true);
     });
+    _loadUnreadChats();
+    try {
+      _chatSub = ChatService.conversationStream()
+          .listen((_) => _loadUnreadChats(),
+              onError: (e) => debugPrint('Chat badge stream error: $e'));
+    } catch (e) {
+      debugPrint('Chat badge stream failed: $e');
+    }
     if (!_planDialogShown) {
       // Once per app session, after the first frame renders, decide what to
       // show the user: Super Premium members see a compact sales snapshot
@@ -730,6 +748,19 @@ class _DashboardPageState extends State<DashboardPage> {
     return items;
   }
 
+  // ── Chats ─────────────────────────────────────────────────────────────────
+
+  Future<void> _loadUnreadChats() async {
+    final n = await ChatService.unreadCount();
+    if (mounted && n != _unreadChats) setState(() => _unreadChats = n);
+  }
+
+  /// Opens the Chats inbox, then refreshes the badge on the way back.
+  void _openChats() {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatsPage()))
+        .then((_) => _loadUnreadChats());
+  }
+
   // ── Navigation ────────────────────────────────────────────────────────────
 
   void _onTabTapped(int index) {
@@ -738,16 +769,13 @@ class _DashboardPageState extends State<DashboardPage> {
       case 0:
         break;
       case 1:
-        Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const BuyerPage()));
+        Navigator.push(context, instantRoute(const BuyerPage()));
         break;
       case 2:
-        Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const AnnouncementPage()));
+        Navigator.push(context, instantRoute(const AnnouncementPage()));
         break;
       case 3:
-        Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const ProfilePage()));
+        Navigator.push(context, instantRoute(const ProfilePage()));
         break;
     }
   }
@@ -1298,6 +1326,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
+    _chatSub?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -1351,43 +1380,93 @@ class _DashboardPageState extends State<DashboardPage> {
                             ),
                           ],
                         ),
-                        GestureDetector(
-                          onTap: _showFavourites,
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              Icon(
-                                _favourites.isEmpty
-                                    ? Icons.favorite_border
-                                    : Icons.favorite,
-                                color: _favourites.isEmpty
-                                    ? Colors.black54
-                                    : const Color(0xFF6DBF99),
-                              ),
-                              if (_favourites.isNotEmpty)
-                                Positioned(
-                                  top: -4,
-                                  right: -4,
-                                  child: Container(
-                                    width: 14,
-                                    height: 14,
-                                    decoration: const BoxDecoration(
-                                      color: Color(0xFF6DBF99),
-                                      shape: BoxShape.circle,
+                        // ── Chats + Favourites ──────────────────────
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
+                              onTap: _openChats,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Icon(
+                                    _unreadChats == 0
+                                        ? Icons.chat_bubble_outline
+                                        : Icons.chat_bubble,
+                                    color: _unreadChats == 0
+                                        ? Colors.black54
+                                        : const Color(0xFF6DBF99),
+                                  ),
+                                  if (_unreadChats > 0)
+                                    Positioned(
+                                      top: -4,
+                                      right: -4,
+                                      child: Container(
+                                        constraints: const BoxConstraints(
+                                            minWidth: 14, minHeight: 14),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 3),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF6DBF99),
+                                          borderRadius:
+                                              BorderRadius.circular(7),
+                                        ),
+                                        child: Center(
+                                          child: Text(
+                                            _unreadChats > 9
+                                                ? '9+'
+                                                : '$_unreadChats',
+                                            style: const TextStyle(
+                                                fontSize: 8,
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                    child: Center(
-                                      child: Text(
-                                        '${_favourites.length}',
-                                        style: const TextStyle(
-                                            fontSize: 8,
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 18),
+                            GestureDetector(
+                            onTap: _showFavourites,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                Icon(
+                                  _favourites.isEmpty
+                                      ? Icons.favorite_border
+                                      : Icons.favorite,
+                                  color: _favourites.isEmpty
+                                      ? Colors.black54
+                                      : const Color(0xFF6DBF99),
+                                ),
+                                if (_favourites.isNotEmpty)
+                                  Positioned(
+                                    top: -4,
+                                    right: -4,
+                                    child: Container(
+                                      width: 14,
+                                      height: 14,
+                                      decoration: const BoxDecoration(
+                                        color: Color(0xFF6DBF99),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '${_favourites.length}',
+                                          style: const TextStyle(
+                                              fontSize: 8,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                            ],
+                              ],
+                            ),
                           ),
+                          ],
                         ),
                       ],
                     ),
@@ -1739,50 +1818,12 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
 
       // ── Bottom Nav ────────────────────────────────────────────────────────
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.08),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
-            ),
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _selectedIndex,
-          onTap: _onTabTapped,
-          backgroundColor: Colors.white,
-          selectedItemColor: const Color(0xFF6DBF99),
-          unselectedItemColor: Colors.black45,
-          showSelectedLabels: true,
-          showUnselectedLabels: true,
-          type: BottomNavigationBarType.fixed,
-          elevation: 0,
-          items: [
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.home_outlined),
-                activeIcon: Icon(Icons.home),
-                label: 'Home'),
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.shopping_cart_outlined),
-                activeIcon: Icon(Icons.shopping_cart),
-                label: 'Explore'),
-            BottomNavigationBarItem(
-                icon: NotificationDot(
-                    show: _hasUnseenAnnouncements,
-                    child: const Icon(Icons.notifications_outlined)),
-                activeIcon: NotificationDot(
-                    show: _hasUnseenAnnouncements,
-                    child: const Icon(Icons.notifications)),
-                label: 'Announcements'),
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.person_outline),
-                activeIcon: Icon(Icons.person),
-                label: 'Profile'),
-          ],
-        ),
+      // Shared widget + zero-length route transitions (see instantRoute), so
+      // the bar stays visually fixed instead of sliding in with each tab.
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: _selectedIndex,
+        onTap: _onTabTapped,
+        hasUnseenAnnouncements: _hasUnseenAnnouncements,
       ),
     );
   }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'friendly_error.dart';
 import 'main.dart';
 import 'widgets/top_message.dart';
 
@@ -112,7 +113,15 @@ class _SupportChatPageState extends State<SupportChatPage> {
         imageQuality: 85,
       );
     } catch (e) {
-      if (mounted) showTopMessage(context, 'Could not pick the image: $e');
+      debugPrint('Support chat image pick failed: $e');
+      if (mounted) {
+        showTopMessage(
+            context,
+            friendlyError(e,
+                action: 'pick_support_image',
+                fallback:
+                    'Could not open that photo. Please try another one.'));
+      }
       return;
     }
     if (picked == null || !mounted) return; // user cancelled
@@ -149,14 +158,14 @@ class _SupportChatPageState extends State<SupportChatPage> {
       });
       _controller.clear();
       _scrollToBottom();
-    } on StorageException catch (e) {
-      if (mounted) {
-        showTopMessage(context, 'Couldn\'t send the picture: ${e.message}');
-      }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Support chat image send failed: $e');
       if (mounted) {
         showTopMessage(
-            context, 'Couldn\'t send the picture. Please try again.');
+            context,
+            friendlyError(e,
+                action: 'send_support_image',
+                fallback: 'Could not send the picture. Please try again.'));
       }
     } finally {
       if (mounted) setState(() => _sending = false);

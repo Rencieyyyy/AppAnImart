@@ -7,10 +7,11 @@ import 'announcement_page.dart';
 import 'profile.dart';
 import 'main.dart';
 import 'services/location_service.dart';
+import 'services/livestock_categories.dart';
 import 'services/marketplace_service.dart';
 import 'services/notification_service.dart';
 import 'widgets/city_picker.dart';
-import 'widgets/notification_dot.dart';
+import 'widgets/app_bottom_nav.dart';
 
 // ─── Data model ──────────────────────────────────────────────────────────────
 
@@ -21,6 +22,10 @@ class _Listing {
   final String image;
   final List<String> images;
   final String category;
+
+  /// Type within the category (Poultry → Chicken). Blank on older listings
+  /// posted before the field existed.
+  final String subcategory;
   final String location;
   // Distance from the signed-in buyer to the seller, computed server-side
   // by the explore_listings RPC; null when either side has no location.
@@ -46,6 +51,7 @@ class _Listing {
     required this.image,
     this.images = const [],
     required this.category,
+    this.subcategory = '',
     required this.location,
     this.distanceKm,
     this.description = '',
@@ -61,15 +67,8 @@ class _Listing {
   });
 }
 
-const List<String> _categories = [
-  'All',
-  'Poultry',
-  'Small Livestock',
-  'Large Livestock',
-  'Aquaculture',
-  'Ornamental Fish',
-  'Hatching & Breeding Products',
-];
+/// Picker order: the pseudo-entry first, then the shared taxonomy.
+const List<String> _categories = ['All', ...kLivestockCategories];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -85,6 +84,13 @@ class _BuyerPageState extends State<BuyerPage> {
 
   // Filters
   String _selectedCategory = 'All';
+
+  /// Type within the chosen category, once the buyer drills in.
+  String? _selectedSubcategory;
+
+  /// Explore opens on the category grid. Picking a category (or 'All' from
+  /// the picker) switches to the listings; the breadcrumb comes back here.
+  bool _browsingCategories = true;
   String _searchQuery = '';
   String _sortBy = 'Default'; // Default | Price ↑ | Price ↓ | Nearest
   double? _minPrice;
@@ -314,6 +320,7 @@ class _BuyerPageState extends State<BuyerPage> {
             image: img.isNotEmpty ? img : 'images/chicken.png',
             images: imgs,
             category: (row['category'] as String?) ?? 'Uncategorized',
+            subcategory: ((row['subcategory'] as String?) ?? '').trim(),
             location: (row['location'] as String?) ?? '',
             distanceKm: (row['distance_km'] as num?)?.toDouble(),
             description: (row['description'] as String?) ?? '',
@@ -356,6 +363,10 @@ class _BuyerPageState extends State<BuyerPage> {
 
     if (_selectedCategory != 'All') {
       list = list.where((l) => l.category == _selectedCategory).toList();
+    }
+    if (_selectedSubcategory != null) {
+      list =
+          list.where((l) => l.subcategory == _selectedSubcategory).toList();
     }
 
     if (_minPrice != null) {
@@ -473,19 +484,16 @@ class _BuyerPageState extends State<BuyerPage> {
     if (index == _selectedIndex) return;
     switch (index) {
       case 0:
-        Navigator.pushAndRemoveUntil(context,
-            MaterialPageRoute(builder: (_) => const DashboardPage()),
-            (route) => false);
+        Navigator.pushAndRemoveUntil(
+            context, instantRoute(const DashboardPage()), (route) => false);
         break;
       case 2:
-        Navigator.pushAndRemoveUntil(context,
-            MaterialPageRoute(builder: (_) => const AnnouncementPage()),
-            (route) => false);
+        Navigator.pushAndRemoveUntil(
+            context, instantRoute(const AnnouncementPage()), (route) => false);
         break;
       case 3:
-        Navigator.pushAndRemoveUntil(context,
-            MaterialPageRoute(builder: (_) => const ProfilePage()),
-            (route) => false);
+        Navigator.pushAndRemoveUntil(
+            context, instantRoute(const ProfilePage()), (route) => false);
         break;
     }
   }
@@ -805,6 +813,245 @@ class _BuyerPageState extends State<BuyerPage> {
     );
   }
 
+  // ── Browse by category ─────────────────────────────────────────────────────
+
+  /// True while Explore is showing artwork tiles instead of listings: either
+  /// the six categories, or the types inside the one that's open. A search
+  /// always wins — results are listings, never tiles.
+  bool get _showingBrowseTiles =>
+      _searchQuery.isEmpty &&
+      (_browsingCategories ||
+          (_selectedCategory != 'All' && _selectedSubcategory == null &&
+              _subcategoryTiles.isNotEmpty));
+
+  /// Listings left after blocking, used for the tile counts. Price/distance
+  /// filters deliberately don't apply — a tile showing "0" because of a
+  /// filter set two screens ago is just confusing.
+  List<_Listing> get _browseSource => _blockedSellers.isEmpty
+      ? _allListings
+      : _allListings
+          .where((l) => !_blockedSellers.contains(l.sellerId))
+          .toList();
+
+  /// The types inside the open category that actually have listings, in the
+  /// taxonomy's order. Empty when the category has none — the buyer then
+  /// drops straight to its listings rather than hitting a blank screen.
+  List<String> get _subcategoryTiles {
+    final cat = _selectedCategory;
+    if (cat == 'All') return const [];
+    final present = _browseSource
+        .where((l) => l.category == cat && l.subcategory.isNotEmpty)
+        .map((l) => l.subcategory)
+        .toSet();
+    final ordered = kLivestockSubcategories[cat] ?? const <String>[];
+    final known = ordered.where(present.contains).toList();
+    // Anything a seller typed that isn't in the taxonomy still gets a tile.
+    final extras = present.where((s) => !ordered.contains(s)).toList()..sort();
+    return [...known, ...extras];
+  }
+
+  void _openCategory(String category) {
+    setState(() {
+      _selectedCategory = category;
+      _selectedSubcategory = null;
+      _browsingCategories = false;
+    });
+  }
+
+  void _openSubcategory(String subcategory) {
+    setState(() => _selectedSubcategory = subcategory);
+  }
+
+  /// Back out one level: type → category tiles → the six categories.
+  void _browseUp() {
+    setState(() {
+      if (_selectedSubcategory != null && _subcategoryTiles.isNotEmpty) {
+        _selectedSubcategory = null;
+      } else {
+        _selectedCategory = 'All';
+        _selectedSubcategory = null;
+        _browsingCategories = true;
+      }
+    });
+  }
+
+  /// Breadcrumb above the grid — also the way back up.
+  Widget _buildBrowseCrumb() {
+    final parts = <String>[
+      if (_selectedCategory != 'All') _selectedCategory,
+      if (_selectedSubcategory != null) _selectedSubcategory!,
+    ];
+    if (parts.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: InkWell(
+        onTap: _browseUp,
+        borderRadius: BorderRadius.circular(8),
+        child: Row(
+          children: [
+            const Icon(Icons.chevron_left, size: 20, color: Color(0xFF6DBF99)),
+            const SizedBox(width: 2),
+            Flexible(
+              child: Text(
+                parts.join('  ›  '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3AA876)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The tile grid: six categories at the top level, the open category's
+  /// types one level down.
+  Widget _buildBrowseGrid() {
+    final showingCategories = _browsingCategories;
+    final names =
+        showingCategories ? kLivestockCategories : _subcategoryTiles;
+
+    if (names.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 60),
+        child: Center(
+          child: Column(
+            children: const [
+              Icon(Icons.inventory_2_outlined,
+                  color: Colors.black26, size: 52),
+              SizedBox(height: 12),
+              Text('Nothing listed here yet',
+                  style: TextStyle(color: Colors.black45, fontSize: 14)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: names.length,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: 0.95,
+      ),
+      itemBuilder: (_, i) {
+        final name = names[i];
+        final count = showingCategories
+            ? _browseSource.where((l) => l.category == name).length
+            : _browseSource
+                .where((l) =>
+                    l.category == _selectedCategory && l.subcategory == name)
+                .length;
+        return _buildBrowseTile(
+          name: name,
+          count: count,
+          onTap: () =>
+              showingCategories ? _openCategory(name) : _openSubcategory(name),
+        );
+      },
+    );
+  }
+
+  /// One artwork tile with its name on a white strip underneath, as on the
+  /// category board. Artwork is a bundled image when one exists, else a real
+  /// photo from a listing in that bucket, else a soft icon panel.
+  Widget _buildBrowseTile({
+    required String name,
+    required int count,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFDDE6E1)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Expanded(child: _browseArtwork(name)),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
+              color: Colors.white,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.black87),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text('$count',
+                      style: const TextStyle(
+                          fontSize: 11.5, color: Colors.black45)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Artwork for a browse tile, best available first.
+  Widget _browseArtwork(String name) {
+    final asset = livestockAsset(name);
+    if (asset != null) {
+      return Image.asset(asset,
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _browseIconPanel(name));
+    }
+
+    // Fall back to a photo from a real listing in this bucket, so a category
+    // with no bundled art still looks like the rest of the board.
+    final match = _browseSource.where((l) => _browsingCategories
+        ? l.category == name
+        : l.category == _selectedCategory && l.subcategory == name);
+    for (final l in match) {
+      if (l.image.startsWith('http')) {
+        return Image.network(l.image,
+            width: double.infinity,
+            height: double.infinity,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _browseIconPanel(name));
+      }
+    }
+    return _browseIconPanel(name);
+  }
+
+  Widget _browseIconPanel(String name) {
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      color: const Color(0xFFE8F7F1),
+      alignment: Alignment.center,
+      child: Icon(
+        livestockCategoryIcon(_browsingCategories ? name : _selectedCategory),
+        size: 34,
+        color: const Color(0xFF6DBF99),
+      ),
+    );
+  }
+
   // ── Categories bottom sheet ────────────────────────────────────────────────
 
   void _showCategoriesSheet() {
@@ -848,7 +1095,13 @@ class _BuyerPageState extends State<BuyerPage> {
                   : _allListings.where((l) => l.category == cat).length;
               return GestureDetector(
                 onTap: () {
-                  setState(() => _selectedCategory = cat);
+                  setState(() {
+                    _selectedCategory = cat;
+                    _selectedSubcategory = null;
+                    // 'All' means "show me everything", not "back to the
+                    // board" — only a real category can land on tiles.
+                    _browsingCategories = false;
+                  });
                   Navigator.pop(ctx);
                 },
                 child: Container(
@@ -869,18 +1122,7 @@ class _BuyerPageState extends State<BuyerPage> {
                   child: Row(
                     children: [
                       Icon(
-                        cat == 'All'
-                            ? Icons.grid_view
-                            : cat == 'Poultry'
-                                ? Icons.egg_alt
-                                : cat == 'Aquaculture'
-                                    ? Icons.water
-                                    : cat == 'Ornamental Fish'
-                                        ? Icons.water_drop_outlined
-                                        : cat ==
-                                                'Hatching & Breeding Products'
-                                            ? Icons.egg_outlined
-                                            : Icons.pets,
+                        livestockCategoryIcon(cat),
                         color: isSelected
                             ? const Color(0xFF6DBF99)
                             : Colors.black45,
@@ -1217,6 +1459,7 @@ class _BuyerPageState extends State<BuyerPage> {
     final items = _filtered;
     final bool hasPriceFilter = _minPrice != null || _maxPrice != null;
     final bool hasActiveFilters = _selectedCategory != 'All' ||
+        _selectedSubcategory != null ||
         _sortBy != 'Default' ||
         _searchQuery.isNotEmpty ||
         hasPriceFilter ||
@@ -1376,12 +1619,21 @@ class _BuyerPageState extends State<BuyerPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        _searchQuery.isNotEmpty
-                            ? 'Results for "$_searchQuery"'
-                            : 'Available Livestock',
-                        style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
+                      Expanded(
+                        child: Text(
+                          _searchQuery.isNotEmpty
+                              ? 'Results for "$_searchQuery"'
+                              : _browsingCategories
+                                  ? 'Browse Categories'
+                                  : _selectedSubcategory ??
+                                      (_selectedCategory == 'All'
+                                          ? 'Available Livestock'
+                                          : _selectedCategory),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
                       ),
                       // Buyer's saved location — tap to set/change it.
                       GestureDetector(
@@ -1410,6 +1662,8 @@ class _BuyerPageState extends State<BuyerPage> {
                       ),
                     ],
                   ),
+
+                  if (_searchQuery.isEmpty) _buildBrowseCrumb(),
 
                   // Nudge to set a location so "near you" distances work.
                   if (!_loading && _myLocation == null)
@@ -1454,8 +1708,17 @@ class _BuyerPageState extends State<BuyerPage> {
                         runSpacing: 6,
                         children: [
                           if (_selectedCategory != 'All')
-                            _filterChip(_selectedCategory,
-                                () => setState(() => _selectedCategory = 'All')),
+                            _filterChip(_selectedCategory, () {
+                              setState(() {
+                                _selectedCategory = 'All';
+                                _selectedSubcategory = null;
+                                _browsingCategories = true;
+                              });
+                            }),
+                          if (_selectedSubcategory != null)
+                            _filterChip(_selectedSubcategory!,
+                                () => setState(
+                                    () => _selectedSubcategory = null)),
                           if (_sortBy != 'Default')
                             _filterChip('Sort: $_sortBy',
                                 () => setState(() => _sortBy = 'Default')),
@@ -1481,7 +1744,8 @@ class _BuyerPageState extends State<BuyerPage> {
 
                   const SizedBox(height: 12),
 
-                  // Grid, loading, or empty state
+                  // Tiles while browsing categories/types, listings once the
+                  // buyer has drilled all the way in (or searched).
                   _loading
                       ? const Padding(
                           padding: EdgeInsets.symmetric(vertical: 80),
@@ -1490,6 +1754,8 @@ class _BuyerPageState extends State<BuyerPage> {
                                 color: Color(0xFF6DBF99)),
                           ),
                         )
+                      : _showingBrowseTiles
+                      ? _buildBrowseGrid()
                       : items.isEmpty
                       ? Padding(
                           padding: const EdgeInsets.symmetric(vertical: 60),
@@ -1647,6 +1913,7 @@ class _BuyerPageState extends State<BuyerPage> {
                   // already covers every listing).
                   if (!_loading &&
                       _hasMoreListings &&
+                      !_showingBrowseTiles &&
                       _searchQuery.isEmpty) ...[
                     const SizedBox(height: 16),
                     Center(
@@ -1682,36 +1949,12 @@ class _BuyerPageState extends State<BuyerPage> {
       ),
 
       // ── Bottom Nav ─────────────────────────────────────────────────────────
-      bottomNavigationBar: BottomNavigationBar(
+      // Shared bar + zero-length route transitions (see instantRoute), so it
+      // stays visually fixed instead of sliding in with each tab.
+      bottomNavigationBar: AppBottomNav(
         currentIndex: _selectedIndex,
         onTap: _onTabTapped,
-        selectedItemColor: const Color(0xFF6DBF99),
-        unselectedItemColor: Colors.black45,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        type: BottomNavigationBarType.fixed,
-        items: [
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined),
-              activeIcon: Icon(Icons.home),
-              label: 'Home'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.shopping_cart_outlined),
-              activeIcon: Icon(Icons.shopping_cart),
-              label: 'Explore'),
-          BottomNavigationBarItem(
-              icon: NotificationDot(
-                  show: _hasUnseenAnnouncements,
-                  child: const Icon(Icons.notifications_outlined)),
-              activeIcon: NotificationDot(
-                  show: _hasUnseenAnnouncements,
-                  child: const Icon(Icons.notifications)),
-              label: 'Announcements'),
-          const BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Profile'),
-        ],
+        hasUnseenAnnouncements: _hasUnseenAnnouncements,
       ),
     );
   }
