@@ -1225,71 +1225,93 @@ class _ChatImageViewerState extends State<_ChatImageViewer> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // Tapping the backdrop closes; the image itself stays interactive.
-          Positioned.fill(
-            child: GestureDetector(
-              onTap: () => Navigator.maybePop(context),
-              child: InteractiveViewer(
-                minScale: 1,
-                maxScale: 4,
-                child: Center(
+      // Scaffold lays its body out with loose constraints, so a bare Stack
+      // would shrink to its tallest unpositioned child (the toolbar row) and
+      // squash the picture into a strip across the top. Expanding pins the
+      // stack to the whole screen, which is what Positioned.fill measures.
+      body: SizedBox.expand(
+        child: Stack(
+          children: [
+            // Tapping the backdrop closes; the image itself stays interactive.
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () => Navigator.maybePop(context),
+                child: InteractiveViewer(
+                  minScale: 1,
+                  maxScale: 4,
                   child: Image.network(
                     widget.url,
+                    // Tight, full-screen sizing: without it the image lays
+                    // out at its intrinsic pixel size and BoxFit.contain has
+                    // no room to scale a small picture up.
+                    width: double.infinity,
+                    height: double.infinity,
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Icon(
-                      Icons.broken_image_outlined,
-                      color: Colors.white24,
-                      size: 64,
+                    filterQuality: FilterQuality.medium,
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Icon(
+                        Icons.broken_image_outlined,
+                        color: Colors.white24,
+                        size: 64,
+                      ),
                     ),
                     loadingBuilder: (_, child, progress) => progress == null
                         ? child
-                        : const SizedBox(
-                            width: 28,
-                            height: 28,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: Colors.white54,
+                        : const Center(
+                            child: SizedBox(
+                              width: 28,
+                              height: 28,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white54,
+                              ),
                             ),
                           ),
                   ),
                 ),
               ),
             ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _circleButton(
-                    icon: Icons.arrow_back,
-                    onTap: () => Navigator.maybePop(context),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 4,
                   ),
-                  _saving
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: Colors.white,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _circleButton(
+                        icon: Icons.arrow_back,
+                        onTap: () => Navigator.maybePop(context),
+                      ),
+                      _saving
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            )
+                          : _circleButton(
+                              icon: Icons.download_rounded,
+                              onTap: _save,
+                              tooltip: 'Save to device',
                             ),
-                          ),
-                        )
-                      : _circleButton(
-                          icon: Icons.download_rounded,
-                          onTap: _save,
-                          tooltip: 'Save to device',
-                        ),
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
