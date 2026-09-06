@@ -16,7 +16,6 @@ const List<String> kLivestockCategories = [
   'Large Livestock',
   'Aquaculture',
   'Ornamental Fish',
-  'Hatching & Breeding Products',
 ];
 
 /// Types offered once a category is picked.
@@ -82,17 +81,6 @@ const Map<String, List<String>> kLivestockSubcategories = {
     'Aquarium Shrimp',
     'Aquarium snails',
   ],
-  'Hatching & Breeding Products': [
-    'Fertile chicken eggs',
-    'Fertile duck eggs',
-    'Fertile turkey eggs',
-    'Fertile quail eggs',
-    'Fertile goose eggs',
-    'Chicks',
-    'Ducklings',
-    'Turkey poults',
-    'Quail chicks',
-  ],
 };
 
 /// Icon that stands in for a category — used on the picker rows and as the
@@ -107,8 +95,6 @@ IconData livestockCategoryIcon(String category) {
       return Icons.set_meal;
     case 'Ornamental Fish':
       return Icons.water_drop_outlined;
-    case 'Hatching & Breeding Products':
-      return Icons.egg_outlined;
     default:
       return Icons.pets;
   }
